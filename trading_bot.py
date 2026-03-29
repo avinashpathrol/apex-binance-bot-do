@@ -492,6 +492,7 @@ def get_decision(df: pd.DataFrame, price: float) -> dict:
         bullish_signals.append(f"RSI oversold ({curr['rsi']:.1f})")
     elif curr['rsi'] < 50 and prev['rsi'] < curr['rsi']:
         bullish_signals.append(f"RSI rising from low ({curr['rsi']:.1f})")
+
     if curr['rsi'] > 65:
         bearish_signals.append(f"RSI overbought ({curr['rsi']:.1f})")
     elif curr['rsi'] > 50 and prev['rsi'] > curr['rsi']:
@@ -502,22 +503,24 @@ def get_decision(df: pd.DataFrame, price: float) -> dict:
         bullish_signals.append("MACD bullish crossover")
     elif curr['macd'] > curr['macd_sig'] and curr['macd_hist'] > 0:
         bullish_signals.append("MACD above signal (bullish)")
+
     if prev['macd'] > prev['macd_sig'] and curr['macd'] < curr['macd_sig']:
         bearish_signals.append("MACD bearish crossover")
     elif curr['macd'] < curr['macd_sig'] and curr['macd_hist'] < 0:
         bearish_signals.append("MACD below signal (bearish)")
 
-    # EMA
+    # EMA trend
     if curr['ema_20'] > curr['ema_50']:
         bullish_signals.append("EMA-20 above EMA-50 (uptrend)")
     else:
         bearish_signals.append("EMA-20 below EMA-50 (downtrend)")
+
     if price > curr['ema_20']:
         bullish_signals.append("Price above EMA-20")
     else:
         bearish_signals.append("Price below EMA-20")
 
-    # Bollinger Bands
+    # Bollinger
     bb_range = curr['bb_upper'] - curr['bb_lower']
     if bb_range > 0:
         bb_pct = (price - curr['bb_lower']) / bb_range
@@ -536,29 +539,41 @@ def get_decision(df: pd.DataFrame, price: float) -> dict:
 
     bull_count = len(bullish_signals)
     bear_count = len(bearish_signals)
-    total      = bull_count + bear_count or 1
+    total = bull_count + bear_count or 1
 
-    if bull_count >= MIN_SIGNALS and bull_count > bear_count:
-        action     = 'LONG'
+    # Trend direction filter
+    trend_up = curr['ema_20'] > curr['ema_50']
+    trend_down = curr['ema_20'] < curr['ema_50']
+
+    if bull_count >= MIN_SIGNALS and bull_count > bear_count and trend_up:
+        action = 'LONG'
         confidence = int(min(95, 55 + (bull_count / total) * 45))
-        risk       = 'LOW' if bull_count >= 4 else 'MEDIUM'
-        reason     = ' | '.join(bullish_signals)
-    elif bear_count >= MIN_SIGNALS and bear_count > bull_count:
-        action     = 'SHORT'
+        risk = 'LOW' if bull_count >= 4 else 'MEDIUM'
+        reason = ' | '.join(bullish_signals)
+
+    elif bear_count >= MIN_SIGNALS and bear_count > bull_count and trend_down:
+        action = 'SHORT'
         confidence = int(min(95, 55 + (bear_count / total) * 45))
-        risk       = 'LOW' if bear_count >= 4 else 'MEDIUM'
-        reason     = ' | '.join(bearish_signals)
+        risk = 'LOW' if bear_count >= 4 else 'MEDIUM'
+        reason = ' | '.join(bearish_signals)
+
     else:
-        action     = 'HOLD'
+        action = 'HOLD'
         confidence = 0
-        risk       = 'MEDIUM'
-        reason     = f"Mixed signals — {bull_count} bullish, {bear_count} bearish"
+        risk = 'MEDIUM'
+
+        if bull_count >= MIN_SIGNALS and bull_count > bear_count and not trend_up:
+            reason = f"Blocked LONG — trend filter active (EMA-20 <= EMA-50) | {bull_count} bullish, {bear_count} bearish"
+        elif bear_count >= MIN_SIGNALS and bear_count > bull_count and not trend_down:
+            reason = f"Blocked SHORT — trend filter active (EMA-20 >= EMA-50) | {bull_count} bullish, {bear_count} bearish"
+        else:
+            reason = f"Mixed signals — {bull_count} bullish, {bear_count} bearish"
 
     return {
-        'action':          action,
-        'confidence':      confidence,
-        'risk_level':      risk,
-        'reason':          reason,
+        'action': action,
+        'confidence': confidence,
+        'risk_level': risk,
+        'reason': reason,
         'bullish_signals': bullish_signals,
         'bearish_signals': bearish_signals,
     }
