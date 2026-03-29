@@ -49,8 +49,9 @@ console_handler = logging.StreamHandler()
 console_handler.setLevel(logging.INFO)
 console_handler.setFormatter(formatter)
 
-logger.addHandler(file_handler)
-logger.addHandler(console_handler)
+if not logger.handlers:
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
 
 MST = timezone(timedelta(hours=-7))
 
@@ -243,7 +244,6 @@ def binance_private(method: str, endpoint: str, params: dict = None) -> dict:
     else:
         raise ValueError(f'Unknown method: {method}')
 
-    # Only log full response body on errors — not on every call
     if not resp.ok:
         masked_params = {k: ('***' if k == 'signature' else v) for k, v in params.items()}
         logger.error(
@@ -833,6 +833,8 @@ def run_once():
                     time.sleep(3)
                     ok     = open_short(price, confidence, reason)
                     status = 'FLIPPED LONG→SHORT ✅' if ok else 'CLOSED LONG, SHORT FAILED'
+                else:
+                    status = 'LONG CLOSE FAILED ❌'
             else:
                 status = f'HOLDING LONG — {reason}'
                 logger.info(f'📍 {status}')
@@ -845,6 +847,8 @@ def run_once():
                     time.sleep(3)
                     ok     = open_long(price, confidence, reason)
                     status = 'FLIPPED SHORT→LONG ✅' if ok else 'CLOSED SHORT, LONG FAILED'
+                else:
+                    status = 'SHORT CLOSE FAILED ❌'
             else:
                 status = f'HOLDING SHORT — {reason}'
                 logger.info(f'📍 {status}')
@@ -869,6 +873,9 @@ def run_once():
         except Exception as e:
             logger.warning(f'Trade history failed: {e}')
 
+        # ── Refresh actual position AFTER any trade actions ──
+        latest_position = detect_position()
+
         # ── Push to dashboard ──
         push_dashboard_data({
             'generated_at': datetime.now(timezone.utc).isoformat(),
@@ -881,7 +888,7 @@ def run_once():
             'btc_balance':  sol_balance,
             'cad_balance':  usdt_balance,
             'margin_level': margin_level,
-            'position':     current_position,
+            'position':     latest_position,
             'action':       action,
             'confidence':   confidence,
             'risk':         risk,
@@ -898,7 +905,7 @@ def run_once():
 
         logger.info(
             f'✅ Run #{run_count} — {action} | ${price:.4f} | '
-            f'pos: {current_position} | margin: {margin_level:.2f}'
+            f'pos: {latest_position} | margin: {margin_level:.2f}'
         )
 
     except Exception as e:
