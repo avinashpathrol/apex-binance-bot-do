@@ -10,11 +10,16 @@ Alerts:   Telegram
 Data:     Pushes data_binance_sol.json to apex-dashboard
 Runner:   Continuous loop
 
-NEW:
+UPDATED:
 - Includes manual closed trades from manual_closed_trades.json
 - Builds closed trades from Binance margin trade history
 - Calculates wins, losses, win rate, and net profit
 - Pushes closed_trades + performance to dashboard
+- Throttles low-margin Telegram alerts so you are not spammed every 60s
+- Does NOT stop managing an existing live position just because margin is low
+- Blocks opening NEW trades when margin is unsafe
+- Makes short-close repayment more robust with explicit repay cleanup
+- Adds orphaned SOL borrow cleanup helper for manual-close edge cases
 """
 
 import os
@@ -82,12 +87,21 @@ BINANCE_BASE_URL   = 'https://api.binance.com'
 # Optional manual trades file for older/missed trades
 MANUAL_TRADES_FILE = os.environ.get('MANUAL_TRADES_FILE', 'manual_closed_trades.json').strip()
 
+# Safety / alert tuning
+LOW_MARGIN_THRESHOLD = float(os.environ.get('LOW_MARGIN_THRESHOLD', '1.50'))
+LOW_MARGIN_ALERT_COOLDOWN = int(os.environ.get('LOW_MARGIN_ALERT_COOLDOWN', '1800'))  # 30 min
+LOW_MARGIN_ALERT_DELTA = float(os.environ.get('LOW_MARGIN_ALERT_DELTA', '0.05'))      # re-alert if level worsens by this much
+SHORT_CLOSE_BUFFER = float(os.environ.get('SHORT_CLOSE_BUFFER', '1.005'))              # 0.5% buy buffer to cover interest/slippage
+
 # ─────────────────────────────────────────────
 # State tracking
 # ─────────────────────────────────────────────
-run_count        = 0
-last_hold_alert  = 0
+run_count = 0
+last_hold_alert = 0
 current_position = None  # 'LONG', 'SHORT', or None
+
+last_margin_alert_ts = 0.0
+last_margin_alert_level = None
 
 # ─────────────────────────────────────────────
 # Helpers
@@ -323,7 +337,7 @@ def borrow_margin(asset: str, amount: float) -> bool:
             response_text = e.response.text
         except Exception:
             pass
-        if '"code":-3045' in response_text:
+        if '"code":-3045' in response_text or '"code":-3035' in response_text:
             logger.warning(f'⚠️ Borrow unavailable for {asset}: insufficient lending pool')
             return False
         logger.error(f'Borrow {asset} failed: {e}')
@@ -339,7 +353,7 @@ def repay_margin(asset: str, amount: float) -> bool:
             'asset':  asset,
             'amount': str(round(amount, 8)),
         })
-        logger.info(f'💸 Repaid {amount:.4f} {asset}')
+        logger.info(f'💸 Repaid {amount:.8f} {asset}')
         return True
     except Exception as e:
         logger.error(f'Repay {asset} failed: {e}')
@@ -374,12 +388,12 @@ def round_step(quantity: float, step: float) -> float:
 def detect_position() -> Optional[str]:
     sol  = get_margin_balance('SOL')
     usdt = get_margin_balance('USDT')
-    logger.info(f'📊 SOL net={sol["net"]:.4f} borrowed={sol["borrowed"]:.4f}')
+    logger.info(f'📊 SOL net={sol["net"]:.4f} borrowed={sol["borrowed"]:.4f} interest={sol["interest"]:.6f}')
     logger.info(f'📊 USDT net={usdt["net"]:.2f} borrowed={usdt["borrowed"]:.2f}')
     if sol['net'] > 0.05:
         logger.info('📍 Position: LONG')
         return 'LONG'
-    elif sol['borrowed'] > 0.05:
+    elif (sol['borrowed'] + sol['interest']) > 0.05:
         logger.info('📍 Position: SHORT')
         return 'SHORT'
     logger.info('📍 Position: None')
@@ -421,6 +435,37 @@ def get_trade_history() -> list:
     except Exception as e:
         logger.warning(f'Trade history failed: {e}')
         return []
+
+
+def cleanup_orphan_short_borrow() -> bool:
+    """
+    Manual-close edge case:
+    Sometimes a short may be bought back manually, but borrowed SOL / interest is still left behind.
+    If there is enough free SOL available, explicitly repay it.
+    """
+    try:
+        sol = get_margin_balance('SOL')
+        total_borrowed = sol['borrowed'] + sol['interest']
+        free_sol = sol['free']
+
+        if total_borrowed < 0.0001:
+            return False
+
+        repayable = min(free_sol, total_borrowed)
+        if repayable < 0.0001:
+            logger.info('🧹 Orphan short borrow detected but no free SOL available to repay yet')
+            return False
+
+        ok = repay_margin('SOL', repayable)
+        if ok:
+            time.sleep(1)
+            sol_after = get_margin_balance('SOL')
+            remaining = sol_after['borrowed'] + sol_after['interest']
+            logger.info(f'🧹 Orphan SOL repay cleanup done | remaining borrowed={remaining:.8f}')
+        return ok
+    except Exception as e:
+        logger.warning(f'cleanup_orphan_short_borrow failed: {e}')
+        return False
 
 
 # ─────────────────────────────────────────────
@@ -521,7 +566,6 @@ def build_closed_trades_from_history(trades: list) -> list:
 
         if action == 'BUY':
             if current_trade is None:
-                # likely opening LONG
                 current_trade = {
                     'side': 'LONG',
                     'entry_price': price,
@@ -530,7 +574,6 @@ def build_closed_trades_from_history(trades: list) -> list:
                     'opened_at': ts,
                 }
             elif current_trade['side'] == 'SHORT':
-                # BUY closes SHORT
                 exit_qty = min(current_trade['qty'], qty)
                 total_fee = current_trade.get('entry_fee', 0.0) + fee
                 pnl = (current_trade['entry_price'] - price) * exit_qty - total_fee
@@ -553,7 +596,6 @@ def build_closed_trades_from_history(trades: list) -> list:
 
         elif action == 'SELL':
             if current_trade is None:
-                # likely opening SHORT
                 current_trade = {
                     'side': 'SHORT',
                     'entry_price': price,
@@ -562,7 +604,6 @@ def build_closed_trades_from_history(trades: list) -> list:
                     'opened_at': ts,
                 }
             elif current_trade['side'] == 'LONG':
-                # SELL closes LONG
                 exit_qty = min(current_trade['qty'], qty)
                 total_fee = current_trade.get('entry_fee', 0.0) + fee
                 pnl = (price - current_trade['entry_price']) * exit_qty - total_fee
@@ -682,7 +723,6 @@ def get_decision(df: pd.DataFrame, price: float) -> dict:
     bullish_signals = []
     bearish_signals = []
 
-    # RSI
     if curr['rsi'] < 35:
         bullish_signals.append(f"RSI oversold ({curr['rsi']:.1f})")
     elif curr['rsi'] < 50 and prev['rsi'] < curr['rsi']:
@@ -693,7 +733,6 @@ def get_decision(df: pd.DataFrame, price: float) -> dict:
     elif curr['rsi'] > 50 and prev['rsi'] > curr['rsi']:
         bearish_signals.append(f"RSI falling from high ({curr['rsi']:.1f})")
 
-    # MACD
     if prev['macd'] < prev['macd_sig'] and curr['macd'] > curr['macd_sig']:
         bullish_signals.append("MACD bullish crossover")
     elif curr['macd'] > curr['macd_sig'] and curr['macd_hist'] > 0:
@@ -704,7 +743,6 @@ def get_decision(df: pd.DataFrame, price: float) -> dict:
     elif curr['macd'] < curr['macd_sig'] and curr['macd_hist'] < 0:
         bearish_signals.append("MACD below signal (bearish)")
 
-    # EMA trend
     if curr['ema_20'] > curr['ema_50']:
         bullish_signals.append("EMA-20 above EMA-50 (uptrend)")
     else:
@@ -715,7 +753,6 @@ def get_decision(df: pd.DataFrame, price: float) -> dict:
     else:
         bearish_signals.append("Price below EMA-20")
 
-    # Bollinger
     bb_range = curr['bb_upper'] - curr['bb_lower']
     if bb_range > 0:
         bb_pct = (price - curr['bb_lower']) / bb_range
@@ -724,7 +761,6 @@ def get_decision(df: pd.DataFrame, price: float) -> dict:
         elif bb_pct > 0.80:
             bearish_signals.append(f"Price near BB upper band ({bb_pct*100:.0f}%)")
 
-    # Volume
     avg_vol = df['volume'].tail(10).mean()
     if curr['volume'] > avg_vol * 1.3:
         if len(bullish_signals) > len(bearish_signals):
@@ -881,20 +917,36 @@ def open_short(price: float, confidence: int, reason: str) -> bool:
 
 def close_short(price: float, confidence: int, reason: str) -> bool:
     try:
-        step     = get_step_size()
-        sol      = get_margin_balance('SOL')
-        borrowed = sol['borrowed'] + sol['interest']
+        step = get_step_size()
+        sol = get_margin_balance('SOL')
+        borrowed_total = sol['borrowed'] + sol['interest']
 
-        if borrowed < 0.01:
+        if borrowed_total < 0.0001:
             logger.info('No borrowed SOL to repay — short already closed')
+            cleanup_orphan_short_borrow()
             return False
 
         sell_price = get_last_trade_price('SELL')
-        quantity   = round_step(borrowed * 1.005, step)
+
+        quantity = round_step(borrowed_total * SHORT_CLOSE_BUFFER, step)
+        if quantity < borrowed_total:
+            quantity = round_step(borrowed_total + step, step)
+
         resp = margin_order('BUY', quantity, 'AUTO_REPAY')
-        logger.info(f'✅ SHORT CLOSE: bought {quantity:.4f} SOL @ ${price:.4f} | id: {resp.get("orderId")}')
+        logger.info(
+            f'✅ SHORT CLOSE: bought {quantity:.4f} SOL @ ${price:.4f} | '
+            f'borrowed_total={borrowed_total:.8f} | id: {resp.get("orderId")}'
+        )
+
+        time.sleep(2)
+        cleanup_orphan_short_borrow()
+
+        sol_after = get_margin_balance('SOL')
+        remaining_borrow = sol_after['borrowed'] + sol_after['interest']
+        logger.info(f'🔎 Remaining SOL borrowed after close attempt: {remaining_borrow:.8f}')
+
         alert_short_close(price, quantity, confidence, reason, sell_price)
-        return True
+        return remaining_borrow < 0.01
 
     except Exception as e:
         logger.error(f'close_short failed: {e}')
@@ -905,19 +957,66 @@ def close_short(price: float, confidence: int, reason: str) -> bool:
 # ─────────────────────────────────────────────
 # 7. SAFETY CHECK
 # ─────────────────────────────────────────────
-def check_margin_safety() -> bool:
+def check_margin_safety(current_position: Optional[str]) -> tuple[bool, float]:
+    """
+    Returns:
+        can_open_new_positions: bool
+        level: float
+
+    Behavior:
+    - If margin is low and there is NO active position -> block new entries.
+    - If margin is low and there IS an active position -> continue managing that position,
+      but do not spam Telegram repeatedly.
+    """
+    global last_margin_alert_ts, last_margin_alert_level
+
     try:
         level = get_margin_level()
         logger.info(f'🛡️ Margin level: {level:.2f}')
-        if level < 1.5 and level != 999:
-            msg = f'⚠️ MARGIN LEVEL LOW: {level:.2f} — pausing to avoid liquidation!'
-            logger.warning(msg)
-            send_telegram(msg)
-            return False
-        return True
+
+        if level == 999:
+            return True, level
+
+        if level < LOW_MARGIN_THRESHOLD:
+            now_ts = time.time()
+            should_alert = False
+
+            if (now_ts - last_margin_alert_ts) >= LOW_MARGIN_ALERT_COOLDOWN:
+                should_alert = True
+            elif last_margin_alert_level is None:
+                should_alert = True
+            elif level <= (last_margin_alert_level - LOW_MARGIN_ALERT_DELTA):
+                should_alert = True
+
+            if should_alert:
+                if current_position:
+                    msg = (
+                        f'⚠️ MARGIN LEVEL LOW: {level:.2f} — existing {current_position} position still being managed, '
+                        f'but no new trades will be opened until margin improves.'
+                    )
+                else:
+                    msg = f'⚠️ MARGIN LEVEL LOW: {level:.2f} — pausing new entries to avoid liquidation!'
+                logger.warning(msg)
+                send_telegram(msg)
+                last_margin_alert_ts = now_ts
+                last_margin_alert_level = level
+            else:
+                logger.warning(
+                    f'⚠️ Margin still low at {level:.2f}, alert suppressed '
+                    f'(cooldown {LOW_MARGIN_ALERT_COOLDOWN}s)'
+                )
+
+            return False, level
+
+        if last_margin_alert_level is not None and level >= LOW_MARGIN_THRESHOLD:
+            logger.info(f'✅ Margin recovered above threshold: {level:.2f}')
+            last_margin_alert_level = None
+
+        return True, level
+
     except Exception as e:
         logger.warning(f'Safety check failed: {e}')
-        return True
+        return True, 999.0
 
 
 # ─────────────────────────────────────────────
@@ -964,10 +1063,10 @@ def run_once():
     logger.info('=' * 60)
 
     try:
-        if not check_margin_safety():
-            return
-
         current_position = detect_position()
+        can_open_new_positions, margin_level = check_margin_safety(current_position)
+
+        cleanup_orphan_short_borrow()
 
         df    = get_market_data(SYMBOL)
         price = get_current_price(SYMBOL)
@@ -987,15 +1086,17 @@ def run_once():
         trend  = get_trend_filter(SYMBOL)
         status = ''
 
-        # Block low confidence trades in sideways market
         if trend == 'SIDEWAYS' and action in ('LONG', 'SHORT') and confidence < 80:
             action = 'HOLD'
             status = f'SKIPPED — sideways + confidence {confidence}% < 80%'
             logger.info(f'⛔ {status}')
 
-        # ── Trade logic ──
         if current_position is None:
-            if action == 'LONG' and risk != 'HIGH':
+            if not can_open_new_positions and action in ('LONG', 'SHORT'):
+                status = f'BLOCKED — low margin level {margin_level:.2f}, no new entries'
+                logger.info(f'⛔ {status}')
+
+            elif action == 'LONG' and risk != 'HIGH':
                 logger.info('🟢 Opening LONG...')
                 ok     = open_long(price, confidence, reason)
                 status = 'LONG OPENED ✅' if ok else 'LONG FAILED ❌'
@@ -1025,8 +1126,12 @@ def run_once():
                 closed = close_long(price, confidence, 'Flipping to SHORT — ' + reason)
                 if closed:
                     time.sleep(3)
-                    ok     = open_short(price, confidence, reason)
-                    status = 'FLIPPED LONG→SHORT ✅' if ok else 'CLOSED LONG, SHORT FAILED'
+                    if can_open_new_positions:
+                        ok     = open_short(price, confidence, reason)
+                        status = 'FLIPPED LONG→SHORT ✅' if ok else 'CLOSED LONG, SHORT FAILED'
+                    else:
+                        status = f'CLOSED LONG ONLY — low margin {margin_level:.2f} blocked new SHORT'
+                        logger.info(f'⛔ {status}')
                 else:
                     status = 'LONG CLOSE FAILED ❌'
             else:
@@ -1039,18 +1144,20 @@ def run_once():
                 closed = close_short(price, confidence, 'Flipping to LONG — ' + reason)
                 if closed:
                     time.sleep(3)
-                    ok     = open_long(price, confidence, reason)
-                    status = 'FLIPPED SHORT→LONG ✅' if ok else 'CLOSED SHORT, LONG FAILED'
+                    if can_open_new_positions:
+                        ok     = open_long(price, confidence, reason)
+                        status = 'FLIPPED SHORT→LONG ✅' if ok else 'CLOSED SHORT, LONG FAILED'
+                    else:
+                        status = f'CLOSED SHORT ONLY — low margin {margin_level:.2f} blocked new LONG'
+                        logger.info(f'⛔ {status}')
                 else:
                     status = 'SHORT CLOSE FAILED ❌'
             else:
                 status = f'HOLDING SHORT — {reason}'
                 logger.info(f'📍 {status}')
 
-        # ── Fetch balances ──
         usdt_balance = 0.0
         sol_balance  = 0.0
-        margin_level = 999.0
         try:
             usdt_b       = get_margin_balance('USDT')
             sol_b        = get_margin_balance(BASE_ASSET)
@@ -1060,7 +1167,6 @@ def run_once():
         except Exception as e:
             logger.warning(f'Balance fetch failed: {e}')
 
-        # ── Fetch trade history + performance ──
         trade_history = []
         closed_trades = []
         performance = {
@@ -1087,10 +1193,8 @@ def run_once():
         except Exception as e:
             logger.warning(f'Trade history/performance failed: {e}')
 
-        # ── Refresh actual position AFTER any trade actions ──
         latest_position = detect_position()
 
-        # ── Push to dashboard ──
         push_dashboard_data({
             'generated_at': datetime.now(timezone.utc).isoformat(),
             'symbol':       SYMBOL,
@@ -1139,6 +1243,8 @@ def main():
     logger.info(f'   Interval:    every {CHECK_INTERVAL}s')
     logger.info(f'   Longs ✅  Shorts ✅  Trailing stop ❌')
     logger.info(f'   Manual file: {MANUAL_TRADES_FILE}')
+    logger.info(f'   Low margin threshold: {LOW_MARGIN_THRESHOLD:.2f}')
+    logger.info(f'   Margin alert cooldown: {LOW_MARGIN_ALERT_COOLDOWN}s')
     logger.info(f'   API Key:     {mask_secret(BINANCE_API_KEY)}')
     logger.info(f'   API Secret:  {mask_secret(BINANCE_API_SECRET)}')
     logger.info(f'   GH Token:    {mask_secret(GH_TOKEN)}')
@@ -1154,6 +1260,7 @@ def main():
         f'💪 Effective:  ${TRADE_AMOUNT_USDT * LEVERAGE:.0f} USDT per trade\n'
         f'🟢 Longs + 🔴 Shorts enabled\n'
         f'🚫 No trailing stop — signals only\n'
+        f'🛡 Low-margin alerts throttled ({LOW_MARGIN_ALERT_COOLDOWN}s cooldown)\n'
         f'⏱ Every {CHECK_INTERVAL} seconds\n'
         f'⏰ {datetime.now(MST).strftime("%b %d, %I:%M %p MST")}'
     )
