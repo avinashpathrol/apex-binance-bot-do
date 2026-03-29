@@ -9,6 +9,12 @@ Exit:     Signal-based only (no trailing stop)
 Alerts:   Telegram
 Data:     Pushes data_binance_sol.json to apex-dashboard
 Runner:   Continuous loop
+
+NEW:
+- Includes manual closed trades from manual_closed_trades.json
+- Builds closed trades from Binance margin trade history
+- Calculates wins, losses, win rate, and net profit
+- Pushes closed_trades + performance to dashboard
 """
 
 import os
@@ -72,6 +78,9 @@ DASHBOARD_REPO     = os.environ.get('DASHBOARD_REPO', 'avinashpathrol/apex-dashb
 MIN_SIGNALS        = int(os.environ.get('MIN_SIGNALS', '3'))
 CHECK_INTERVAL     = int(os.environ.get('CHECK_INTERVAL', '60'))
 BINANCE_BASE_URL   = 'https://api.binance.com'
+
+# Optional manual trades file for older/missed trades
+MANUAL_TRADES_FILE = os.environ.get('MANUAL_TRADES_FILE', 'manual_closed_trades.json').strip()
 
 # ─────────────────────────────────────────────
 # State tracking
@@ -396,7 +405,7 @@ def get_trade_history() -> list:
     try:
         trades = binance_private('GET', '/sapi/v1/margin/myTrades', {
             'symbol': SYMBOL,
-            'limit':  50,
+            'limit':  100,
         })
         result = []
         for t in trades:
@@ -412,6 +421,192 @@ def get_trade_history() -> list:
     except Exception as e:
         logger.warning(f'Trade history failed: {e}')
         return []
+
+
+# ─────────────────────────────────────────────
+# 3B. CLOSED TRADE / PERFORMANCE HELPERS
+# ─────────────────────────────────────────────
+def load_manual_closed_trades() -> list:
+    """
+    Optional file: manual_closed_trades.json
+    Example:
+    [
+      {
+        "side": "LONG",
+        "entry_price": 84.20,
+        "exit_price": 81.90,
+        "qty": 3.80,
+        "fee": 0.50,
+        "opened_at": "2026-03-28T21:10:00-07:00",
+        "closed_at": "2026-03-28T22:35:00-07:00",
+        "note": "Manual lost trade added for dashboard accuracy"
+      }
+    ]
+    """
+    try:
+        if not os.path.exists(MANUAL_TRADES_FILE):
+            return []
+
+        with open(MANUAL_TRADES_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        if not isinstance(data, list):
+            logger.warning(f'{MANUAL_TRADES_FILE} must contain a list')
+            return []
+
+        cleaned = []
+        for t in data:
+            if not isinstance(t, dict):
+                continue
+
+            side = str(t.get('side', '')).upper().strip()
+            entry_price = float(t.get('entry_price', 0))
+            exit_price = float(t.get('exit_price', 0))
+            qty = float(t.get('qty', 0))
+            fee = float(t.get('fee', 0))
+            opened_at = t.get('opened_at')
+            closed_at = t.get('closed_at')
+            note = str(t.get('note', 'Manual trade'))
+
+            if side not in ('LONG', 'SHORT'):
+                logger.warning(f'Skipping manual trade with invalid side: {t}')
+                continue
+            if entry_price <= 0 or exit_price <= 0 or qty <= 0:
+                logger.warning(f'Skipping manual trade with invalid values: {t}')
+                continue
+
+            if side == 'LONG':
+                pnl = (exit_price - entry_price) * qty - fee
+                pnl_pct = ((exit_price - entry_price) / entry_price) * 100 * LEVERAGE
+            else:
+                pnl = (entry_price - exit_price) * qty - fee
+                pnl_pct = ((entry_price - exit_price) / entry_price) * 100 * LEVERAGE
+
+            cleaned.append({
+                'source': 'manual',
+                'side': side,
+                'entry_price': round(entry_price, 8),
+                'exit_price': round(exit_price, 8),
+                'qty': round(qty, 8),
+                'fee': round(fee, 8),
+                'pnl': round(pnl, 4),
+                'pnl_pct': round(pnl_pct, 2),
+                'win': pnl > 0,
+                'opened_at': opened_at,
+                'closed_at': closed_at,
+                'note': note,
+            })
+
+        return cleaned
+
+    except Exception as e:
+        logger.warning(f'Failed loading manual closed trades: {e}')
+        return []
+
+
+def build_closed_trades_from_history(trades: list) -> list:
+    """
+    Converts raw Binance BUY/SELL history into logical closed trades.
+    Assumes your bot generally runs full LONG / full SHORT and closes/flips fully.
+    """
+    closed = []
+    current_trade = None
+
+    for t in trades:
+        action = t.get('action')
+        price = float(t.get('price', 0))
+        qty = float(t.get('qty', 0))
+        fee = float(t.get('fee', 0))
+        ts = t.get('time')
+
+        if action == 'BUY':
+            if current_trade is None:
+                # likely opening LONG
+                current_trade = {
+                    'side': 'LONG',
+                    'entry_price': price,
+                    'qty': qty,
+                    'entry_fee': fee,
+                    'opened_at': ts,
+                }
+            elif current_trade['side'] == 'SHORT':
+                # BUY closes SHORT
+                exit_qty = min(current_trade['qty'], qty)
+                total_fee = current_trade.get('entry_fee', 0.0) + fee
+                pnl = (current_trade['entry_price'] - price) * exit_qty - total_fee
+
+                closed.append({
+                    'source': 'binance',
+                    'side': 'SHORT',
+                    'entry_price': round(current_trade['entry_price'], 8),
+                    'exit_price': round(price, 8),
+                    'qty': round(exit_qty, 8),
+                    'fee': round(total_fee, 8),
+                    'pnl': round(pnl, 4),
+                    'pnl_pct': round(((current_trade['entry_price'] - price) / current_trade['entry_price']) * 100 * LEVERAGE, 2),
+                    'win': pnl > 0,
+                    'opened_at': current_trade['opened_at'],
+                    'closed_at': ts,
+                    'note': 'Derived from margin trade history',
+                })
+                current_trade = None
+
+        elif action == 'SELL':
+            if current_trade is None:
+                # likely opening SHORT
+                current_trade = {
+                    'side': 'SHORT',
+                    'entry_price': price,
+                    'qty': qty,
+                    'entry_fee': fee,
+                    'opened_at': ts,
+                }
+            elif current_trade['side'] == 'LONG':
+                # SELL closes LONG
+                exit_qty = min(current_trade['qty'], qty)
+                total_fee = current_trade.get('entry_fee', 0.0) + fee
+                pnl = (price - current_trade['entry_price']) * exit_qty - total_fee
+
+                closed.append({
+                    'source': 'binance',
+                    'side': 'LONG',
+                    'entry_price': round(current_trade['entry_price'], 8),
+                    'exit_price': round(price, 8),
+                    'qty': round(exit_qty, 8),
+                    'fee': round(total_fee, 8),
+                    'pnl': round(pnl, 4),
+                    'pnl_pct': round(((price - current_trade['entry_price']) / current_trade['entry_price']) * 100 * LEVERAGE, 2),
+                    'win': pnl > 0,
+                    'opened_at': current_trade['opened_at'],
+                    'closed_at': ts,
+                    'note': 'Derived from margin trade history',
+                })
+                current_trade = None
+
+    return closed
+
+
+def summarize_performance(closed_trades: list) -> dict:
+    total = len(closed_trades)
+    wins = sum(1 for t in closed_trades if t.get('win'))
+    losses = total - wins
+    net_profit = round(sum(float(t.get('pnl', 0)) for t in closed_trades), 4)
+    avg_profit = round(net_profit / total, 4) if total else 0.0
+    win_rate = round((wins / total) * 100, 2) if total else 0.0
+
+    long_trades = [t for t in closed_trades if t.get('side') == 'LONG']
+    short_trades = [t for t in closed_trades if t.get('side') == 'SHORT']
+
+    return {
+        'closed_trades': total,
+        'wins': wins,
+        'losses': losses,
+        'win_rate': win_rate,
+        'net_profit': net_profit,
+        'avg_profit_per_trade': avg_profit,
+        'long_trades': len(long_trades),
+        'short_trades': len(short_trades),
+    }
 
 
 # ─────────────────────────────────────────────
@@ -541,7 +736,6 @@ def get_decision(df: pd.DataFrame, price: float) -> dict:
     bear_count = len(bearish_signals)
     total = bull_count + bear_count or 1
 
-    # Trend direction filter
     trend_up = curr['ema_20'] > curr['ema_50']
     trend_down = curr['ema_20'] < curr['ema_50']
 
@@ -866,12 +1060,32 @@ def run_once():
         except Exception as e:
             logger.warning(f'Balance fetch failed: {e}')
 
-        # ── Fetch trade history ──
+        # ── Fetch trade history + performance ──
         trade_history = []
+        closed_trades = []
+        performance = {
+            'closed_trades': 0,
+            'wins': 0,
+            'losses': 0,
+            'win_rate': 0.0,
+            'net_profit': 0.0,
+            'avg_profit_per_trade': 0.0,
+            'long_trades': 0,
+            'short_trades': 0,
+        }
+
         try:
             trade_history = get_trade_history()
+            derived_closed_trades = build_closed_trades_from_history(trade_history)
+            manual_closed_trades = load_manual_closed_trades()
+
+            closed_trades = sorted(
+                derived_closed_trades + manual_closed_trades,
+                key=lambda x: x.get('closed_at') or ''
+            )
+            performance = summarize_performance(closed_trades)
         except Exception as e:
-            logger.warning(f'Trade history failed: {e}')
+            logger.warning(f'Trade history/performance failed: {e}')
 
         # ── Refresh actual position AFTER any trade actions ──
         latest_position = detect_position()
@@ -898,6 +1112,8 @@ def run_once():
             'bullish':      decision['bullish_signals'],
             'bearish':      decision['bearish_signals'],
             'trades':       trade_history,
+            'closed_trades': closed_trades,
+            'performance':  performance,
             'run_count':    run_count,
             'trade_amount': TRADE_AMOUNT_USDT,
             'min_signals':  MIN_SIGNALS,
@@ -905,7 +1121,8 @@ def run_once():
 
         logger.info(
             f'✅ Run #{run_count} — {action} | ${price:.4f} | '
-            f'pos: {latest_position} | margin: {margin_level:.2f}'
+            f'pos: {latest_position} | margin: {margin_level:.2f} | '
+            f'win_rate: {performance["win_rate"]:.2f}% | net: {performance["net_profit"]:.4f}'
         )
 
     except Exception as e:
@@ -921,6 +1138,7 @@ def main():
     logger.info(f'   Effective:   ${TRADE_AMOUNT_USDT * LEVERAGE:.0f} USDT per trade')
     logger.info(f'   Interval:    every {CHECK_INTERVAL}s')
     logger.info(f'   Longs ✅  Shorts ✅  Trailing stop ❌')
+    logger.info(f'   Manual file: {MANUAL_TRADES_FILE}')
     logger.info(f'   API Key:     {mask_secret(BINANCE_API_KEY)}')
     logger.info(f'   API Secret:  {mask_secret(BINANCE_API_SECRET)}')
     logger.info(f'   GH Token:    {mask_secret(GH_TOKEN)}')
