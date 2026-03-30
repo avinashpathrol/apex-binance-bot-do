@@ -347,6 +347,31 @@ def cleanup_orphan_short_borrow() -> bool:
         return False
 
 
+def cleanup_orphan_long_borrow() -> bool:
+    try:
+        sol = get_margin_balance('SOL')
+        if sol['net'] > 0.05:
+            return False  # LONG position is open, USDT borrow is intentional
+        usdt = get_margin_balance('USDT')
+        total_borrowed = usdt['borrowed'] + usdt['interest']
+        free_usdt = usdt['free']
+        if total_borrowed < 0.01:
+            return False
+        repayable = min(free_usdt, total_borrowed)
+        if repayable < 0.01:
+            logger.info('🧹 Orphan USDT borrow detected but no free USDT available to repay yet')
+            return False
+        ok = repay_margin('USDT', repayable)
+        if ok:
+            time.sleep(1)
+            after = get_margin_balance('USDT')
+            logger.info(f'🧹 Orphan USDT repay cleanup done | remaining borrowed={after["borrowed"] + after["interest"]:.2f}')
+        return ok
+    except Exception as e:
+        logger.warning(f'cleanup_orphan_long_borrow failed: {e}')
+        return False
+
+
 def load_manual_closed_trades() -> list:
     try:
         if not os.path.exists(MANUAL_TRADES_FILE):
@@ -545,7 +570,12 @@ def fetch_dashboard_config() -> dict:
             amt = default['trade_amount_usdt']
         if cool <= 0:
             cool = default['manual_reentry_cooldown_minutes']
-        return {'trade_amount_usdt': amt, 'leverage': lev, 'manual_reentry_cooldown_minutes': cool, 'updated_at': cfg.get('updated_at')}
+        return {
+            'trade_amount_usdt': amt, 'leverage': lev, 'manual_reentry_cooldown_minutes': cool,
+            'updated_at': cfg.get('updated_at'),
+            'close_requested': bool(cfg.get('close_requested', False)),
+            'close_requested_at': cfg.get('close_requested_at'),
+        }
     except Exception as e:
         logger.warning(f'Failed reading dashboard config: {e}')
         return default
@@ -584,10 +614,32 @@ def mark_bot_close(side: str) -> None:
     save_state()
 
 
-def process_manual_close_detection(latest_position: Optional[str]) -> None:
+def clear_close_request() -> None:
+    if not GH_TOKEN or not DASHBOARD_REPO:
+        return
+    try:
+        url = f'https://api.github.com/repos/{DASHBOARD_REPO}/contents/{BOT_CONFIG_FILE}'
+        headers = {'Authorization': f'token {GH_TOKEN}', 'Accept': 'application/vnd.github+json'}
+        r = requests.get(url, headers=headers, timeout=10)
+        if not r.ok:
+            logger.warning(f'clear_close_request: GET failed {r.status_code}')
+            return
+        j = r.json()
+        current_cfg = json.loads(base64.b64decode(j['content'].replace('\n', '')).decode())
+        current_cfg['close_requested'] = False
+        current_cfg.pop('close_requested_at', None)
+        content = base64.b64encode(json.dumps(current_cfg, indent=2).encode()).decode()
+        payload = {'message': 'bot: clear close request', 'content': content, 'sha': j.get('sha')}
+        requests.put(url, headers=headers, json=payload, timeout=15)
+        logger.info('✅ Dashboard close request cleared from bot_config.json')
+    except Exception as e:
+        logger.warning(f'clear_close_request failed: {e}')
+
+
+def process_manual_close_detection(current_position: Optional[str]) -> None:
     prev = state.get('prev_position')
     now_ts = int(time.time())
-    if prev in ('LONG', 'SHORT') and latest_position is None:
+    if prev in ('LONG', 'SHORT') and current_position is None:
         recently_bot_closed = (state.get('last_bot_closed_side') == prev) and ((now_ts - safe_int(state.get('last_bot_closed_ts'), 0)) <= 120)
         if recently_bot_closed:
             logger.info(f'ℹ️ Position transition {prev} -> None came from bot close; no manual cooldown applied')
@@ -598,8 +650,7 @@ def process_manual_close_detection(latest_position: Optional[str]) -> None:
             state['last_manual_close_ts'] = now_ts
             logger.info(f'🕒 Manual close detected on {prev}; blocking same-side re-entry for {cooldown_minutes} min')
             send_telegram(f'🕒 <b>APEX Cooldown Active</b>\n\nManual {prev} close detected.\nSame-side re-entry blocked for {cooldown_minutes} minutes.\nOpposite-side trade is still allowed.')
-    state['prev_position'] = latest_position
-    save_state()
+            save_state()
 
 
 def get_same_side_cooldown(action: str) -> int:
@@ -792,10 +843,34 @@ def run_once():
     try:
         current_position = detect_position()
         cfg = apply_runtime_settings(current_position)
+        process_manual_close_detection(current_position)
         can_open_new_positions, margin_level = check_margin_safety(current_position)
         cleanup_orphan_short_borrow()
+        cleanup_orphan_long_borrow()
         df = get_market_data(SYMBOL)
         price = get_current_price(SYMBOL)
+
+        # ── Dashboard close request ──
+        dashboard_close_executed = False
+        if cfg.get('close_requested'):
+            req_at = cfg.get('close_requested_at')
+            try:
+                age = (datetime.now(timezone.utc) - datetime.fromisoformat(req_at.replace('Z', '+00:00'))).total_seconds() if req_at else 999
+            except Exception:
+                age = 999
+            if age < 300 and current_position:
+                logger.info(f'📱 Dashboard close request ({age:.0f}s old) — closing {current_position}')
+                send_telegram(f'📱 <b>APEX — Dashboard Close</b>\n\nClosing {current_position} @ ${price:,.4f}\nRequested {age:.0f}s ago via dashboard.')
+                if current_position == 'LONG':
+                    close_long(price, 0, 'Dashboard close request')
+                else:
+                    close_short(price, 0, 'Dashboard close request')
+                dashboard_close_executed = True
+                current_position = detect_position()
+            else:
+                logger.info(f'⚠️ Dashboard close request ignored: age={age:.0f}s, position={current_position}')
+            clear_close_request()
+
         decision = get_decision(df, price)
         action = decision['action']
         confidence = decision['confidence']
@@ -805,6 +880,11 @@ def run_once():
         logger.info(f'💰 {SYMBOL}: ${price:.4f} | signal={action} | position={current_position} | settings={format_runtime_summary()}')
 
         status = ''
+        if dashboard_close_executed:
+            action = 'HOLD'
+            status = 'CLOSED BY DASHBOARD ✅'
+            reason = 'Dashboard close request executed'
+            confidence = 0
         cooldown_remaining = get_same_side_cooldown(action)
         if cooldown_remaining > 0 and current_position is None:
             mins = cooldown_remaining // 60
@@ -875,7 +955,8 @@ def run_once():
         performance = summarize_performance(closed_trades)
 
         latest_position = detect_position()
-        process_manual_close_detection(latest_position)
+        state['prev_position'] = latest_position
+        save_state()
         cfg = fetch_dashboard_config()
         queued_settings = None
         if latest_position:
