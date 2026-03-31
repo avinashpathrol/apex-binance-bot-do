@@ -1029,8 +1029,9 @@ def check_sl_trail(position: str, price: float) -> tuple[bool, str]:
         # Once trail activates, worst case is breakeven (entry price)
         # Trail follows best price by 1.5x ATR
         trail_stop = best - sl_dist if is_long else best + sl_dist
-        # Breakeven floor: trail stop can never go below entry for LONG, above entry for SHORT
-        trail_stop = max(trail_stop, entry) if is_long else min(trail_stop, entry)
+        # Fee-covered breakeven floor: 0.2% covers open + close taker fees
+        fee_floor = entry * 1.002 if is_long else entry * 0.998
+        trail_stop = max(trail_stop, fee_floor) if is_long else min(trail_stop, fee_floor)
         if is_long and price <= trail_stop:
             locked = trail_stop - entry
             return True, f'📐 Trailing stop hit | entry={entry:.4f} trail_stop={trail_stop:.4f} price={price:.4f} | locked={locked:+.4f}'
