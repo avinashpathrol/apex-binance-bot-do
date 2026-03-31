@@ -1270,7 +1270,7 @@ def run_once():
                 'remaining_seconds': get_same_side_cooldown(state.get('cooldown_side') or ''),
                 'minutes': state.get('cooldown_minutes', MANUAL_REENTRY_COOLDOWN_MIN),
             },
-            'ai_analysis': last_ai_analysis or None,
+            'ai_analysis': last_ai_analysis if last_ai_analysis.get('verdict') else None,
             'trail': {
                 'entry_price': state.get('trail_entry_price'),
                 'best_price': state.get('trail_best_price'),
