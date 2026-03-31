@@ -1100,6 +1100,16 @@ def run_once():
             action = 'HOLD'
             status = f'SKIPPED — sideways + confidence {confidence}% < 80%'
 
+        # AI CHOPPY filter — block new entries when AI sees choppy/indecisive market
+        if current_position is None and action in ('LONG', 'SHORT') and last_ai_analysis:
+            ai_verdict = (last_ai_analysis.get('verdict') or '').upper()
+            if ai_verdict == 'CHOPPY':
+                ai_strength = float(last_ai_analysis.get('strength') or 0)
+                logger.info(f'🤖 AI CHOPPY verdict (strength {ai_strength}/10) — blocking {action} entry')
+                send_telegram(f'🤖 <b>APEX — AI Blocked Entry</b>\n\nAI sees CHOPPY market (strength {ai_strength}/10)\nBot wanted to open {action} — skipping to avoid whipsaw.\n💰 Price: ${price:.4f}')
+                action = 'HOLD'
+                status = f'AI BLOCKED — CHOPPY market (strength {ai_strength}/10)'
+
         bot_paused = cfg.get('bot_paused', False)
         if bot_paused:
             logger.info('⏸️ Bot is paused — SL/trail still active, new entries disabled')
