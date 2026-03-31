@@ -811,7 +811,9 @@ def close_long(price: float, confidence: int, reason: str) -> bool:
         pnl_line = ''
         if buy_price:
             pnl = (price - buy_price) * quantity
-            pnl_line = f'\n✅ Est P&amp;L: {pnl:+.4f} USDT'
+            fee = (buy_price + price) * quantity * 0.001  # 0.1% each side
+            net = pnl - fee
+            pnl_line = f'\n✅ Gross P&amp;L: {pnl:+.4f} USDT\n💸 Fees: -{fee:.4f} USDT\n🏦 Net P&amp;L: {net:+.4f} USDT'
         send_telegram(f'🔴 <b>APEX — LONG CLOSED</b>\n\n💰 Price: ${price:,.4f}\n🪙 Quantity: {quantity:.4f} SOL\n🎯 Confidence: {confidence}%\n📉 Signals: {reason}{pnl_line}')
         return True
     except Exception as e:
@@ -875,7 +877,9 @@ def close_short(price: float, confidence: int, reason: str) -> bool:
         pnl_line = ''
         if sell_price:
             pnl = (sell_price - price) * quantity
-            pnl_line = f'\n✅ Est P&amp;L: {pnl:+.4f} USDT'
+            fee = (sell_price + price) * quantity * 0.001  # 0.1% each side
+            net = pnl - fee
+            pnl_line = f'\n✅ Gross P&amp;L: {pnl:+.4f} USDT\n💸 Fees: -{fee:.4f} USDT\n🏦 Net P&amp;L: {net:+.4f} USDT'
         send_telegram(f'🟢 <b>APEX — SHORT CLOSED</b>\n\n💰 Close: ${price:,.4f}\n🪙 Quantity: {quantity:.4f} SOL\n🎯 Confidence: {confidence}%\n📈 Signals: {reason}{pnl_line}')
         return remaining < 0.01
     except Exception as e:
