@@ -1322,8 +1322,16 @@ def main():
         except Exception as e:
             logger.error(f'Main loop error: {e}', exc_info=True)
             alert_error(f'Main loop crashed: {e}')
-        logger.info(f'⏳ Sleeping {CHECK_INTERVAL}s...')
-        time.sleep(CHECK_INTERVAL)
+        logger.info(f'⏳ Sleeping {CHECK_INTERVAL}s (polling for close request every 5s)...')
+        for _ in range(CHECK_INTERVAL // 5):
+            time.sleep(5)
+            try:
+                quick_cfg = fetch_dashboard_config()
+                if quick_cfg.get('close_requested'):
+                    logger.info('⚡ Close request detected mid-sleep — waking up immediately')
+                    break
+            except Exception:
+                pass
 
 
 if __name__ == '__main__':
