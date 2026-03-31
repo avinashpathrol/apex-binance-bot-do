@@ -102,6 +102,7 @@ state = {
     'trail_best_price': None,
     'trail_atr': None,
     'flip_pending': None,   # 'LONG' or 'SHORT' — open this side next run after a flip close
+    'close_log': [],        # list of {ts_iso, reason} for every bot-initiated close
 }
 
 
@@ -310,6 +311,29 @@ def get_last_trade_price(side: str) -> Optional[float]:
     except Exception as e:
         logger.warning(f'get_last_trade_price failed: {e}')
     return None
+
+
+def merge_close_reasons(trades: list) -> list:
+    """Match close_log entries to SELL trades by nearest timestamp (within 30s)."""
+    log = state.get('close_log') or []
+    if not log:
+        return trades
+    from datetime import datetime
+    def parse_ts(s):
+        try:
+            return datetime.fromisoformat(s.replace('Z', '+00:00')).timestamp()
+        except Exception:
+            return 0
+    log_entries = [(parse_ts(e['ts']), e['reason']) for e in log]
+    result = []
+    for t in trades:
+        if t.get('action') == 'SELL':
+            t_ts = parse_ts(t.get('time', ''))
+            best = min(log_entries, key=lambda e: abs(e[0] - t_ts), default=None)
+            if best and abs(best[0] - t_ts) <= 30:
+                t = {**t, 'reason': best[1]}
+        result.append(t)
+    return result
 
 
 def get_trade_history() -> list:
@@ -740,6 +764,14 @@ def open_long(price: float, confidence: int, reason: str) -> bool:
         return False
 
 
+def log_close_reason(reason: str) -> None:
+    """Append a close reason with current timestamp to state close_log (keep last 50)."""
+    entry = {'ts': now_utc_iso(), 'reason': reason}
+    log = state.get('close_log') or []
+    log.append(entry)
+    state['close_log'] = log[-50:]
+
+
 def close_long(price: float, confidence: int, reason: str) -> bool:
     try:
         step = get_step_size()
@@ -749,6 +781,7 @@ def close_long(price: float, confidence: int, reason: str) -> bool:
             logger.info('No SOL to sell — long already closed')
             return False
         buy_price = get_last_trade_price('BUY')
+        log_close_reason(reason)
         resp = margin_order('SELL', quantity, 'AUTO_REPAY')
         mark_bot_close('LONG')
         logger.info(f'✅ LONG CLOSE: sold {quantity:.4f} SOL @ ${price:.4f} | id={resp.get("orderId")}')
@@ -805,6 +838,7 @@ def close_short(price: float, confidence: int, reason: str) -> bool:
             cleanup_orphan_short_borrow()
             return False
         sell_price = get_last_trade_price('SELL')
+        log_close_reason(reason)
         quantity = round_step(borrowed_total * SHORT_CLOSE_BUFFER, step)
         if quantity < borrowed_total:
             quantity = round_step(borrowed_total + step, step)
@@ -1186,7 +1220,7 @@ def run_once():
         if GROQ_API_KEY and run_count % AI_ANALYSIS_INTERVAL == 0:
             last_ai_analysis = fetch_ai_analysis(price, current_position, decision)
 
-        trade_history = get_trade_history()
+        trade_history = merge_close_reasons(get_trade_history())
         closed_trades = sorted(build_closed_trades_from_history(trade_history) + load_manual_closed_trades(), key=lambda x: x.get('closed_at') or '')
         performance = summarize_performance(closed_trades)
 
