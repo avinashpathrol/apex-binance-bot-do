@@ -591,7 +591,7 @@ def fetch_dashboard_config() -> dict:
         cfg = resp.json()
         if not isinstance(cfg, dict):
             return default
-        amt = safe_float(cfg.get('trade_amount_usdt'), default['trade_amount_usdt'])
+        amt = safe_float(cfg.get('trade_amount_usdt') or cfg.get('trade_amount'), default['trade_amount_usdt'])
         lev = safe_float(cfg.get('leverage'), default['leverage'])
         cool = safe_int(cfg.get('manual_reentry_cooldown_minutes'), default['manual_reentry_cooldown_minutes'])
         if lev not in ALLOWED_LEVERAGES:
