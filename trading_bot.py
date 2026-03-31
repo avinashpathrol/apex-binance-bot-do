@@ -611,6 +611,7 @@ def fetch_dashboard_config() -> dict:
             'close_requested': bool(cfg.get('close_requested', False)),
             'close_requested_at': cfg.get('close_requested_at'),
             'bot_paused': bool(cfg.get('bot_paused', False)),
+            'force_trail': bool(cfg.get('force_trail', False)),
         }
     except Exception as e:
         logger.warning(f'Failed reading dashboard config: {e}')
@@ -670,6 +671,24 @@ def clear_close_request() -> None:
         logger.info('✅ Dashboard close request cleared from bot_config.json')
     except Exception as e:
         logger.warning(f'clear_close_request failed: {e}')
+
+
+def clear_force_trail() -> None:
+    try:
+        url = f'https://api.github.com/repos/{DASHBOARD_REPO}/contents/{BOT_CONFIG_FILE}'
+        headers = {'Authorization': f'token {GH_TOKEN}', 'Accept': 'application/vnd.github+json'}
+        r = requests.get(url, headers=headers, timeout=10)
+        if not r.ok:
+            return
+        j = r.json()
+        current_cfg = json.loads(base64.b64decode(j['content'].replace('\n', '')).decode())
+        current_cfg['force_trail'] = False
+        content = base64.b64encode(json.dumps(current_cfg, indent=2).encode()).decode()
+        payload = {'message': 'bot: clear force trail flag', 'content': content, 'sha': j.get('sha')}
+        requests.put(url, headers=headers, json=payload, timeout=15)
+        logger.info('✅ force_trail flag cleared from bot_config.json')
+    except Exception as e:
+        logger.warning(f'clear_force_trail failed: {e}')
 
 
 def process_manual_close_detection(current_position: Optional[str]) -> None:
@@ -1087,6 +1106,28 @@ def run_once():
                 logger.info(f'⚠️ Dashboard close request ignored: age={age:.0f}s, position={current_position}')
             clear_close_request()
 
+        # ── Force trail activation ──
+        if cfg.get('force_trail') and current_position and state.get('trail_entry_price') and state.get('trail_atr'):
+            entry_p = safe_float(state['trail_entry_price'])
+            atr_p   = safe_float(state['trail_atr'])
+            # Move best_price to current price (or keep it if already higher/lower for LONG/SHORT)
+            if current_position == 'LONG':
+                new_best = max(price, safe_float(state.get('trail_best_price', 0), 0))
+                # Ensure activation threshold is met by nudging best if needed
+                if new_best - entry_p < atr_p * TRAIL_ACTIVATE_ATR:
+                    new_best = entry_p + atr_p * TRAIL_ACTIVATE_ATR + 0.0001
+            else:
+                new_best = min(price, safe_float(state.get('trail_best_price', 999999), 999999))
+                if entry_p - new_best < atr_p * TRAIL_ACTIVATE_ATR:
+                    new_best = entry_p - atr_p * TRAIL_ACTIVATE_ATR - 0.0001
+            state['trail_best_price'] = new_best
+            save_state()
+            trail_stop = new_best - atr_p * TRAIL_DISTANCE_ATR if current_position == 'LONG' else new_best + atr_p * TRAIL_DISTANCE_ATR
+            logger.info(f'🔒 Force trail activated via dashboard | position={current_position} | best={new_best:.4f} | trail_stop={trail_stop:.4f}')
+            send_telegram(f'🔒 <b>APEX — Force Trail Activated</b>\n\nTrail locked in at ${new_best:,.4f}\nTrail stop: ${trail_stop:,.4f}')
+        if cfg.get('force_trail'):
+            clear_force_trail()
+
         decision = get_decision(df, price)
         action = decision['action']
         confidence = decision['confidence']
@@ -1361,6 +1402,9 @@ def main():
                 quick_cfg = fetch_dashboard_config()
                 if quick_cfg.get('close_requested'):
                     logger.info('⚡ Close request detected mid-sleep — waking up immediately')
+                    break
+                if quick_cfg.get('force_trail'):
+                    logger.info('⚡ Force trail request detected mid-sleep — waking up immediately')
                     break
             except Exception:
                 pass
