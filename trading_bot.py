@@ -849,7 +849,7 @@ def push_dashboard_data(data: dict) -> None:
         logger.warning(f'Dashboard error: {e}')
 
 
-AI_ANALYSIS_INTERVAL = 5  # runs between each AI analysis call
+AI_ANALYSIS_INTERVAL = 1  # run AI analysis every cycle
 
 
 def fetch_ai_analysis(price: float, position: Optional[str], decision: dict) -> dict:
@@ -1182,7 +1182,7 @@ def run_once():
         except Exception as e:
             logger.warning(f'Balance fetch failed: {e}')
 
-        # ── AI analysis every 5 runs ──
+        # ── AI analysis every run ──
         if GROQ_API_KEY and run_count % AI_ANALYSIS_INTERVAL == 0:
             last_ai_analysis = fetch_ai_analysis(price, latest_position, decision)
 
