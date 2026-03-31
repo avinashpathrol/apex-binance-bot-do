@@ -1190,7 +1190,20 @@ def run_once():
                 else:
                     status = 'LONG CLOSE FAILED ❌'
             else:
-                status = f'HOLDING LONG — {reason}'
+                # ── Signal-weakening exit: take profit if signals fading and we're above fee threshold ──
+                bull_count = len(decision['bullish_signals'])
+                entry_p = safe_float(state.get('trail_entry_price'), None)
+                if entry_p and bull_count < MIN_SIGNALS and action != 'SHORT':
+                    profit_pct = (price - entry_p) / entry_p * 100
+                    if profit_pct > 0.25:
+                        close_reason = f'📉 Signal fade exit | bullish signals dropped to {bull_count}/{MIN_SIGNALS} | profit={profit_pct:.2f}% (above fee threshold)'
+                        logger.info(close_reason)
+                        closed = close_long(price, confidence, close_reason)
+                        status = 'LONG CLOSED — signals faded, profit secured ✅' if closed else 'LONG CLOSE FAILED ❌'
+                    else:
+                        status = f'HOLDING LONG — signals weak ({bull_count}) but profit {profit_pct:.2f}% below threshold'
+                else:
+                    status = f'HOLDING LONG — {reason}'
         elif current_position == 'SHORT':
             if action == 'LONG':
                 closed = close_short(price, confidence, 'Signal flipped to LONG — waiting one cycle before re-entry')
@@ -1202,7 +1215,20 @@ def run_once():
                 else:
                     status = 'SHORT CLOSE FAILED ❌'
             else:
-                status = f'HOLDING SHORT — {reason}'
+                # ── Signal-weakening exit: take profit if signals fading and we're above fee threshold ──
+                bear_count = len(decision['bearish_signals'])
+                entry_p = safe_float(state.get('trail_entry_price'), None)
+                if entry_p and bear_count < MIN_SIGNALS and action != 'LONG':
+                    profit_pct = (entry_p - price) / entry_p * 100
+                    if profit_pct > 0.25:
+                        close_reason = f'📉 Signal fade exit | bearish signals dropped to {bear_count}/{MIN_SIGNALS} | profit={profit_pct:.2f}% (above fee threshold)'
+                        logger.info(close_reason)
+                        closed = close_short(price, confidence, close_reason)
+                        status = 'SHORT CLOSED — signals faded, profit secured ✅' if closed else 'SHORT CLOSE FAILED ❌'
+                    else:
+                        status = f'HOLDING SHORT — signals weak ({bear_count}) but profit {profit_pct:.2f}% below threshold'
+                else:
+                    status = f'HOLDING SHORT — {reason}'
 
         usdt_balance = 0.0
         sol_balance = 0.0
