@@ -721,9 +721,8 @@ def check_margin_safety(current_position: Optional[str]) -> tuple[bool, float]:
             elif level <= (last_margin_alert_level - LOW_MARGIN_ALERT_DELTA):
                 should_alert = True
             if should_alert:
-                msg = f'⚠️ MARGIN LEVEL LOW: {level:.2f} — existing {current_position} position still being managed, but no new trades will be opened until margin improves.' if current_position else f'⚠️ MARGIN LEVEL LOW: {level:.2f} — pausing new entries to avoid liquidation!'
+                msg = f'⚠️ Margin level low: {level:.2f} — existing {current_position} position managed, no new entries.' if current_position else f'⚠️ Margin level low: {level:.2f} — pausing new entries.'
                 logger.warning(msg)
-                send_telegram(msg)
                 last_margin_alert_ts = now_ts
                 last_margin_alert_level = level
             else:
