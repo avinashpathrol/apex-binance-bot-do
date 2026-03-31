@@ -1184,7 +1184,7 @@ def run_once():
 
         # ── AI analysis every run ──
         if GROQ_API_KEY and run_count % AI_ANALYSIS_INTERVAL == 0:
-            last_ai_analysis = fetch_ai_analysis(price, latest_position, decision)
+            last_ai_analysis = fetch_ai_analysis(price, current_position, decision)
 
         trade_history = get_trade_history()
         closed_trades = sorted(build_closed_trades_from_history(trade_history) + load_manual_closed_trades(), key=lambda x: x.get('closed_at') or '')
