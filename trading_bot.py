@@ -63,6 +63,7 @@ DASHBOARD_REPO = os.environ.get('DASHBOARD_REPO', 'avinashpathrol/apex-dashboard
 MIN_SIGNALS = int(os.environ.get('MIN_SIGNALS', '3'))
 CHECK_INTERVAL = int(os.environ.get('CHECK_INTERVAL', '60'))
 BINANCE_BASE_URL = 'https://api.binance.com'
+GROQ_API_KEY = os.environ.get('GROK', '').strip()
 MANUAL_TRADES_FILE = os.environ.get('MANUAL_TRADES_FILE', 'manual_closed_trades.json').strip()
 BOT_CONFIG_FILE = os.environ.get('BOT_CONFIG_FILE', 'bot_config.json').strip()
 BOT_STATE_FILE = os.environ.get('BOT_STATE_FILE', 'bot_state.json').strip()
@@ -77,6 +78,7 @@ ALLOWED_LEVERAGES = {3.0, 4.0, 5.0}
 run_count = 0
 last_hold_alert = 0
 current_position = None
+last_ai_analysis = {}
 last_margin_alert_ts = 0.0
 last_margin_alert_level = None
 
@@ -96,6 +98,10 @@ state = {
     'last_bot_closed_side': None,
     'last_bot_closed_ts': 0,
     'last_manual_close_ts': 0,
+    'trail_entry_price': None,
+    'trail_best_price': None,
+    'trail_atr': None,
+    'flip_pending': None,   # 'LONG' or 'SHORT' — open this side next run after a flip close
 }
 
 
@@ -575,6 +581,7 @@ def fetch_dashboard_config() -> dict:
             'updated_at': cfg.get('updated_at'),
             'close_requested': bool(cfg.get('close_requested', False)),
             'close_requested_at': cfg.get('close_requested_at'),
+            'bot_paused': bool(cfg.get('bot_paused', False)),
         }
     except Exception as e:
         logger.warning(f'Failed reading dashboard config: {e}')
@@ -720,8 +727,12 @@ def open_long(price: float, confidence: int, reason: str) -> bool:
         if quantity < 0.01:
             return False
         resp = margin_order('BUY', quantity, 'NO_SIDE_EFFECT')
+        init_trail(price)
         logger.info(f'✅ LONG OPEN: {quantity:.4f} SOL @ ${price:.4f} | settings={format_runtime_summary()} | id={resp.get("orderId")}')
-        send_telegram(f'🟢 <b>APEX — LONG OPENED ({leverage}x)</b>\n\n📌 Asset: SOL/USDT\n💰 Price: ${price:,.4f}\n💵 Collateral: ${collateral_usdt:.2f}\n🔥 Effective: ${gross_usdt:.2f}\n🪙 Quantity: {quantity:.4f} SOL\n🏦 Borrowed: ${borrow_amt:.2f} USDT\n🎯 Confidence: {confidence}%\n📈 Signals: {reason}')
+        atr = safe_float(state.get('trail_atr'), 0)
+        sl = price - atr * 1.5
+        trail_activates = price + atr
+        send_telegram(f'🟢 <b>APEX — LONG OPENED ({leverage}x)</b>\n\n📌 Asset: SOL/USDT\n💰 Price: ${price:,.4f}\n💵 Collateral: ${collateral_usdt:.2f}\n🔥 Effective: ${gross_usdt:.2f}\n🪙 Quantity: {quantity:.4f} SOL\n🏦 Borrowed: ${borrow_amt:.2f} USDT\n🎯 Confidence: {confidence}%\n🛑 Hard SL: ${sl:.4f}\n📐 Trail activates at: ${trail_activates:.4f}\n📈 Signals: {reason}')
         return True
     except Exception as e:
         logger.error(f'open_long failed: {e}')
@@ -771,8 +782,12 @@ def open_short(price: float, confidence: int, reason: str) -> bool:
             return False
         time.sleep(1)
         resp = margin_order('SELL', borrow_sol, 'NO_SIDE_EFFECT')
+        init_trail(price)
         logger.info(f'✅ SHORT OPEN: sold {borrow_sol:.4f} SOL @ ${price:.4f} | settings={format_runtime_summary()} | id={resp.get("orderId")}')
-        send_telegram(f'🔴 <b>APEX — SHORT OPENED ({leverage}x)</b>\n\n📌 Asset: SOL/USDT\n💰 Price: ${price:,.4f}\n💵 Collateral: ${collateral_usdt:.2f}\n🔥 Effective: ${gross_usdt:.2f}\n🪙 Quantity: {borrow_sol:.4f} SOL\n🏦 Borrowed: {borrow_sol:.4f} SOL\n🎯 Confidence: {confidence}%\n📉 Signals: {reason}')
+        atr = safe_float(state.get('trail_atr'), 0)
+        sl = price + atr * 1.5
+        trail_activates = price - atr
+        send_telegram(f'🔴 <b>APEX — SHORT OPENED ({leverage}x)</b>\n\n📌 Asset: SOL/USDT\n💰 Price: ${price:,.4f}\n💵 Collateral: ${collateral_usdt:.2f}\n🔥 Effective: ${gross_usdt:.2f}\n🪙 Quantity: {borrow_sol:.4f} SOL\n🏦 Borrowed: {borrow_sol:.4f} SOL\n🎯 Confidence: {confidence}%\n🛑 Hard SL: ${sl:.4f}\n📐 Trail activates at: ${trail_activates:.4f}\n📉 Signals: {reason}')
         return True
     except Exception as e:
         logger.error(f'open_short failed: {e}')
@@ -834,8 +849,170 @@ def push_dashboard_data(data: dict) -> None:
         logger.warning(f'Dashboard error: {e}')
 
 
+AI_ANALYSIS_INTERVAL = 5  # runs between each AI analysis call
+
+
+def fetch_ai_analysis(price: float, position: Optional[str], decision: dict) -> dict:
+    if not GROQ_API_KEY:
+        return {}
+    try:
+        from groq import Groq
+        client = Groq(api_key=GROQ_API_KEY)
+
+        timeframes = {'5m': 60, '15m': 60, '30m': 48, '1h': 48}
+        summaries = {}
+        for interval, limit in timeframes.items():
+            klines = binance_public('/api/v3/klines', {'symbol': SYMBOL, 'interval': interval, 'limit': limit})
+            closes = [float(k[4]) for k in klines]
+            highs  = [float(k[2]) for k in klines]
+            lows   = [float(k[3]) for k in klines]
+            vols   = [float(k[5]) for k in klines]
+            atr    = sum(h - l for h, l in zip(highs[-14:], lows[-14:])) / 14
+            chg    = ((closes[-1] - closes[0]) / closes[0]) * 100
+            high24 = max(highs)
+            low24  = min(lows)
+            summaries[interval] = {
+                'close': round(closes[-1], 4),
+                'open':  round(closes[0], 4),
+                'high':  round(high24, 4),
+                'low':   round(low24, 4),
+                'change_pct': round(chg, 2),
+                'atr':   round(atr, 4),
+                'avg_vol': round(sum(vols) / len(vols), 2),
+                'last_vol': round(vols[-1], 2),
+            }
+
+        prompt = f"""You are a professional crypto trading analyst. Analyze SOL/USDT cross-margin trading data and give a concise, actionable market analysis.
+
+Current price: ${price:.4f}
+Current bot position: {position or 'FLAT'}
+Bot signal: {decision.get('action','HOLD')} (confidence {decision.get('confidence',0)}%)
+Bullish signals: {', '.join(decision.get('bullish_signals', [])) or 'none'}
+Bearish signals: {', '.join(decision.get('bearish_signals', [])) or 'none'}
+
+Multi-timeframe OHLC summary:
+5m:  open={summaries['5m']['open']} close={summaries['5m']['close']} high={summaries['5m']['high']} low={summaries['5m']['low']} chg={summaries['5m']['change_pct']}% ATR={summaries['5m']['atr']}
+15m: open={summaries['15m']['open']} close={summaries['15m']['close']} high={summaries['15m']['high']} low={summaries['15m']['low']} chg={summaries['15m']['change_pct']}% ATR={summaries['15m']['atr']}
+30m: open={summaries['30m']['open']} close={summaries['30m']['close']} high={summaries['30m']['high']} low={summaries['30m']['low']} chg={summaries['30m']['change_pct']}% ATR={summaries['30m']['atr']}
+1h:  open={summaries['1h']['open']} close={summaries['1h']['close']} high={summaries['1h']['high']} low={summaries['1h']['low']} chg={summaries['1h']['change_pct']}% ATR={summaries['1h']['atr']}
+
+Respond in this exact JSON format, no extra text:
+{{
+  "verdict": "BULLISH" | "BEARISH" | "NEUTRAL" | "CHOPPY",
+  "strength": 1-10,
+  "summary": "2-3 sentence plain English summary of what the market is doing across timeframes",
+  "5m": "one sentence analysis",
+  "15m": "one sentence analysis",
+  "30m": "one sentence analysis",
+  "1h": "one sentence analysis",
+  "key_level_support": price or null,
+  "key_level_resistance": price or null,
+  "recommendation": "one sentence — what a trader should watch for",
+  "risk_warning": "one sentence or null"
+}}"""
+
+        resp = client.chat.completions.create(
+            model='llama-3.3-70b-versatile',
+            messages=[{'role': 'user', 'content': prompt}],
+            temperature=0.3,
+            max_tokens=600,
+        )
+        raw = resp.choices[0].message.content.strip()
+        # Strip markdown code fences if present
+        if raw.startswith('```'):
+            raw = raw.split('```')[1]
+            if raw.startswith('json'):
+                raw = raw[4:]
+        analysis = json.loads(raw.strip())
+        analysis['generated_at'] = now_utc_iso()
+        analysis['timeframes'] = summaries
+        logger.info(f'🤖 AI analysis: {analysis.get("verdict")} strength={analysis.get("strength")}')
+        return analysis
+    except Exception as e:
+        logger.warning(f'AI analysis failed: {e}')
+        return {}
+
+
+def get_atr(period: int = 14) -> float:
+    try:
+        klines = binance_public('/api/v3/klines', {'symbol': SYMBOL, 'interval': '15m', 'limit': period + 1})
+        ranges = [float(k[2]) - float(k[3]) for k in klines]
+        return sum(ranges[-period:]) / period
+    except Exception as e:
+        logger.warning(f'get_atr failed: {e}')
+        return 0.0
+
+
+def init_trail(entry_price: float) -> None:
+    atr = get_atr()
+    state['trail_entry_price'] = entry_price
+    state['trail_best_price'] = entry_price
+    state['trail_atr'] = atr
+    save_state()
+    logger.info(f'📐 Trail initialised | entry={entry_price:.4f} | ATR={atr:.4f} | SL={entry_price - atr*1.5:.4f} (LONG) or {entry_price + atr*1.5:.4f} (SHORT)')
+
+
+def clear_trail() -> None:
+    state['trail_entry_price'] = None
+    state['trail_best_price'] = None
+    state['trail_atr'] = None
+    save_state()
+
+
+def check_sl_trail(position: str, price: float) -> tuple[bool, str]:
+    """
+    Returns (should_close, reason).
+    Checks hard SL first, then trailing stop.
+    Trailing stop activates once price moves 1x ATR in profit direction.
+    Trails by 1.5x ATR from best price seen.
+    """
+    entry = safe_float(state.get('trail_entry_price'), None)
+    best  = safe_float(state.get('trail_best_price'), None)
+    atr   = safe_float(state.get('trail_atr'), None)
+
+    if entry is None or atr is None or atr <= 0:
+        return False, ''
+
+    is_long = position == 'LONG'
+    sl_dist = atr * 1.5
+
+    # ── Hard stop loss ──
+    sl = entry - sl_dist if is_long else entry + sl_dist
+    if is_long and price <= sl:
+        return True, f'🛑 Hard SL hit | entry={entry:.4f} sl={sl:.4f} price={price:.4f} | ATR={atr:.4f}'
+    if not is_long and price >= sl:
+        return True, f'🛑 Hard SL hit | entry={entry:.4f} sl={sl:.4f} price={price:.4f} | ATR={atr:.4f}'
+
+    # ── Update best price ──
+    if is_long:
+        if price > best:
+            state['trail_best_price'] = price
+            best = price
+            save_state()
+    else:
+        if price < best:
+            state['trail_best_price'] = price
+            best = price
+            save_state()
+
+    # ── Trailing stop — only activates after 1x ATR profit ──
+    profit_dist = (best - entry) if is_long else (entry - best)
+    if profit_dist < atr:
+        logger.info(f'📐 Trail not yet active | profit_dist={profit_dist:.4f} < ATR={atr:.4f} | best={best:.4f}')
+        return False, ''
+
+    trail_stop = best - sl_dist if is_long else best + sl_dist
+    if is_long and price <= trail_stop:
+        return True, f'📐 Trailing stop hit | best={best:.4f} trail_stop={trail_stop:.4f} price={price:.4f}'
+    if not is_long and price >= trail_stop:
+        return True, f'📐 Trailing stop hit | best={best:.4f} trail_stop={trail_stop:.4f} price={price:.4f}'
+
+    logger.info(f'📐 Trail active | best={best:.4f} trail_stop={trail_stop:.4f} price={price:.4f} | {"above" if is_long else "below"} stop')
+    return False, ''
+
+
 def run_once():
-    global run_count, last_hold_alert, current_position
+    global run_count, last_hold_alert, current_position, last_ai_analysis
     run_count += 1
     logger.info('=' * 60)
     logger.info(f'  APEX BINANCE MARGIN SOL — Run #{run_count}')
@@ -879,11 +1056,35 @@ def run_once():
         trend = get_trend_filter(SYMBOL)
         logger.info(f'💰 {SYMBOL}: ${price:.4f} | signal={action} | position={current_position} | settings={format_runtime_summary()}')
 
+        # ── Init trail state when a new position is detected ──
+        if current_position and state.get('trail_entry_price') is None:
+            entry_trade = get_last_trade_price('BUY' if current_position == 'LONG' else 'SELL')
+            init_trail(entry_trade or price)
+
+        # ── Clear trail when flat ──
+        if not current_position and state.get('trail_entry_price') is not None:
+            clear_trail()
+
+        # ── Check SL / trailing stop BEFORE signal logic ──
+        sl_trail_close = False
+        if current_position and not dashboard_close_executed:
+            sl_hit, sl_reason = check_sl_trail(current_position, price)
+            if sl_hit:
+                logger.info(sl_reason)
+                send_telegram(f'🛑 <b>APEX — SL/Trail Stop</b>\n\n{sl_reason}\n\nClosing {current_position} @ ${price:,.4f}')
+                if current_position == 'LONG':
+                    close_long(price, confidence, sl_reason)
+                else:
+                    close_short(price, confidence, sl_reason)
+                sl_trail_close = True
+                clear_trail()
+                current_position = detect_position()
+
         status = ''
-        if dashboard_close_executed:
+        if dashboard_close_executed or sl_trail_close:
             action = 'HOLD'
-            status = 'CLOSED BY DASHBOARD ✅'
-            reason = 'Dashboard close request executed'
+            status = 'CLOSED BY DASHBOARD ✅' if dashboard_close_executed else 'SL/TRAIL STOP HIT ✅'
+            reason = 'Dashboard close request executed' if dashboard_close_executed else sl_reason
             confidence = 0
         cooldown_remaining = get_same_side_cooldown(action)
         if cooldown_remaining > 0 and current_position is None:
@@ -899,8 +1100,31 @@ def run_once():
             action = 'HOLD'
             status = f'SKIPPED — sideways + confidence {confidence}% < 80%'
 
-        if current_position is None:
-            if action in ('LONG', 'SHORT') and not can_open_new_positions:
+        bot_paused = cfg.get('bot_paused', False)
+        if bot_paused:
+            logger.info('⏸️ Bot is paused — SL/trail still active, new entries disabled')
+            if current_position is None:
+                status = status or '⏸️ PAUSED — new entries disabled via dashboard'
+
+        if current_position is None and not bot_paused:
+            flip = state.get('flip_pending')
+            if flip:
+                state['flip_pending'] = None
+                save_state()
+                if action != flip:
+                    logger.info(f'🔄 Flip cooldown: signal changed to {action} (wanted {flip}) — skipping flip entry, good call')
+                    send_telegram(f'🔄 <b>APEX — Flip Skipped</b>\n\nWanted to open {flip} after cooldown but signal changed to {action}.\nAvoided a bad entry.')
+                    status = f'FLIP SKIPPED — signal changed {flip}→{action} during cooldown'
+                elif not can_open_new_positions:
+                    status = f'FLIP BLOCKED — low margin {margin_level:.2f}'
+                elif risk != 'HIGH':
+                    if flip == 'LONG':
+                        status = 'FLIPPED →LONG ✅' if open_long(price, confidence, reason) else 'FLIP LONG FAILED ❌'
+                    else:
+                        status = 'FLIPPED →SHORT ✅' if open_short(price, confidence, reason) else 'FLIP SHORT FAILED ❌'
+                else:
+                    status = f'FLIP BLOCKED — risk={risk}'
+            elif action in ('LONG', 'SHORT') and not can_open_new_positions:
                 status = f'BLOCKED — low margin level {margin_level:.2f}, no new entries'
             elif action == 'LONG' and risk != 'HIGH':
                 status = 'LONG OPENED ✅' if open_long(price, confidence, reason) else 'LONG FAILED ❌'
@@ -914,26 +1138,24 @@ def run_once():
                     last_hold_alert = now_ts
         elif current_position == 'LONG':
             if action == 'SHORT':
-                closed = close_long(price, confidence, 'Flipping to SHORT — ' + reason)
+                closed = close_long(price, confidence, 'Signal flipped to SHORT — waiting one cycle before re-entry')
                 if closed:
-                    time.sleep(3)
-                    if can_open_new_positions:
-                        status = 'FLIPPED LONG→SHORT ✅' if open_short(price, confidence, reason) else 'CLOSED LONG, SHORT FAILED'
-                    else:
-                        status = f'CLOSED LONG ONLY — low margin {margin_level:.2f} blocked new SHORT'
+                    state['flip_pending'] = 'SHORT'
+                    save_state()
+                    status = 'LONG CLOSED — SHORT queued next run ⏳'
+                    logger.info('🔄 Flip cooldown: LONG closed, SHORT will open next run if signal holds')
                 else:
                     status = 'LONG CLOSE FAILED ❌'
             else:
                 status = f'HOLDING LONG — {reason}'
         elif current_position == 'SHORT':
             if action == 'LONG':
-                closed = close_short(price, confidence, 'Flipping to LONG — ' + reason)
+                closed = close_short(price, confidence, 'Signal flipped to LONG — waiting one cycle before re-entry')
                 if closed:
-                    time.sleep(3)
-                    if can_open_new_positions:
-                        status = 'FLIPPED SHORT→LONG ✅' if open_long(price, confidence, reason) else 'CLOSED SHORT, LONG FAILED'
-                    else:
-                        status = f'CLOSED SHORT ONLY — low margin {margin_level:.2f} blocked new LONG'
+                    state['flip_pending'] = 'LONG'
+                    save_state()
+                    status = 'SHORT CLOSED — LONG queued next run ⏳'
+                    logger.info('🔄 Flip cooldown: SHORT closed, LONG will open next run if signal holds')
                 else:
                     status = 'SHORT CLOSE FAILED ❌'
             else:
@@ -949,6 +1171,10 @@ def run_once():
             margin_level = get_margin_level()
         except Exception as e:
             logger.warning(f'Balance fetch failed: {e}')
+
+        # ── AI analysis every 5 runs ──
+        if GROQ_API_KEY and run_count % AI_ANALYSIS_INTERVAL == 0:
+            last_ai_analysis = fetch_ai_analysis(price, latest_position, decision)
 
         trade_history = get_trade_history()
         closed_trades = sorted(build_closed_trades_from_history(trade_history) + load_manual_closed_trades(), key=lambda x: x.get('closed_at') or '')
@@ -977,6 +1203,8 @@ def run_once():
             'confidence': confidence,
             'risk': risk,
             'status': status,
+            'bot_paused': bot_paused,
+            'flip_pending': state.get('flip_pending'),
             'reason': reason,
             'trend': trend,
             'bullish': decision['bullish_signals'],
@@ -997,6 +1225,18 @@ def run_once():
                 'until': state.get('cooldown_until'),
                 'remaining_seconds': get_same_side_cooldown(state.get('cooldown_side') or ''),
                 'minutes': state.get('cooldown_minutes', MANUAL_REENTRY_COOLDOWN_MIN),
+            },
+            'ai_analysis': last_ai_analysis or None,
+            'trail': {
+                'entry_price': state.get('trail_entry_price'),
+                'best_price': state.get('trail_best_price'),
+                'atr': state.get('trail_atr'),
+                'sl': (state['trail_entry_price'] - state['trail_atr'] * 1.5) if latest_position == 'LONG' and state.get('trail_entry_price') and state.get('trail_atr') else
+                      (state['trail_entry_price'] + state['trail_atr'] * 1.5) if latest_position == 'SHORT' and state.get('trail_entry_price') and state.get('trail_atr') else None,
+                'trail_stop': (state['trail_best_price'] - state['trail_atr'] * 1.5) if latest_position == 'LONG' and state.get('trail_best_price') and state.get('trail_atr') else
+                              (state['trail_best_price'] + state['trail_atr'] * 1.5) if latest_position == 'SHORT' and state.get('trail_best_price') and state.get('trail_atr') else None,
+                'active': state.get('trail_best_price') is not None and state.get('trail_atr') is not None and state.get('trail_entry_price') is not None and
+                          abs((state.get('trail_best_price', 0) - state.get('trail_entry_price', 0))) >= state.get('trail_atr', 999),
             },
         })
         logger.info(f'✅ Run #{run_count} complete | pos={latest_position} | margin={margin_level:.2f} | pnl={performance["net_profit"]:.4f}')
