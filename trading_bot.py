@@ -75,6 +75,11 @@ SHORT_CLOSE_BUFFER = float(os.environ.get('SHORT_CLOSE_BUFFER', '1.005'))
 MANUAL_REENTRY_COOLDOWN_MIN = int(os.environ.get('MANUAL_REENTRY_COOLDOWN_MIN', '10'))
 ALLOWED_LEVERAGES = {3.0, 4.0, 5.0}
 
+# ── Trailing stop tuning ──
+TRAIL_ACTIVATE_ATR  = 1.7   # price must move this many × ATR in profit before trail activates
+TRAIL_DISTANCE_ATR  = 1.4   # trail follows best price, staying this many × ATR behind it
+HARD_SL_ATR         = 1.5   # hard stop loss distance from entry (before trail activates)
+
 run_count = 0
 last_hold_alert = 0
 current_position = None
@@ -754,7 +759,7 @@ def open_long(price: float, confidence: int, reason: str) -> bool:
         init_trail(price)
         logger.info(f'✅ LONG OPEN: {quantity:.4f} SOL @ ${price:.4f} | settings={format_runtime_summary()} | id={resp.get("orderId")}')
         atr = safe_float(state.get('trail_atr'), 0)
-        sl = price - atr * 1.5
+        sl = price - atr * HARD_SL_ATR
         trail_activates = price + atr
         send_telegram(f'🟢 <b>APEX — LONG OPENED ({leverage}x)</b>\n\n📌 Asset: SOL/USDT\n💰 Price: ${price:,.4f}\n💵 Collateral: ${collateral_usdt:.2f}\n🔥 Effective: ${gross_usdt:.2f}\n🪙 Quantity: {quantity:.4f} SOL\n🏦 Borrowed: ${borrow_amt:.2f} USDT\n🎯 Confidence: {confidence}%\n🛑 Hard SL: ${sl:.4f}\n📐 Trail activates at: ${trail_activates:.4f}\n📈 Signals: {reason}')
         return True
@@ -818,7 +823,7 @@ def open_short(price: float, confidence: int, reason: str) -> bool:
         init_trail(price)
         logger.info(f'✅ SHORT OPEN: sold {borrow_sol:.4f} SOL @ ${price:.4f} | settings={format_runtime_summary()} | id={resp.get("orderId")}')
         atr = safe_float(state.get('trail_atr'), 0)
-        sl = price + atr * 1.5
+        sl = price + atr * HARD_SL_ATR
         trail_activates = price - atr
         send_telegram(f'🔴 <b>APEX — SHORT OPENED ({leverage}x)</b>\n\n📌 Asset: SOL/USDT\n💰 Price: ${price:,.4f}\n💵 Collateral: ${collateral_usdt:.2f}\n🔥 Effective: ${gross_usdt:.2f}\n🪙 Quantity: {borrow_sol:.4f} SOL\n🏦 Borrowed: {borrow_sol:.4f} SOL\n🎯 Confidence: {confidence}%\n🛑 Hard SL: ${sl:.4f}\n📐 Trail activates at: ${trail_activates:.4f}\n📉 Signals: {reason}')
         return True
@@ -983,7 +988,7 @@ def init_trail(entry_price: float) -> None:
     state['trail_best_price'] = entry_price
     state['trail_atr'] = atr
     save_state()
-    logger.info(f'📐 Trail initialised | entry={entry_price:.4f} | ATR={atr:.4f} | SL={entry_price - atr*1.5:.4f} (LONG) or {entry_price + atr*1.5:.4f} (SHORT)')
+    logger.info(f'📐 Trail initialised | entry={entry_price:.4f} | ATR={atr:.4f} | SL={entry_price - atr*HARD_SL_ATR:.4f} (LONG) or {entry_price + atr*HARD_SL_ATR:.4f} (SHORT) | activates at {TRAIL_ACTIVATE_ATR}×ATR | trails {TRAIL_DISTANCE_ATR}×ATR')
 
 
 def clear_trail() -> None:
@@ -1007,10 +1012,12 @@ def check_sl_trail(position: str, price: float) -> tuple[bool, str]:
         return False, ''
 
     is_long = position == 'LONG'
-    sl_dist = atr * 1.5
+    hard_sl_dist  = atr * HARD_SL_ATR
+    trail_dist    = atr * TRAIL_DISTANCE_ATR
+    activate_dist = atr * TRAIL_ACTIVATE_ATR
 
     # ── Hard stop loss ──
-    sl = entry - sl_dist if is_long else entry + sl_dist
+    sl = entry - hard_sl_dist if is_long else entry + hard_sl_dist
     if is_long and price <= sl:
         return True, f'🛑 Hard SL hit | entry={entry:.4f} sl={sl:.4f} price={price:.4f} | ATR={atr:.4f}'
     if not is_long and price >= sl:
@@ -1028,19 +1035,19 @@ def check_sl_trail(position: str, price: float) -> tuple[bool, str]:
             best = price
             save_state()
 
-    # ── Trailing stop — activates after 1x ATR profit ──
+    # ── Trailing stop — activates after TRAIL_ACTIVATE_ATR profit ──
     profit_dist = (best - entry) if is_long else (entry - best)
-    if profit_dist < atr:
-        logger.info(f'📐 Trail not yet active | profit_dist={profit_dist:.4f} < ATR={atr:.4f} | best={best:.4f}')
+    if profit_dist < activate_dist:
+        logger.info(f'📐 Trail not yet active | profit_dist={profit_dist:.4f} < activate={activate_dist:.4f} | best={best:.4f}')
         return False, ''
 
-    trail_stop = best - sl_dist if is_long else best + sl_dist
+    trail_stop = best - trail_dist if is_long else best + trail_dist
     if is_long and price <= trail_stop:
         return True, f'📐 Trailing stop hit | best={best:.4f} trail_stop={trail_stop:.4f} price={price:.4f}'
     if not is_long and price >= trail_stop:
         return True, f'📐 Trailing stop hit | best={best:.4f} trail_stop={trail_stop:.4f} price={price:.4f}'
 
-    logger.info(f'📐 Trail active | best={best:.4f} trail_stop={trail_stop:.4f} price={price:.4f}')
+    logger.info(f'📐 Trail active | best={best:.4f} trail_stop={trail_stop:.4f} price={price:.4f} | activate={TRAIL_ACTIVATE_ATR}×ATR dist={TRAIL_DISTANCE_ATR}×ATR')
     return False, ''
 
 
