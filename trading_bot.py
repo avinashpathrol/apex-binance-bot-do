@@ -996,9 +996,8 @@ def clear_trail() -> None:
 def check_sl_trail(position: str, price: float) -> tuple[bool, str]:
     """
     Returns (should_close, reason).
-    - Hard SL: 1.5x ATR from entry (protects against runaway losses)
-    - Once price moves 1x ATR in profit direction, hard SL moves up to entry (breakeven floor)
-    - Trail then follows best price, staying 1.5x ATR behind it
+    Hard SL at 1.5x ATR from entry.
+    Trailing stop activates after 1x ATR profit, trails best price by 1.5x ATR.
     """
     entry = safe_float(state.get('trail_entry_price'), None)
     best  = safe_float(state.get('trail_best_price'), None)
@@ -1009,6 +1008,13 @@ def check_sl_trail(position: str, price: float) -> tuple[bool, str]:
 
     is_long = position == 'LONG'
     sl_dist = atr * 1.5
+
+    # ── Hard stop loss ──
+    sl = entry - sl_dist if is_long else entry + sl_dist
+    if is_long and price <= sl:
+        return True, f'🛑 Hard SL hit | entry={entry:.4f} sl={sl:.4f} price={price:.4f} | ATR={atr:.4f}'
+    if not is_long and price >= sl:
+        return True, f'🛑 Hard SL hit | entry={entry:.4f} sl={sl:.4f} price={price:.4f} | ATR={atr:.4f}'
 
     # ── Update best price ──
     if is_long:
@@ -1022,32 +1028,19 @@ def check_sl_trail(position: str, price: float) -> tuple[bool, str]:
             best = price
             save_state()
 
+    # ── Trailing stop — activates after 1x ATR profit ──
     profit_dist = (best - entry) if is_long else (entry - best)
-    trail_active = profit_dist >= atr
-
-    if trail_active:
-        # Once trail activates, worst case is breakeven (entry price)
-        # Trail follows best price by 1.5x ATR
-        trail_stop = best - sl_dist if is_long else best + sl_dist
-        # Breakeven floor: trail stop never goes below entry (LONG) or above entry (SHORT)
-        # Guarantees no loss on trade principal — fees ($0.80) accepted as cost of letting winners run
-        trail_stop = max(trail_stop, entry) if is_long else min(trail_stop, entry)
-        if is_long and price <= trail_stop:
-            locked = trail_stop - entry
-            return True, f'📐 Trailing stop hit | entry={entry:.4f} trail_stop={trail_stop:.4f} price={price:.4f} | locked={locked:+.4f}'
-        if not is_long and price >= trail_stop:
-            locked = entry - trail_stop
-            return True, f'📐 Trailing stop hit | entry={entry:.4f} trail_stop={trail_stop:.4f} price={price:.4f} | locked={locked:+.4f}'
-        logger.info(f'📐 Trail active | best={best:.4f} trail_stop={trail_stop:.4f} price={price:.4f} | floor=entry')
-    else:
-        # Trail not yet active — use hard SL from entry
-        sl = entry - sl_dist if is_long else entry + sl_dist
-        if is_long and price <= sl:
-            return True, f'🛑 Hard SL hit | entry={entry:.4f} sl={sl:.4f} price={price:.4f} | ATR={atr:.4f}'
-        if not is_long and price >= sl:
-            return True, f'🛑 Hard SL hit | entry={entry:.4f} sl={sl:.4f} price={price:.4f} | ATR={atr:.4f}'
+    if profit_dist < atr:
         logger.info(f'📐 Trail not yet active | profit_dist={profit_dist:.4f} < ATR={atr:.4f} | best={best:.4f}')
+        return False, ''
 
+    trail_stop = best - sl_dist if is_long else best + sl_dist
+    if is_long and price <= trail_stop:
+        return True, f'📐 Trailing stop hit | best={best:.4f} trail_stop={trail_stop:.4f} price={price:.4f}'
+    if not is_long and price >= trail_stop:
+        return True, f'📐 Trailing stop hit | best={best:.4f} trail_stop={trail_stop:.4f} price={price:.4f}'
+
+    logger.info(f'📐 Trail active | best={best:.4f} trail_stop={trail_stop:.4f} price={price:.4f}')
     return False, ''
 
 
