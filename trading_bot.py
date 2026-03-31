@@ -343,7 +343,7 @@ def merge_close_reasons(trades: list) -> list:
 
 def get_trade_history() -> list:
     try:
-        trades = binance_private('GET', '/sapi/v1/margin/myTrades', {'symbol': SYMBOL, 'limit': 100})
+        trades = binance_private('GET', '/sapi/v1/margin/myTrades', {'symbol': SYMBOL, 'limit': 500})
         result = []
         for t in trades:
             result.append({
