@@ -1078,13 +1078,16 @@ def check_sl_trail(position: str, price: float) -> tuple[bool, str]:
         logger.info(f'📐 Trail not yet active | profit_dist={profit_dist:.4f} < activate={activate_dist:.4f} | best={best:.4f}')
         return False, ''
 
-    trail_stop = best - trail_dist if is_long else best + trail_dist
+    # Dynamic trail: locks in 65% of gains, with 0.5×ATR minimum for breathing room
+    dynamic_trail_dist = max(atr * 0.5, profit_dist * 0.35)
+    trail_stop = best - dynamic_trail_dist if is_long else best + dynamic_trail_dist
+    locked_pct = ((profit_dist - dynamic_trail_dist) / profit_dist * 100) if profit_dist > 0 else 0
     if is_long and price <= trail_stop:
         return True, f'📐 Trailing stop hit | best={best:.4f} trail_stop={trail_stop:.4f} price={price:.4f}'
     if not is_long and price >= trail_stop:
         return True, f'📐 Trailing stop hit | best={best:.4f} trail_stop={trail_stop:.4f} price={price:.4f}'
 
-    logger.info(f'📐 Trail active | best={best:.4f} trail_stop={trail_stop:.4f} price={price:.4f} | activate={TRAIL_ACTIVATE_ATR}×ATR dist={TRAIL_DISTANCE_ATR}×ATR')
+    logger.info(f'📐 Trail active | best={best:.4f} trail_stop={trail_stop:.4f} price={price:.4f} | locked={locked_pct:.0f}% of gains | dist={dynamic_trail_dist:.4f}')
     return False, ''
 
 
