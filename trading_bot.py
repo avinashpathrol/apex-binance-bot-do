@@ -78,7 +78,7 @@ ALLOWED_LEVERAGES = {3.0, 4.0, 5.0}
 # ── Trailing stop tuning ──
 TRAIL_ACTIVATE_ATR  = 1.0   # price must move this many × ATR in profit before trail activates
 TRAIL_DISTANCE_ATR  = 1.4   # trail follows best price, staying this many × ATR behind it
-HARD_SL_ATR         = 1.5   # hard stop loss distance from entry (before trail activates)
+HARD_SL_ATR         = 1.0   # hard stop loss distance from entry (before trail activates)
 
 run_count = 0
 last_hold_alert = 0
