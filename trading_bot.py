@@ -1130,8 +1130,9 @@ def run_once():
         if _ft_at:
             try:
                 _ft_age = (datetime.now(timezone.utc) - datetime.fromisoformat(_ft_at.replace('Z', '+00:00'))).total_seconds()
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.warning(f'force_trail_at parse error: {_e} | value={_ft_at}')
+        logger.info(f'🔒 Force trail check | flag={cfg.get("force_trail")} | pos={current_position} | ft_at={_ft_at} | last={state.get("last_force_trail_at")} | age={_ft_age:.0f}s')
         if cfg.get('force_trail') and current_position and _ft_at != state.get('last_force_trail_at') and _ft_age < 300:
             # If trail state missing (e.g. bot restarted mid-trade), initialise it now
             if not state.get('trail_entry_price') or not state.get('trail_atr'):
