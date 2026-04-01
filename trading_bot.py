@@ -1121,9 +1121,13 @@ def run_once():
             clear_close_request()
 
         # ── Force trail activation ──
-        if cfg.get('force_trail') and current_position and state.get('trail_entry_price') and state.get('trail_atr'):
-            entry_p = safe_float(state['trail_entry_price'])
-            atr_p   = safe_float(state['trail_atr'])
+        if cfg.get('force_trail') and current_position:
+            # If trail state missing (e.g. bot restarted mid-trade), initialise it now
+            if not state.get('trail_entry_price') or not state.get('trail_atr'):
+                logger.info('🔒 Force trail: trail state missing — initialising from current price')
+                init_trail(price)
+            entry_p = safe_float(state['trail_entry_price'], price)
+            atr_p   = safe_float(state['trail_atr'], get_atr())
             # Move best_price to current price (or keep it if already higher/lower for LONG/SHORT)
             if current_position == 'LONG':
                 new_best = max(price, safe_float(state.get('trail_best_price', 0), 0))
