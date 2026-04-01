@@ -83,6 +83,7 @@ HARD_SL_ATR         = 1.5   # hard stop loss distance from entry (before trail a
 run_count = 0
 last_hold_alert = 0
 last_force_trail_ts = 0
+last_force_trail_at = None
 current_position = None
 last_ai_analysis = {}
 last_margin_alert_ts = 0.0
@@ -613,6 +614,7 @@ def fetch_dashboard_config() -> dict:
             'close_requested_at': cfg.get('close_requested_at'),
             'bot_paused': bool(cfg.get('bot_paused', False)),
             'force_trail': bool(cfg.get('force_trail', False)),
+            'force_trail_at': cfg.get('force_trail_at'),
         }
     except Exception as e:
         logger.warning(f'Failed reading dashboard config: {e}')
@@ -1121,9 +1123,10 @@ def run_once():
                 logger.info(f'⚠️ Dashboard close request ignored: age={age:.0f}s, position={current_position}')
             clear_close_request()
 
-        # ── Force trail activation ──
-        global last_force_trail_ts
-        if cfg.get('force_trail') and current_position and (time.time() - last_force_trail_ts) > 120:
+        # ── Force trail activation — deduplicate by timestamp so each click fires exactly once ──
+        global last_force_trail_ts, last_force_trail_at
+        _ft_at = cfg.get('force_trail_at')
+        if cfg.get('force_trail') and current_position and _ft_at != last_force_trail_at:
             # If trail state missing (e.g. bot restarted mid-trade), initialise it now
             if not state.get('trail_entry_price') or not state.get('trail_atr'):
                 logger.info('🔒 Force trail: trail state missing — initialising from current price')
@@ -1143,6 +1146,7 @@ def run_once():
             state['trail_best_price'] = new_best
             save_state()
             last_force_trail_ts = time.time()
+            last_force_trail_at = _ft_at
             trail_stop = new_best - atr_p * TRAIL_DISTANCE_ATR if current_position == 'LONG' else new_best + atr_p * TRAIL_DISTANCE_ATR
             logger.info(f'🔒 Force trail activated via dashboard | position={current_position} | best={new_best:.4f} | trail_stop={trail_stop:.4f}')
             send_telegram(f'🔒 <b>APEX — Force Trail Activated</b>\n\nTrail locked in at ${new_best:,.4f}\nTrail stop: ${trail_stop:,.4f}')
