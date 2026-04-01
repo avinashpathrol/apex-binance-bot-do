@@ -1404,6 +1404,8 @@ def run_startup_binance_tests() -> None:
 
 def main():
     load_state()
+    state['force_trail_processed'] = False  # always reset on startup so button works after restart
+    save_state()
     logger.info('🚀 APEX Binance Margin SOL Bot starting...')
     logger.info(f'   Symbol: {SYMBOL}')
     logger.info(f'   Default amount: ${DEFAULT_TRADE_AMOUNT_USDT:.2f}')
