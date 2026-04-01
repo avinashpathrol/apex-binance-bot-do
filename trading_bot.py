@@ -82,6 +82,7 @@ HARD_SL_ATR         = 1.5   # hard stop loss distance from entry (before trail a
 
 run_count = 0
 last_hold_alert = 0
+last_force_trail_ts = 0
 current_position = None
 last_ai_analysis = {}
 last_margin_alert_ts = 0.0
@@ -1121,7 +1122,8 @@ def run_once():
             clear_close_request()
 
         # ── Force trail activation ──
-        if cfg.get('force_trail') and current_position:
+        global last_force_trail_ts
+        if cfg.get('force_trail') and current_position and (time.time() - last_force_trail_ts) > 120:
             # If trail state missing (e.g. bot restarted mid-trade), initialise it now
             if not state.get('trail_entry_price') or not state.get('trail_atr'):
                 logger.info('🔒 Force trail: trail state missing — initialising from current price')
@@ -1140,6 +1142,7 @@ def run_once():
                     new_best = entry_p - atr_p * TRAIL_ACTIVATE_ATR - 0.0001
             state['trail_best_price'] = new_best
             save_state()
+            last_force_trail_ts = time.time()
             trail_stop = new_best - atr_p * TRAIL_DISTANCE_ATR if current_position == 'LONG' else new_best + atr_p * TRAIL_DISTANCE_ATR
             logger.info(f'🔒 Force trail activated via dashboard | position={current_position} | best={new_best:.4f} | trail_stop={trail_stop:.4f}')
             send_telegram(f'🔒 <b>APEX — Force Trail Activated</b>\n\nTrail locked in at ${new_best:,.4f}\nTrail stop: ${trail_stop:,.4f}')
