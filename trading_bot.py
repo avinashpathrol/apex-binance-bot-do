@@ -591,11 +591,13 @@ def fetch_dashboard_config() -> dict:
     if not DASHBOARD_REPO:
         return default
     try:
-        url = f'https://raw.githubusercontent.com/{DASHBOARD_REPO}/main/{BOT_CONFIG_FILE}?t={int(time.time())}'
-        resp = requests.get(url, timeout=10)
+        url = f'https://api.github.com/repos/{DASHBOARD_REPO}/contents/{BOT_CONFIG_FILE}'
+        headers = {'Authorization': f'token {GH_TOKEN}', 'Accept': 'application/vnd.github+json'}
+        resp = requests.get(url, headers=headers, timeout=10)
         if not resp.ok:
             return default
-        cfg = resp.json()
+        import base64 as _b64
+        cfg = json.loads(_b64.b64decode(resp.json()['content'].replace('\n', '')).decode())
         if not isinstance(cfg, dict):
             return default
         amt = safe_float(cfg.get('trade_amount_usdt') or cfg.get('trade_amount'), default['trade_amount_usdt'])
