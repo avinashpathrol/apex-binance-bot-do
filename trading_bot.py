@@ -1136,20 +1136,22 @@ def run_once():
                 init_trail(price)
             entry_p = safe_float(state['trail_entry_price'], price)
             atr_p   = safe_float(state['trail_atr'], get_atr())
-            # Set best_price so that trail_stop = current price exactly
-            # trail_stop = best - trail_dist → best = price + trail_dist (LONG)
+            # Set stop = click_price - 0.5×ATR (bounce buffer)
+            # trail_stop = best - trail_dist → best = stop + trail_dist
+            bounce_buffer = atr_p * 0.5
             trail_dist = atr_p * TRAIL_DISTANCE_ATR
             if current_position == 'LONG':
-                new_best = price + trail_dist
+                trail_stop = price - bounce_buffer
+                new_best = trail_stop + trail_dist
             else:
-                new_best = price - trail_dist
+                trail_stop = price + bounce_buffer
+                new_best = trail_stop - trail_dist
             state['trail_best_price'] = new_best
             last_force_trail_ts = time.time()
             state['force_trail_processed'] = True
             save_state()
-            trail_stop = price  # stop is exactly at the click price
-            logger.info(f'🔒 Force trail activated via dashboard | position={current_position} | click_price={price:.4f} | trail_stop={trail_stop:.4f}')
-            send_telegram(f'🔒 <b>APEX — Force Trail Activated</b>\n\nStop locked at click price: ${trail_stop:,.4f}\nIf price drops here, trade closes. Trail follows up from here.')
+            logger.info(f'🔒 Force trail activated via dashboard | position={current_position} | click_price={price:.4f} | buffer={bounce_buffer:.4f} (0.5×ATR) | trail_stop={trail_stop:.4f}')
+            send_telegram(f'🔒 <b>APEX — Force Trail Activated</b>\n\nClick price: ${price:,.4f}\nATR buffer (0.5×): -${bounce_buffer:.4f}\nTrail stop: ${trail_stop:,.4f}\nTrail follows up from here.')
         if cfg.get('force_trail'):
             clear_force_trail()
 
