@@ -1139,22 +1139,21 @@ def run_once():
                 init_trail(price)
             entry_p = safe_float(state['trail_entry_price'], price)
             atr_p   = safe_float(state['trail_atr'], get_atr())
-            # Set stop = click_price - 0.70×ATR (bounce buffer)
-            # trail_stop = best - trail_dist → best = stop + trail_dist
+            # Set trail best = current price so trail stop is naturally below it.
+            # Previous logic set new_best = price + 0.70×ATR (above current price)
+            # which caused an immediate trigger on the next cycle.
             bounce_buffer = atr_p * 0.70
-            trail_dist = atr_p * TRAIL_DISTANCE_ATR
-            if current_position == 'LONG':
-                trail_stop = price - bounce_buffer
-                new_best = trail_stop + trail_dist
-            else:
-                trail_stop = price + bounce_buffer
-                new_best = trail_stop - trail_dist
-            state['trail_best_price'] = new_best
+            # Approximate stop shown in message: price - max(0.5×ATR, 0.35×profit_dist)
+            profit_dist = abs(price - entry_p)
+            approx_trail_dist = max(atr_p * 0.5, profit_dist * 0.35)
+            approx_stop = price - approx_trail_dist if current_position == 'LONG' else price + approx_trail_dist
+            # new_best = current price so trail stop is computed below it, never above
+            state['trail_best_price'] = price
             last_force_trail_ts = time.time()
             state['force_trail_processed'] = True
             save_state()
-            logger.info(f'🔒 Force trail activated via dashboard | position={current_position} | click_price={price:.4f} | buffer={bounce_buffer:.4f} (0.70×ATR) | trail_stop={trail_stop:.4f}')
-            send_telegram(f'🔒 <b>APEX — Force Trail Activated</b>\n\nClick price: ${price:,.4f}\nATR buffer (0.70×): -${bounce_buffer:.4f}\nTrail stop: ${trail_stop:,.4f}\nTrail follows up from here.')
+            logger.info(f'🔒 Force trail activated via dashboard | position={current_position} | click_price={price:.4f} | approx_stop={approx_stop:.4f} | trail_dist={approx_trail_dist:.4f}')
+            send_telegram(f'🔒 <b>APEX — Force Trail Activated</b>\n\nClick price: ${price:,.4f}\nApprox stop: ${approx_stop:,.4f}\nTrail follows price up from here.')
         if cfg.get('force_trail'):
             clear_force_trail()
 
