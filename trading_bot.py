@@ -1139,9 +1139,9 @@ def run_once():
                 init_trail(price)
             entry_p = safe_float(state['trail_entry_price'], price)
             atr_p   = safe_float(state['trail_atr'], get_atr())
-            # Set stop = click_price - 0.5×ATR (bounce buffer)
+            # Set stop = click_price - 0.70×ATR (bounce buffer)
             # trail_stop = best - trail_dist → best = stop + trail_dist
-            bounce_buffer = atr_p * 0.5
+            bounce_buffer = atr_p * 0.70
             trail_dist = atr_p * TRAIL_DISTANCE_ATR
             if current_position == 'LONG':
                 trail_stop = price - bounce_buffer
@@ -1153,8 +1153,8 @@ def run_once():
             last_force_trail_ts = time.time()
             state['force_trail_processed'] = True
             save_state()
-            logger.info(f'🔒 Force trail activated via dashboard | position={current_position} | click_price={price:.4f} | buffer={bounce_buffer:.4f} (0.5×ATR) | trail_stop={trail_stop:.4f}')
-            send_telegram(f'🔒 <b>APEX — Force Trail Activated</b>\n\nClick price: ${price:,.4f}\nATR buffer (0.5×): -${bounce_buffer:.4f}\nTrail stop: ${trail_stop:,.4f}\nTrail follows up from here.')
+            logger.info(f'🔒 Force trail activated via dashboard | position={current_position} | click_price={price:.4f} | buffer={bounce_buffer:.4f} (0.70×ATR) | trail_stop={trail_stop:.4f}')
+            send_telegram(f'🔒 <b>APEX — Force Trail Activated</b>\n\nClick price: ${price:,.4f}\nATR buffer (0.70×): -${bounce_buffer:.4f}\nTrail stop: ${trail_stop:,.4f}\nTrail follows up from here.')
         if cfg.get('force_trail'):
             clear_force_trail()
 
