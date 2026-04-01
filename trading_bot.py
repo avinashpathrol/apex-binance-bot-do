@@ -1126,7 +1126,13 @@ def run_once():
         # ── Force trail activation — deduplicate by timestamp so each click fires exactly once ──
         global last_force_trail_ts, last_force_trail_at
         _ft_at = cfg.get('force_trail_at')
-        if cfg.get('force_trail') and current_position and _ft_at != last_force_trail_at:
+        _ft_age = 999
+        if _ft_at:
+            try:
+                _ft_age = (datetime.now(timezone.utc) - datetime.fromisoformat(_ft_at.replace('Z', '+00:00'))).total_seconds()
+            except Exception:
+                pass
+        if cfg.get('force_trail') and current_position and _ft_at != last_force_trail_at and _ft_age < 300:
             # If trail state missing (e.g. bot restarted mid-trade), initialise it now
             if not state.get('trail_entry_price') or not state.get('trail_atr'):
                 logger.info('🔒 Force trail: trail state missing — initialising from current price')
