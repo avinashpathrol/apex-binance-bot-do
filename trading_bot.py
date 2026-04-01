@@ -1205,9 +1205,13 @@ def run_once():
             reason = status + f' | original signal: {decision["action"]}'
             confidence = 0
 
-        if trend == 'SIDEWAYS' and action in ('LONG', 'SHORT') and confidence < 80:
+        if action in ('LONG', 'SHORT') and confidence < 85:
             action = 'HOLD'
-            status = f'SKIPPED — sideways + confidence {confidence}% < 80%'
+            status = f'SKIPPED — confidence {confidence}% below minimum 85%'
+
+        if trend == 'SIDEWAYS' and action in ('LONG', 'SHORT') and confidence < 85:
+            action = 'HOLD'
+            status = f'SKIPPED — sideways + confidence {confidence}% < 85%'
 
         # AI CHOPPY filter — block new entries when AI sees choppy/indecisive market
         if current_position is None and action in ('LONG', 'SHORT') and last_ai_analysis:
