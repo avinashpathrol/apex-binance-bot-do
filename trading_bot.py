@@ -1136,24 +1136,20 @@ def run_once():
                 init_trail(price)
             entry_p = safe_float(state['trail_entry_price'], price)
             atr_p   = safe_float(state['trail_atr'], get_atr())
-            # Move best_price to current price (or keep it if already higher/lower for LONG/SHORT)
+            # Set best_price so that trail_stop = current price exactly
+            # trail_stop = best - trail_dist → best = price + trail_dist (LONG)
+            trail_dist = atr_p * TRAIL_DISTANCE_ATR
             if current_position == 'LONG':
-                new_best = max(price, safe_float(state.get('trail_best_price', 0), 0))
-                # Ensure activation threshold is met by nudging best if needed
-                if new_best - entry_p < atr_p * TRAIL_ACTIVATE_ATR:
-                    new_best = entry_p + atr_p * TRAIL_ACTIVATE_ATR + 0.0001
+                new_best = price + trail_dist
             else:
-                new_best = min(price, safe_float(state.get('trail_best_price', 999999), 999999))
-                if entry_p - new_best < atr_p * TRAIL_ACTIVATE_ATR:
-                    new_best = entry_p - atr_p * TRAIL_ACTIVATE_ATR - 0.0001
+                new_best = price - trail_dist
             state['trail_best_price'] = new_best
-            save_state()
             last_force_trail_ts = time.time()
             state['force_trail_processed'] = True
             save_state()
-            trail_stop = new_best - atr_p * TRAIL_DISTANCE_ATR if current_position == 'LONG' else new_best + atr_p * TRAIL_DISTANCE_ATR
-            logger.info(f'🔒 Force trail activated via dashboard | position={current_position} | best={new_best:.4f} | trail_stop={trail_stop:.4f}')
-            send_telegram(f'🔒 <b>APEX — Force Trail Activated</b>\n\nTrail locked in at ${new_best:,.4f}\nTrail stop: ${trail_stop:,.4f}')
+            trail_stop = price  # stop is exactly at the click price
+            logger.info(f'🔒 Force trail activated via dashboard | position={current_position} | click_price={price:.4f} | trail_stop={trail_stop:.4f}')
+            send_telegram(f'🔒 <b>APEX — Force Trail Activated</b>\n\nStop locked at click price: ${trail_stop:,.4f}\nIf price drops here, trade closes. Trail follows up from here.')
         if cfg.get('force_trail'):
             clear_force_trail()
 
