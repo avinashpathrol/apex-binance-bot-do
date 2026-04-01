@@ -83,7 +83,6 @@ HARD_SL_ATR         = 1.5   # hard stop loss distance from entry (before trail a
 run_count = 0
 last_hold_alert = 0
 last_force_trail_ts = 0
-last_force_trail_at = None
 current_position = None
 last_ai_analysis = {}
 last_margin_alert_ts = 0.0
@@ -110,6 +109,7 @@ state = {
     'trail_atr': None,
     'flip_pending': None,   # 'LONG' or 'SHORT' — open this side next run after a flip close
     'close_log': [],        # list of {ts_iso, reason} for every bot-initiated close
+    'last_force_trail_at': None,  # persisted so restart doesn't replay stale force trail
 }
 
 
@@ -1123,8 +1123,8 @@ def run_once():
                 logger.info(f'⚠️ Dashboard close request ignored: age={age:.0f}s, position={current_position}')
             clear_close_request()
 
-        # ── Force trail activation — deduplicate by timestamp so each click fires exactly once ──
-        global last_force_trail_ts, last_force_trail_at
+        # ── Force trail activation — deduplicate by timestamp, persisted in state so restarts don't replay ──
+        global last_force_trail_ts
         _ft_at = cfg.get('force_trail_at')
         _ft_age = 999
         if _ft_at:
@@ -1132,7 +1132,7 @@ def run_once():
                 _ft_age = (datetime.now(timezone.utc) - datetime.fromisoformat(_ft_at.replace('Z', '+00:00'))).total_seconds()
             except Exception:
                 pass
-        if cfg.get('force_trail') and current_position and _ft_at != last_force_trail_at and _ft_age < 300:
+        if cfg.get('force_trail') and current_position and _ft_at != state.get('last_force_trail_at') and _ft_age < 300:
             # If trail state missing (e.g. bot restarted mid-trade), initialise it now
             if not state.get('trail_entry_price') or not state.get('trail_atr'):
                 logger.info('🔒 Force trail: trail state missing — initialising from current price')
@@ -1152,7 +1152,8 @@ def run_once():
             state['trail_best_price'] = new_best
             save_state()
             last_force_trail_ts = time.time()
-            last_force_trail_at = _ft_at
+            state['last_force_trail_at'] = _ft_at
+            save_state()
             trail_stop = new_best - atr_p * TRAIL_DISTANCE_ATR if current_position == 'LONG' else new_best + atr_p * TRAIL_DISTANCE_ATR
             logger.info(f'🔒 Force trail activated via dashboard | position={current_position} | best={new_best:.4f} | trail_stop={trail_stop:.4f}')
             send_telegram(f'🔒 <b>APEX — Force Trail Activated</b>\n\nTrail locked in at ${new_best:,.4f}\nTrail stop: ${trail_stop:,.4f}')
