@@ -1420,7 +1420,7 @@ def main():
         except Exception as e:
             logger.error(f'Main loop error: {e}', exc_info=True)
             alert_error(f'Main loop crashed: {e}')
-        logger.info(f'⏳ Sleeping {CHECK_INTERVAL}s (polling for close request every 5s)...')
+        logger.info(f'⏳ Sleeping {CHECK_INTERVAL}s (polling every 5s for close/trail/price)...')
         for _ in range(CHECK_INTERVAL // 5):
             time.sleep(5)
             try:
@@ -1431,6 +1431,14 @@ def main():
                 if quick_cfg.get('force_trail'):
                     logger.info('⚡ Force trail request detected mid-sleep — waking up immediately')
                     break
+                # ── Check trail stop mid-sleep so close delay is max 5s not 60s ──
+                _pos = current_position
+                if _pos and state.get('trail_entry_price') and state.get('trail_atr'):
+                    _price = get_current_price(SYMBOL)
+                    _sl_hit, _sl_reason = check_sl_trail(_pos, _price)
+                    if _sl_hit:
+                        logger.info(f'⚡ Trail/SL hit mid-sleep ({_sl_reason}) — waking up immediately')
+                        break
             except Exception:
                 pass
 
