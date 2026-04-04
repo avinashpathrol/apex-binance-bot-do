@@ -118,6 +118,8 @@ state = {
     'close_log': [],        # list of {ts_iso, reason} for every bot-initiated close
     'force_trail_processed': False,  # True while force_trail flag is active, prevents duplicate fires
     'active_symbol': None,           # which symbol is currently being traded
+    'consecutive_losses': 0,         # count of losses in a row
+    'loss_cooldown_until': 0,        # epoch time until which entries are blocked after streak
 }
 
 
@@ -1255,6 +1257,21 @@ def run_once():
             status = 'CLOSED BY DASHBOARD ✅' if dashboard_close_executed else 'SL/TRAIL STOP HIT ✅'
             reason = 'Dashboard close request executed' if dashboard_close_executed else sl_reason
             confidence = 0
+            # ── Track consecutive losses for cooldown ──
+            is_loss = sl_trail_close and ('Hard SL' in sl_reason or 'Fee-covered SL' in sl_reason)
+            if is_loss:
+                state['consecutive_losses'] = state.get('consecutive_losses', 0) + 1
+                streak = state['consecutive_losses']
+                logger.info(f'📉 Consecutive loss streak: {streak}')
+                if streak >= 3:
+                    cooldown_mins = 30
+                    state['loss_cooldown_until'] = time.time() + cooldown_mins * 60
+                    save_state()
+                    logger.info(f'⏸️ {streak} consecutive losses — pausing new entries for {cooldown_mins} min')
+                    send_telegram(f'⚠️ <b>APEX — Loss Streak Cooldown</b>\n\n{streak} losses in a row on {SYMBOL}\nPausing new entries for {cooldown_mins} minutes.\nSL/trail still active.')
+            else:
+                state['consecutive_losses'] = 0
+            save_state()
         cooldown_remaining = get_same_side_cooldown(action)
         if cooldown_remaining > 0 and current_position is None:
             mins = cooldown_remaining // 60
@@ -1281,6 +1298,24 @@ def run_once():
         if trend == 'SIDEWAYS' and action in ('LONG', 'SHORT') and confidence < 85:
             action = 'HOLD'
             status = f'SKIPPED — sideways + confidence {confidence}% < 85%'
+
+        # ── Consecutive loss cooldown ──
+        loss_cooldown_until = state.get('loss_cooldown_until', 0)
+        if current_position is None and action in ('LONG', 'SHORT') and time.time() < loss_cooldown_until:
+            remaining = int((loss_cooldown_until - time.time()) / 60)
+            action = 'HOLD'
+            status = f'⏸️ LOSS STREAK COOLDOWN — {remaining}m remaining ({state.get("consecutive_losses",0)} losses in a row)'
+            logger.info(status)
+
+        # ── 1h trend alignment — block entries that fight the hourly trend ──
+        if current_position is None and action == 'LONG' and trend == 'BEARISH':
+            action = 'HOLD'
+            status = f'SKIPPED — LONG blocked, 1h trend is BEARISH (price < EMA-15 < EMA-40)'
+            logger.info(status)
+        if current_position is None and action == 'SHORT' and trend == 'BULLISH':
+            action = 'HOLD'
+            status = f'SKIPPED — SHORT blocked, 1h trend is BULLISH (price > EMA-15 > EMA-40)'
+            logger.info(status)
 
         # AI CHOPPY filter — block new entries when AI sees choppy/indecisive market
         if current_position is None and action in ('LONG', 'SHORT') and last_ai_analysis:
