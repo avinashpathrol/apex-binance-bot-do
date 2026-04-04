@@ -1292,11 +1292,13 @@ def run_once():
                 action = 'HOLD'
                 status = f'AI BLOCKED — CHOPPY market (strength {ai_strength}/10)'
 
-        bot_paused = cfg.get('bot_paused', False)
+        paused_symbols = cfg.get('paused_symbols', [])
+        sym_label = SYMBOLS_CONFIG.get(SYMBOL, {}).get('base', 'SOL')
+        bot_paused = cfg.get('bot_paused', False) or sym_label in paused_symbols
         if bot_paused:
-            logger.info('⏸️ Bot is paused — SL/trail still active, new entries disabled')
+            logger.info(f'⏸️ {SYMBOL} entries paused — SL/trail still active')
             if current_position is None:
-                status = status or '⏸️ PAUSED — new entries disabled via dashboard'
+                status = status or f'⏸️ PAUSED — {SYMBOL} entries disabled via dashboard'
 
         if current_position is None and not bot_paused:
             flip = state.get('flip_pending')
@@ -1397,6 +1399,7 @@ def run_once():
             'risk': risk,
             'status': status,
             'bot_paused': bot_paused,
+            'paused_symbols': cfg.get('paused_symbols', []),
             'flip_pending': state.get('flip_pending'),
             'reason': reason,
             'trend': trend,
