@@ -60,7 +60,7 @@ TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '').strip()
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '').strip()
 GH_TOKEN = os.environ.get('GH_TOKEN', '').strip()
 DASHBOARD_REPO = os.environ.get('DASHBOARD_REPO', 'avinashpathrol/apex-dashboard').strip()
-MIN_SIGNALS = int(os.environ.get('MIN_SIGNALS', '3'))
+MIN_SIGNALS = int(os.environ.get('MIN_SIGNALS', '4'))
 CHECK_INTERVAL = int(os.environ.get('CHECK_INTERVAL', '60'))
 BINANCE_BASE_URL = 'https://api.binance.com'
 GROQ_API_KEY = os.environ.get('GROK', '').strip()
@@ -76,7 +76,7 @@ MANUAL_REENTRY_COOLDOWN_MIN = int(os.environ.get('MANUAL_REENTRY_COOLDOWN_MIN', 
 ALLOWED_LEVERAGES = {3.0, 4.0, 5.0}
 
 # ── Trailing stop tuning ──
-TRAIL_ACTIVATE_ATR  = 0.5   # price must move this many × ATR in profit before trail activates
+TRAIL_ACTIVATE_ATR  = 0.75  # price must move this many × ATR in profit before trail activates
 TRAIL_DISTANCE_ATR  = 1.4   # trail follows best price, staying this many × ATR behind it
 HARD_SL_ATR         = 1.0   # hard stop loss distance from entry (before trail activates)
 
@@ -1045,7 +1045,7 @@ def check_sl_trail(position: str, price: float) -> tuple[bool, str]:
 
     # ── Hard stop loss — once trail activates, floor rises to entry + fee buffer ──
     # Fee buffer: 0.1% per side × 2 = 0.2% round trip, so close is profitable after fees
-    FEE_BUFFER = 0.002  # 0.2% of entry price
+    FEE_BUFFER = 0.005  # 0.5% of entry price — guarantees net profit after round-trip fees
     profit_dist_now = (best - entry) if is_long else (entry - best)
     trail_activated = profit_dist_now >= activate_dist
     if trail_activated:
@@ -1208,6 +1208,14 @@ def run_once():
         if action in ('LONG', 'SHORT') and confidence < 85:
             action = 'HOLD'
             status = f'SKIPPED — confidence {confidence}% below minimum 85%'
+
+        # ATR filter — skip entries when market is too tight to cover fees
+        if current_position is None and action in ('LONG', 'SHORT'):
+            _atr = state.get('trail_atr') or get_atr()
+            if _atr and _atr < 0.22:
+                action = 'HOLD'
+                status = f'SKIPPED — ATR {_atr:.3f} too small (min 0.22), market too choppy to cover fees'
+                logger.info(status)
 
         if trend == 'SIDEWAYS' and action in ('LONG', 'SHORT') and confidence < 85:
             action = 'HOLD'
