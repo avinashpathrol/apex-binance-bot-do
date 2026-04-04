@@ -367,7 +367,7 @@ def get_trade_history(symbol: str = None) -> list:
     """Fetch trade history for a specific symbol, or active symbol if not specified."""
     sym = symbol or SYMBOL
     try:
-        trades = binance_private('GET', '/sapi/v1/margin/myTrades', {'symbol': sym, 'limit': 500})
+        trades = binance_private('GET', '/sapi/v1/margin/myTrades', {'symbol': sym, 'limit': 1000})
         result = []
         for t in trades:
             result.append({
