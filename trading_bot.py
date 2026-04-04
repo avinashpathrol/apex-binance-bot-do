@@ -363,9 +363,11 @@ def merge_close_reasons(trades: list) -> list:
     return result
 
 
-def get_trade_history() -> list:
+def get_trade_history(symbol: str = None) -> list:
+    """Fetch trade history for a specific symbol, or active symbol if not specified."""
+    sym = symbol or SYMBOL
     try:
-        trades = binance_private('GET', '/sapi/v1/margin/myTrades', {'symbol': SYMBOL, 'limit': 500})
+        trades = binance_private('GET', '/sapi/v1/margin/myTrades', {'symbol': sym, 'limit': 500})
         result = []
         for t in trades:
             result.append({
@@ -375,10 +377,11 @@ def get_trade_history() -> list:
                 'qty': float(t['qty']),
                 'cost': float(t['quoteQty']),
                 'fee': float(t['commission']),
+                'symbol': sym,
             })
         return sorted(result, key=lambda x: x['time'])
     except Exception as e:
-        logger.warning(f'Trade history failed: {e}')
+        logger.warning(f'Trade history failed for {sym}: {e}')
         return []
 
 
@@ -1365,7 +1368,8 @@ def run_once():
         if GROQ_API_KEY and run_count % AI_ANALYSIS_INTERVAL == 0:
             last_ai_analysis = fetch_ai_analysis(price, current_position, decision)
 
-        trade_history = merge_close_reasons(get_trade_history())
+        # Always fetch trade history for the active symbol specifically
+        trade_history = merge_close_reasons(get_trade_history(SYMBOL))
         closed_trades = sorted(build_closed_trades_from_history(trade_history) + load_manual_closed_trades(), key=lambda x: x.get('closed_at') or '')
         performance = summarize_performance(closed_trades)
 
@@ -1428,6 +1432,41 @@ def run_once():
                           abs((state.get('trail_best_price', 0) - state.get('trail_entry_price', 0))) >= state.get('trail_atr', 999),
             },
         }, dashboard_file=SYMBOLS_CONFIG.get(SYMBOL, {}).get('dashboard_file', 'data_binance_sol.json'))
+
+        # Push idle data for inactive symbols so their dashboard tabs stay fresh
+        for idle_sym, idle_cfg in SYMBOLS_CONFIG.items():
+            if idle_sym == SYMBOL:
+                continue
+            try:
+                idle_history = merge_close_reasons(get_trade_history(idle_sym))
+                idle_closed = sorted(build_closed_trades_from_history(idle_history), key=lambda x: x.get('closed_at') or '')
+                idle_perf = summarize_performance(idle_closed)
+                idle_price = get_current_price(idle_sym)
+                idle_df = get_market_data(idle_sym)
+                idle_dec = get_decision(idle_df, idle_price)
+                push_dashboard_data({
+                    'generated_at': now_utc_iso(),
+                    'symbol': idle_sym,
+                    'exchange': 'Binance Margin',
+                    'leverage': runtime_settings['leverage'],
+                    'price': idle_price,
+                    'position': None,
+                    'action': idle_dec['action'],
+                    'confidence': idle_dec['confidence'],
+                    'risk': idle_dec['risk_level'],
+                    'status': f'Idle — {SYMBOL} active',
+                    'bullish': idle_dec['bullish_signals'],
+                    'bearish': idle_dec['bearish_signals'],
+                    'trades': idle_history,
+                    'closed_trades': idle_closed,
+                    'performance': idle_perf,
+                    'run_count': run_count,
+                    'trade_amount': runtime_settings['trade_amount_usdt'],
+                    'trail': {'entry_price': None, 'best_price': None, 'atr': None, 'sl': None, 'trail_stop': None, 'active': False},
+                }, dashboard_file=idle_cfg['dashboard_file'])
+            except Exception as _e:
+                logger.warning(f'Idle dashboard push failed for {idle_sym}: {_e}')
+
         logger.info(f'✅ Run #{run_count} complete | pos={latest_position} | margin={margin_level:.2f} | pnl={performance["net_profit"]:.4f}')
     except Exception as e:
         logger.error(f'❌ Bot error: {e}', exc_info=True)
