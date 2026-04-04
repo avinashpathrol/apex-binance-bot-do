@@ -51,9 +51,16 @@ MST = timezone(timedelta(hours=-7))
 
 BINANCE_API_KEY = os.environ.get('BINANCE_API_KEY', '').strip()
 BINANCE_API_SECRET = os.environ.get('BINANCE_API_SECRET', '').strip()
-SYMBOL = os.environ.get('TRADING_SYMBOL', 'SOLUSDT')
-BASE_ASSET = 'SOL'
+SYMBOL = os.environ.get('TRADING_SYMBOL', 'SOLUSDT')  # active symbol, updated each cycle
+BASE_ASSET = 'SOL'   # active base asset, updated each cycle
 QUOTE_ASSET = 'USDT'
+
+# ── Multi-symbol config ──
+SYMBOLS_CONFIG = {
+    'SOLUSDT':  {'base': 'SOL',  'dashboard_file': 'data_binance_sol.json',  'min_atr': 0.22},
+    'DOGEUSDT': {'base': 'DOGE', 'dashboard_file': 'data_binance_doge.json', 'min_atr': 0.002},
+}
+TRADING_SYMBOLS = list(SYMBOLS_CONFIG.keys())
 DEFAULT_TRADE_AMOUNT_USDT = float(os.environ.get('TRADE_AMOUNT_USDT', '80'))
 DEFAULT_LEVERAGE = float(os.environ.get('LEVERAGE', '4'))
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '').strip()
@@ -110,6 +117,7 @@ state = {
     'flip_pending': None,   # 'LONG' or 'SHORT' — open this side next run after a flip close
     'close_log': [],        # list of {ts_iso, reason} for every bot-initiated close
     'force_trail_processed': False,  # True while force_trail flag is active, prevents duplicate fires
+    'active_symbol': None,           # which symbol is currently being traded
 }
 
 
@@ -296,15 +304,27 @@ def round_step(quantity: float, step: float) -> float:
     return round(quantity - (quantity % step), precision)
 
 
-def detect_position() -> Optional[str]:
-    sol = get_margin_balance('SOL')
+def detect_position(base_asset: str = None) -> Optional[str]:
+    b = base_asset or BASE_ASSET
+    asset = get_margin_balance(b)
     usdt = get_margin_balance('USDT')
-    logger.info(f'📊 SOL net={sol["net"]:.4f} borrowed={sol["borrowed"]:.4f} interest={sol["interest"]:.8f}')
+    logger.info(f'📊 {b} net={asset["net"]:.4f} borrowed={asset["borrowed"]:.4f} interest={asset["interest"]:.8f}')
     logger.info(f'📊 USDT net={usdt["net"]:.2f} borrowed={usdt["borrowed"]:.2f}')
-    if sol['net'] > 0.05:
+    if asset['net'] > 0.05:
         return 'LONG'
-    if (sol['borrowed'] + sol['interest']) > 0.05:
+    if (asset['borrowed'] + asset['interest']) > 0.05:
         return 'SHORT'
+    return None
+
+
+def detect_active_symbol() -> Optional[str]:
+    """Check all symbols for an open position. Returns the symbol that has one, or None."""
+    for sym, cfg in SYMBOLS_CONFIG.items():
+        asset = get_margin_balance(cfg['base'])
+        if asset['net'] > 0.05:
+            return sym
+        if (asset['borrowed'] + asset['interest']) > 0.05:
+            return sym
     return None
 
 
@@ -893,22 +913,23 @@ def close_short(price: float, confidence: int, reason: str) -> bool:
         return False
 
 
-def push_dashboard_data(data: dict) -> None:
+def push_dashboard_data(data: dict, dashboard_file: str = 'data_binance_sol.json') -> None:
     if not GH_TOKEN or not DASHBOARD_REPO:
         logger.warning('Dashboard push skipped: GH_TOKEN or DASHBOARD_REPO missing')
         return
     try:
-        url = f'https://api.github.com/repos/{DASHBOARD_REPO}/contents/data_binance_sol.json'
+        sym_label = SYMBOLS_CONFIG.get(SYMBOL, {}).get('base', 'SOL')
+        url = f'https://api.github.com/repos/{DASHBOARD_REPO}/contents/{dashboard_file}'
         headers = {'Authorization': f'token {GH_TOKEN}', 'Accept': 'application/vnd.github+json'}
         content = base64.b64encode(json.dumps(data, indent=2).encode()).decode()
         r = requests.get(url, headers=headers, timeout=10)
         sha = r.json().get('sha') if r.status_code == 200 else None
-        payload = {'message': f'bot: SOL {datetime.now(MST).strftime("%H:%M MST")}', 'content': content}
+        payload = {'message': f'bot: {sym_label} {datetime.now(MST).strftime("%H:%M MST")}', 'content': content}
         if sha:
             payload['sha'] = sha
         r = requests.put(url, headers=headers, json=payload, timeout=15)
         if r.status_code in (200, 201):
-            logger.info('✅ Dashboard updated')
+            logger.info(f'✅ Dashboard updated ({dashboard_file})')
         else:
             logger.warning(f'Dashboard push failed: {r.status_code} | body={r.text}')
     except Exception as e:
@@ -1092,12 +1113,48 @@ def check_sl_trail(position: str, price: float) -> tuple[bool, str]:
 
 
 def run_once():
-    global run_count, last_hold_alert, current_position, last_ai_analysis
+    global run_count, last_hold_alert, current_position, last_ai_analysis, SYMBOL, BASE_ASSET
     run_count += 1
     logger.info('=' * 60)
-    logger.info(f'  APEX BINANCE MARGIN SOL — Run #{run_count}')
+    logger.info(f'  APEX BINANCE MARGIN BOT — Run #{run_count}')
     logger.info('=' * 60)
     try:
+        # ── Multi-symbol: determine which symbol to trade this cycle ──
+        open_sym = detect_active_symbol()
+        if open_sym:
+            # Position already open — stay with that symbol
+            SYMBOL = open_sym
+            BASE_ASSET = SYMBOLS_CONFIG[open_sym]['base']
+            state['active_symbol'] = open_sym
+        elif state.get('active_symbol') and state.get('trail_entry_price'):
+            # Trail state exists but no position detected — keep symbol until trail clears
+            SYMBOL = state['active_symbol']
+            BASE_ASSET = SYMBOLS_CONFIG.get(SYMBOL, {}).get('base', 'SOL')
+        else:
+            # No open position — evaluate all symbols, pick highest confidence
+            best_sym, best_conf = None, 0
+            for sym in TRADING_SYMBOLS:
+                try:
+                    _df = get_market_data(sym)
+                    _price = get_current_price(sym)
+                    _dec = get_decision(_df, _price)
+                    _conf = _dec['confidence'] if _dec['action'] in ('LONG', 'SHORT') else 0
+                    # Apply trend filter — only count confident trending signals
+                    if _dec['action'] == 'LONG' and not (_df.iloc[-1]['ema_20'] > _df.iloc[-1]['ema_50']):
+                        _conf = 0
+                    if _dec['action'] == 'SHORT' and not (_df.iloc[-1]['ema_20'] < _df.iloc[-1]['ema_50']):
+                        _conf = 0
+                    logger.info(f'📊 {sym}: price={_price:.4f} signal={_dec["action"]} conf={_conf}%')
+                    if _conf > best_conf:
+                        best_conf, best_sym = _conf, sym
+                except Exception as e:
+                    logger.warning(f'Symbol eval failed for {sym}: {e}')
+            # Default to SOL if nothing beats threshold
+            SYMBOL = best_sym or 'SOLUSDT'
+            BASE_ASSET = SYMBOLS_CONFIG[SYMBOL]['base']
+            state['active_symbol'] = SYMBOL
+            logger.info(f'🎯 Selected symbol: {SYMBOL} (conf={best_conf}%)')
+
         current_position = detect_position()
         cfg = apply_runtime_settings(current_position)
         process_manual_close_detection(current_position)
@@ -1212,9 +1269,10 @@ def run_once():
         # ATR filter — skip entries when market is too tight to cover fees
         if current_position is None and action in ('LONG', 'SHORT'):
             _atr = state.get('trail_atr') or get_atr()
-            if _atr and _atr < 0.22:
+            _min_atr = SYMBOLS_CONFIG.get(SYMBOL, {}).get('min_atr', 0.22)
+            if _atr and _atr < _min_atr:
                 action = 'HOLD'
-                status = f'SKIPPED — ATR {_atr:.3f} too small (min 0.22), market too choppy to cover fees'
+                status = f'SKIPPED — ATR {_atr:.4f} too small (min {_min_atr}), market too choppy to cover fees'
                 logger.info(status)
 
         if trend == 'SIDEWAYS' and action in ('LONG', 'SHORT') and confidence < 85:
@@ -1369,7 +1427,7 @@ def run_once():
                 'active': state.get('trail_best_price') is not None and state.get('trail_atr') is not None and state.get('trail_entry_price') is not None and
                           abs((state.get('trail_best_price', 0) - state.get('trail_entry_price', 0))) >= state.get('trail_atr', 999),
             },
-        })
+        }, dashboard_file=SYMBOLS_CONFIG.get(SYMBOL, {}).get('dashboard_file', 'data_binance_sol.json'))
         logger.info(f'✅ Run #{run_count} complete | pos={latest_position} | margin={margin_level:.2f} | pnl={performance["net_profit"]:.4f}')
     except Exception as e:
         logger.error(f'❌ Bot error: {e}', exc_info=True)
@@ -1394,8 +1452,8 @@ def main():
     load_state()
     state['force_trail_processed'] = False  # always reset on startup so button works after restart
     save_state()
-    logger.info('🚀 APEX Binance Margin SOL Bot starting...')
-    logger.info(f'   Symbol: {SYMBOL}')
+    logger.info('🚀 APEX Binance Margin Bot starting (multi-symbol)...')
+    logger.info(f'   Symbols: {", ".join(TRADING_SYMBOLS)}')
     logger.info(f'   Default amount: ${DEFAULT_TRADE_AMOUNT_USDT:.2f}')
     logger.info(f'   Default leverage: {DEFAULT_LEVERAGE}x')
     logger.info(f'   API Key: {mask_secret(BINANCE_API_KEY)}')
@@ -1403,7 +1461,7 @@ def main():
     logger.info(f'   Dashboard: {DASHBOARD_REPO or "MISSING"}')
     logger.info(f'   Public IP: {get_public_ip()}')
     send_telegram(
-        f'🚀 <b>APEX Binance Margin Bot Started</b>\n\n📌 Symbol: {SYMBOL}\n🛡 Low-margin alerts throttled\n🕒 Same-side manual-close cooldown enabled\n⚙️ Dashboard config: {BOT_CONFIG_FILE}\n⏱ Every {CHECK_INTERVAL} seconds'
+        f'🚀 <b>APEX Binance Margin Bot Started</b>\n\n📌 Symbols: {", ".join(TRADING_SYMBOLS)}\n🛡 Low-margin alerts throttled\n🕒 Same-side manual-close cooldown enabled\n⚙️ Dashboard config: {BOT_CONFIG_FILE}\n⏱ Every {CHECK_INTERVAL} seconds'
     )
     run_startup_binance_tests()
     while True:
