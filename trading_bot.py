@@ -1370,10 +1370,6 @@ def run_once():
                 status = 'SHORT OPENED ✅' if open_short(price, confidence, reason) else 'SHORT FAILED ❌'
             else:
                 status = status or f'HOLD — {reason}'
-                now_ts = time.time()
-                if now_ts - last_hold_alert > 1800:
-                    send_telegram(f'🔒 <b>APEX — HOLD</b>\n💰 SOL: ${price:.4f}\n🟢 {len(decision["bullish_signals"])} bullish | 🔴 {len(decision["bearish_signals"])} bearish\n💬 {reason}')
-                    last_hold_alert = now_ts
         elif current_position == 'LONG':
             if action == 'SHORT':
                 closed = close_long(price, confidence, 'Signal flipped to SHORT — waiting one cycle before re-entry')
@@ -1386,6 +1382,12 @@ def run_once():
                     status = 'LONG CLOSE FAILED ❌'
             else:
                 status = f'HOLDING LONG — {reason}'
+                # Alert only when signal flips to HOLD while in a LONG
+                if action == 'HOLD':
+                    now_ts = time.time()
+                    if now_ts - last_hold_alert > 1800:
+                        send_telegram(f'⚠️ <b>APEX — Signal Fading (LONG open)</b>\n💰 {SYMBOL}: ${price:.4f}\n🟢 {len(decision["bullish_signals"])} bullish | 🔴 {len(decision["bearish_signals"])} bearish\n💬 {reason}')
+                        last_hold_alert = now_ts
         elif current_position == 'SHORT':
             if action == 'LONG':
                 closed = close_short(price, confidence, 'Signal flipped to LONG — waiting one cycle before re-entry')
@@ -1398,6 +1400,12 @@ def run_once():
                     status = 'SHORT CLOSE FAILED ❌'
             else:
                 status = f'HOLDING SHORT — {reason}'
+                # Alert only when signal flips to HOLD while in a SHORT
+                if action == 'HOLD':
+                    now_ts = time.time()
+                    if now_ts - last_hold_alert > 1800:
+                        send_telegram(f'⚠️ <b>APEX — Signal Fading (SHORT open)</b>\n💰 {SYMBOL}: ${price:.4f}\n🟢 {len(decision["bullish_signals"])} bullish | 🔴 {len(decision["bearish_signals"])} bearish\n💬 {reason}')
+                        last_hold_alert = now_ts
 
         usdt_balance = 0.0
         sol_balance = 0.0
