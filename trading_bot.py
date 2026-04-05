@@ -1257,26 +1257,39 @@ def run_once():
             status = 'CLOSED BY DASHBOARD ✅' if dashboard_close_executed else 'SL/TRAIL STOP HIT ✅'
             reason = 'Dashboard close request executed' if dashboard_close_executed else sl_reason
             confidence = 0
-            # ── Track consecutive losses per symbol for cooldown ──
-            is_loss = sl_trail_close and ('Hard SL' in sl_reason or 'Fee-covered SL' in sl_reason)
-            losses_map = state.get('consecutive_losses') or {}
-            cooldown_map = state.get('loss_cooldown_until') or {}
-            if not isinstance(losses_map, dict): losses_map = {}
-            if not isinstance(cooldown_map, dict): cooldown_map = {}
-            if is_loss:
-                losses_map[SYMBOL] = losses_map.get(SYMBOL, 0) + 1
-                streak = losses_map[SYMBOL]
-                logger.info(f'📉 {SYMBOL} consecutive loss streak: {streak}')
-                if streak >= 3:
+            # ── Check last 3 closed trades from history for loss streak cooldown ──
+            try:
+                cooldown_map = state.get('loss_cooldown_until') or {}
+                if not isinstance(cooldown_map, dict): cooldown_map = {}
+                recent = get_trade_history(SYMBOL)
+                # Pair into closed trades to get last 3 results
+                _opens, _closed = [], []
+                for t in sorted(recent, key=lambda x: x['time']):
+                    if t['action'] == 'BUY':
+                        if _opens and _opens[-1]['action'] == 'BUY':
+                            o = _opens[-1]
+                            tq = o['qty'] + t['qty']
+                            o['price'] = (o['price']*o['qty'] + t['price']*t['qty'])/tq
+                            o['qty'] = tq
+                        else:
+                            _opens.append({'action':'BUY','price':t['price'],'qty':t['qty'],'time':t['time']})
+                    elif t['action'] == 'SELL' and _opens:
+                        o = _opens.pop()
+                        gross = (t['price'] - o['price']) * min(o['qty'], t['qty'])
+                        fee = (o['price'] + t['price']) * min(o['qty'], t['qty']) * 0.001
+                        _closed.append({'net': gross - fee, 'time': t['time']})
+                last3 = _closed[-3:] if len(_closed) >= 3 else []
+                streak = sum(1 for t in last3 if t['net'] <= 0)
+                logger.info(f'📉 {SYMBOL} last 3 trades: {["loss" if t["net"]<=0 else "win" for t in last3]} streak={streak}')
+                if streak >= 3 and time.time() > cooldown_map.get(SYMBOL, 0):
                     cooldown_mins = 30
                     cooldown_map[SYMBOL] = time.time() + cooldown_mins * 60
-                    logger.info(f'⏸️ {streak} consecutive {SYMBOL} losses — pausing for {cooldown_mins} min')
-                    send_telegram(f'⚠️ <b>APEX — Loss Streak Cooldown</b>\n\n{streak} losses in a row on {SYMBOL}\nPausing new entries for {cooldown_mins} minutes.\nSL/trail still active.')
-            else:
-                losses_map[SYMBOL] = 0
-            state['consecutive_losses'] = losses_map
-            state['loss_cooldown_until'] = cooldown_map
-            save_state()
+                    state['loss_cooldown_until'] = cooldown_map
+                    save_state()
+                    logger.info(f'⏸️ Last 3 {SYMBOL} trades all losses — pausing for {cooldown_mins} min')
+                    send_telegram(f'⚠️ <b>APEX — Loss Streak Cooldown</b>\n\nLast 3 trades on {SYMBOL} all losses\nPausing new entries for {cooldown_mins} minutes.\nSL/trail still active.')
+            except Exception as _e:
+                logger.warning(f'Loss streak check failed: {_e}')
         cooldown_remaining = get_same_side_cooldown(action)
         if cooldown_remaining > 0 and current_position is None:
             mins = cooldown_remaining // 60
@@ -1304,16 +1317,14 @@ def run_once():
             action = 'HOLD'
             status = f'SKIPPED — sideways + confidence {confidence}% < 85%'
 
-        # ── Consecutive loss cooldown (per symbol) ──
+        # ── Consecutive loss cooldown (per symbol, based on trade history) ──
         cooldown_map = state.get('loss_cooldown_until') or {}
         if not isinstance(cooldown_map, dict): cooldown_map = {}
         loss_cooldown_until = cooldown_map.get(SYMBOL, 0)
-        losses_map = state.get('consecutive_losses') or {}
-        if not isinstance(losses_map, dict): losses_map = {}
         if current_position is None and action in ('LONG', 'SHORT') and time.time() < loss_cooldown_until:
             remaining = int((loss_cooldown_until - time.time()) / 60)
             action = 'HOLD'
-            status = f'⏸️ LOSS STREAK COOLDOWN — {remaining}m remaining ({losses_map.get(SYMBOL,0)} losses in a row on {SYMBOL})'
+            status = f'⏸️ LOSS STREAK COOLDOWN — {remaining}m remaining on {SYMBOL}'
             logger.info(status)
 
         # ── 1h trend alignment — block entries that fight the hourly trend ──
