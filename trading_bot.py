@@ -58,7 +58,7 @@ QUOTE_ASSET = 'USDT'
 # ── Multi-symbol config ──
 SYMBOLS_CONFIG = {
     'SOLUSDT':  {'base': 'SOL',  'dashboard_file': 'data_binance_sol.json',  'min_atr': 0.22},
-    'DOGEUSDT': {'base': 'DOGE', 'dashboard_file': 'data_binance_doge.json', 'min_atr': 0.002},
+    'DOGEUSDT': {'base': 'DOGE', 'dashboard_file': 'data_binance_doge.json', 'min_atr': 0.00025},
 }
 TRADING_SYMBOLS = list(SYMBOLS_CONFIG.keys())
 DEFAULT_TRADE_AMOUNT_USDT = float(os.environ.get('TRADE_AMOUNT_USDT', '80'))
@@ -118,8 +118,8 @@ state = {
     'close_log': [],        # list of {ts_iso, reason} for every bot-initiated close
     'force_trail_processed': False,  # True while force_trail flag is active, prevents duplicate fires
     'active_symbol': None,           # which symbol is currently being traded
-    'consecutive_losses': 0,         # count of losses in a row
-    'loss_cooldown_until': 0,        # epoch time until which entries are blocked after streak
+    'consecutive_losses': {},         # per-symbol count of losses in a row e.g. {'SOLUSDT': 2}
+    'loss_cooldown_until': {},        # per-symbol epoch time e.g. {'SOLUSDT': 1234567890}
 }
 
 
@@ -1257,20 +1257,25 @@ def run_once():
             status = 'CLOSED BY DASHBOARD ✅' if dashboard_close_executed else 'SL/TRAIL STOP HIT ✅'
             reason = 'Dashboard close request executed' if dashboard_close_executed else sl_reason
             confidence = 0
-            # ── Track consecutive losses for cooldown ──
+            # ── Track consecutive losses per symbol for cooldown ──
             is_loss = sl_trail_close and ('Hard SL' in sl_reason or 'Fee-covered SL' in sl_reason)
+            losses_map = state.get('consecutive_losses') or {}
+            cooldown_map = state.get('loss_cooldown_until') or {}
+            if not isinstance(losses_map, dict): losses_map = {}
+            if not isinstance(cooldown_map, dict): cooldown_map = {}
             if is_loss:
-                state['consecutive_losses'] = state.get('consecutive_losses', 0) + 1
-                streak = state['consecutive_losses']
-                logger.info(f'📉 Consecutive loss streak: {streak}')
+                losses_map[SYMBOL] = losses_map.get(SYMBOL, 0) + 1
+                streak = losses_map[SYMBOL]
+                logger.info(f'📉 {SYMBOL} consecutive loss streak: {streak}')
                 if streak >= 3:
                     cooldown_mins = 30
-                    state['loss_cooldown_until'] = time.time() + cooldown_mins * 60
-                    save_state()
-                    logger.info(f'⏸️ {streak} consecutive losses — pausing new entries for {cooldown_mins} min')
+                    cooldown_map[SYMBOL] = time.time() + cooldown_mins * 60
+                    logger.info(f'⏸️ {streak} consecutive {SYMBOL} losses — pausing for {cooldown_mins} min')
                     send_telegram(f'⚠️ <b>APEX — Loss Streak Cooldown</b>\n\n{streak} losses in a row on {SYMBOL}\nPausing new entries for {cooldown_mins} minutes.\nSL/trail still active.')
             else:
-                state['consecutive_losses'] = 0
+                losses_map[SYMBOL] = 0
+            state['consecutive_losses'] = losses_map
+            state['loss_cooldown_until'] = cooldown_map
             save_state()
         cooldown_remaining = get_same_side_cooldown(action)
         if cooldown_remaining > 0 and current_position is None:
@@ -1299,12 +1304,16 @@ def run_once():
             action = 'HOLD'
             status = f'SKIPPED — sideways + confidence {confidence}% < 85%'
 
-        # ── Consecutive loss cooldown ──
-        loss_cooldown_until = state.get('loss_cooldown_until', 0)
+        # ── Consecutive loss cooldown (per symbol) ──
+        cooldown_map = state.get('loss_cooldown_until') or {}
+        if not isinstance(cooldown_map, dict): cooldown_map = {}
+        loss_cooldown_until = cooldown_map.get(SYMBOL, 0)
+        losses_map = state.get('consecutive_losses') or {}
+        if not isinstance(losses_map, dict): losses_map = {}
         if current_position is None and action in ('LONG', 'SHORT') and time.time() < loss_cooldown_until:
             remaining = int((loss_cooldown_until - time.time()) / 60)
             action = 'HOLD'
-            status = f'⏸️ LOSS STREAK COOLDOWN — {remaining}m remaining ({state.get("consecutive_losses",0)} losses in a row)'
+            status = f'⏸️ LOSS STREAK COOLDOWN — {remaining}m remaining ({losses_map.get(SYMBOL,0)} losses in a row on {SYMBOL})'
             logger.info(status)
 
         # ── 1h trend alignment — block entries that fight the hourly trend ──
