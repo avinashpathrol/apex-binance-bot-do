@@ -829,9 +829,14 @@ def close_long(price: float, confidence: int, reason: str) -> bool:
     try:
         step = get_step_size()
         asset = get_margin_balance(BASE_ASSET)
-        quantity = round_step(asset['free'], step)
+        logger.info(f'close_long | {BASE_ASSET} free={asset["free"]:.6f} locked={asset["locked"]:.6f} net={asset["net"]:.6f} borrowed={asset["borrowed"]:.6f} | step={step}')
+        sellable = asset['free']
+        if sellable < step and asset['locked'] > step:
+            logger.warning(f'close_long | {BASE_ASSET} free=0 but locked={asset["locked"]:.6f} — trying locked amount')
+            sellable = asset['locked']
+        quantity = round_step(sellable, step)
         if quantity < step:
-            logger.info(f'No {BASE_ASSET} to sell — long already closed')
+            logger.warning(f'close_long | No {BASE_ASSET} to sell (free={asset["free"]:.6f} locked={asset["locked"]:.6f}) — long already closed or balance unavailable')
             return False
         buy_price = get_last_trade_price('BUY')
         log_close_reason(reason)
@@ -1181,14 +1186,19 @@ def run_once():
                 logger.info(f'📱 Dashboard close request ({age:.0f}s old) — closing {current_position}')
                 send_telegram(f'📱 <b>APEX — Dashboard Close</b>\n\nClosing {current_position} @ ${price:,.4f}\nRequested {age:.0f}s ago via dashboard.')
                 if current_position == 'LONG':
-                    close_long(price, 0, 'Dashboard close request')
+                    closed = close_long(price, 0, 'Dashboard close request')
                 else:
-                    close_short(price, 0, 'Dashboard close request')
-                dashboard_close_executed = True
-                current_position = detect_position()
+                    closed = close_short(price, 0, 'Dashboard close request')
+                if closed:
+                    dashboard_close_executed = True
+                    current_position = detect_position()
+                    clear_close_request()
+                else:
+                    logger.error(f'❌ Dashboard close FAILED for {current_position} — will retry next cycle')
+                    alert_error(f'Dashboard close failed for {current_position} — check server logs')
             else:
                 logger.info(f'⚠️ Dashboard close request ignored: age={age:.0f}s, position={current_position}')
-            clear_close_request()
+                clear_close_request()
 
         # ── Force trail activation — process once per flag raise, reset when flag cleared ──
         global last_force_trail_ts
