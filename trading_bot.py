@@ -312,7 +312,9 @@ def detect_position(base_asset: str = None) -> Optional[str]:
     usdt = get_margin_balance('USDT')
     logger.info(f'📊 {b} net={asset["net"]:.4f} borrowed={asset["borrowed"]:.4f} interest={asset["interest"]:.8f}')
     logger.info(f'📊 USDT net={usdt["net"]:.2f} borrowed={usdt["borrowed"]:.2f}')
-    if asset['net'] > 0.05:
+    step = get_step_size()
+    # Only count as LONG if we have at least 1 full tradeable unit (avoids dust confusion)
+    if asset['net'] >= step and asset['net'] > 0.05:
         return 'LONG'
     if (asset['borrowed'] + asset['interest']) > 0.05:
         return 'SHORT'
