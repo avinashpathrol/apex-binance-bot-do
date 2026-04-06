@@ -389,20 +389,20 @@ def get_trade_history(symbol: str = None) -> list:
 
 def cleanup_orphan_short_borrow() -> bool:
     try:
-        sol = get_margin_balance('SOL')
-        total_borrowed = sol['borrowed'] + sol['interest']
-        free_sol = sol['free']
+        asset = get_margin_balance(BASE_ASSET)
+        total_borrowed = asset['borrowed'] + asset['interest']
+        free_asset = asset['free']
         if total_borrowed < 0.0001:
             return False
-        repayable = min(free_sol, total_borrowed)
+        repayable = min(free_asset, total_borrowed)
         if repayable < 0.0001:
-            logger.info('🧹 Orphan short borrow detected but no free SOL available to repay yet')
+            logger.info(f'🧹 Orphan short borrow detected but no free {BASE_ASSET} available to repay yet')
             return False
-        ok = repay_margin('SOL', repayable)
+        ok = repay_margin(BASE_ASSET, repayable)
         if ok:
             time.sleep(1)
-            after = get_margin_balance('SOL')
-            logger.info(f'🧹 Orphan SOL repay cleanup done | remaining borrowed={after["borrowed"] + after["interest"]:.8f}')
+            after = get_margin_balance(BASE_ASSET)
+            logger.info(f'🧹 Orphan {BASE_ASSET} repay cleanup done | remaining borrowed={after["borrowed"] + after["interest"]:.8f}')
         return ok
     except Exception as e:
         logger.warning(f'cleanup_orphan_short_borrow failed: {e}')
@@ -411,7 +411,7 @@ def cleanup_orphan_short_borrow() -> bool:
 
 def cleanup_orphan_long_borrow() -> bool:
     try:
-        sol = get_margin_balance('SOL')
+        sol = get_margin_balance(BASE_ASSET)
         if sol['net'] > 0.05:
             return False  # LONG position is open, USDT borrow is intentional
         usdt = get_margin_balance('USDT')
@@ -801,15 +801,15 @@ def open_long(price: float, confidence: int, reason: str) -> bool:
             return False
         time.sleep(1)
         quantity = round_step((gross_usdt * 0.995) / price, step)
-        if quantity < 0.01:
+        if quantity < step:
             return False
         resp = margin_order('BUY', quantity, 'NO_SIDE_EFFECT')
         init_trail(price)
-        logger.info(f'✅ LONG OPEN: {quantity:.4f} SOL @ ${price:.4f} | settings={format_runtime_summary()} | id={resp.get("orderId")}')
+        logger.info(f'✅ LONG OPEN: {quantity:.4f} {BASE_ASSET} @ ${price:.4f} | settings={format_runtime_summary()} | id={resp.get("orderId")}')
         atr = safe_float(state.get('trail_atr'), 0)
         sl = price - atr * HARD_SL_ATR
         trail_activates = price + atr
-        send_telegram(f'🟢 <b>APEX — LONG OPENED ({leverage}x)</b>\n\n📌 Asset: SOL/USDT\n💰 Price: ${price:,.4f}\n💵 Collateral: ${collateral_usdt:.2f}\n🔥 Effective: ${gross_usdt:.2f}\n🪙 Quantity: {quantity:.4f} SOL\n🏦 Borrowed: ${borrow_amt:.2f} USDT\n🎯 Confidence: {confidence}%\n🛑 Hard SL: ${sl:.4f}\n📐 Trail activates at: ${trail_activates:.4f}\n📈 Signals: {reason}')
+        send_telegram(f'🟢 <b>APEX — LONG OPENED ({leverage}x)</b>\n\n📌 Asset: {SYMBOL[:3]}/USDT\n💰 Price: ${price:,.4f}\n💵 Collateral: ${collateral_usdt:.2f}\n🔥 Effective: ${gross_usdt:.2f}\n🪙 Quantity: {quantity:.4f} {BASE_ASSET}\n🏦 Borrowed: ${borrow_amt:.2f} USDT\n🎯 Confidence: {confidence}%\n🛑 Hard SL: ${sl:.4f}\n📐 Trail activates at: ${trail_activates:.4f}\n📈 Signals: {reason}')
         return True
     except Exception as e:
         logger.error(f'open_long failed: {e}')
@@ -828,23 +828,23 @@ def log_close_reason(reason: str) -> None:
 def close_long(price: float, confidence: int, reason: str) -> bool:
     try:
         step = get_step_size()
-        sol = get_margin_balance('SOL')
-        quantity = round_step(sol['free'], step)
-        if quantity < 0.01:
-            logger.info('No SOL to sell — long already closed')
+        asset = get_margin_balance(BASE_ASSET)
+        quantity = round_step(asset['free'], step)
+        if quantity < step:
+            logger.info(f'No {BASE_ASSET} to sell — long already closed')
             return False
         buy_price = get_last_trade_price('BUY')
         log_close_reason(reason)
         resp = margin_order('SELL', quantity, 'AUTO_REPAY')
         mark_bot_close('LONG')
-        logger.info(f'✅ LONG CLOSE: sold {quantity:.4f} SOL @ ${price:.4f} | id={resp.get("orderId")}')
+        logger.info(f'✅ LONG CLOSE: sold {quantity:.4f} {BASE_ASSET} @ ${price:.4f} | id={resp.get("orderId")}')
         pnl_line = ''
         if buy_price:
             pnl = (price - buy_price) * quantity
             fee = (buy_price + price) * quantity * 0.001  # 0.1% each side
             net = pnl - fee
             pnl_line = f'\n✅ Gross P&amp;L: {pnl:+.4f} USDT\n💸 Fees: -{fee:.4f} USDT\n🏦 Net P&amp;L: {net:+.4f} USDT'
-        send_telegram(f'🔴 <b>APEX — LONG CLOSED</b>\n\n💰 Price: ${price:,.4f}\n🪙 Quantity: {quantity:.4f} SOL\n🎯 Confidence: {confidence}%\n📉 Signals: {reason}{pnl_line}')
+        send_telegram(f'🔴 <b>APEX — LONG CLOSED</b>\n\n💰 Price: ${price:,.4f}\n🪙 Quantity: {quantity:.4f} {BASE_ASSET}\n🎯 Confidence: {confidence}%\n📉 Signals: {reason}{pnl_line}')
         return True
     except Exception as e:
         logger.error(f'close_long failed: {e}')
@@ -863,19 +863,19 @@ def open_short(price: float, confidence: int, reason: str) -> bool:
         if available < collateral_usdt:
             logger.warning(f'Insufficient USDT collateral: need ${collateral_usdt:.2f}, have ${available:.2f}')
             return False
-        borrow_sol = round_step((gross_usdt * 0.995) / price, step)
-        if borrow_sol < 0.01:
+        borrow_base = round_step((gross_usdt * 0.995) / price, step)
+        if borrow_base < step:
             return False
-        if not borrow_margin('SOL', borrow_sol):
+        if not borrow_margin(BASE_ASSET, borrow_base):
             return False
         time.sleep(1)
-        resp = margin_order('SELL', borrow_sol, 'NO_SIDE_EFFECT')
+        resp = margin_order('SELL', borrow_base, 'NO_SIDE_EFFECT')
         init_trail(price)
-        logger.info(f'✅ SHORT OPEN: sold {borrow_sol:.4f} SOL @ ${price:.4f} | settings={format_runtime_summary()} | id={resp.get("orderId")}')
+        logger.info(f'✅ SHORT OPEN: sold {borrow_base:.4f} {BASE_ASSET} @ ${price:.4f} | settings={format_runtime_summary()} | id={resp.get("orderId")}')
         atr = safe_float(state.get('trail_atr'), 0)
         sl = price + atr * HARD_SL_ATR
         trail_activates = price - atr
-        send_telegram(f'🔴 <b>APEX — SHORT OPENED ({leverage}x)</b>\n\n📌 Asset: SOL/USDT\n💰 Price: ${price:,.4f}\n💵 Collateral: ${collateral_usdt:.2f}\n🔥 Effective: ${gross_usdt:.2f}\n🪙 Quantity: {borrow_sol:.4f} SOL\n🏦 Borrowed: {borrow_sol:.4f} SOL\n🎯 Confidence: {confidence}%\n🛑 Hard SL: ${sl:.4f}\n📐 Trail activates at: ${trail_activates:.4f}\n📉 Signals: {reason}')
+        send_telegram(f'🔴 <b>APEX — SHORT OPENED ({leverage}x)</b>\n\n📌 Asset: {SYMBOL[:3]}/USDT\n💰 Price: ${price:,.4f}\n💵 Collateral: ${collateral_usdt:.2f}\n🔥 Effective: ${gross_usdt:.2f}\n🪙 Quantity: {borrow_base:.4f} {BASE_ASSET}\n🏦 Borrowed: {borrow_base:.4f} {BASE_ASSET}\n🎯 Confidence: {confidence}%\n🛑 Hard SL: ${sl:.4f}\n📐 Trail activates at: ${trail_activates:.4f}\n📉 Signals: {reason}')
         return True
     except Exception as e:
         logger.error(f'open_short failed: {e}')
@@ -886,10 +886,10 @@ def open_short(price: float, confidence: int, reason: str) -> bool:
 def close_short(price: float, confidence: int, reason: str) -> bool:
     try:
         step = get_step_size()
-        sol = get_margin_balance('SOL')
-        borrowed_total = sol['borrowed'] + sol['interest']
+        asset = get_margin_balance(BASE_ASSET)
+        borrowed_total = asset['borrowed'] + asset['interest']
         if borrowed_total < 0.0001:
-            logger.info('No borrowed SOL to repay — short already closed')
+            logger.info(f'No borrowed {BASE_ASSET} to repay — short already closed')
             cleanup_orphan_short_borrow()
             return False
         sell_price = get_last_trade_price('SELL')
@@ -899,10 +899,10 @@ def close_short(price: float, confidence: int, reason: str) -> bool:
             quantity = round_step(borrowed_total + step, step)
         resp = margin_order('BUY', quantity, 'AUTO_REPAY')
         mark_bot_close('SHORT')
-        logger.info(f'✅ SHORT CLOSE: bought {quantity:.4f} SOL @ ${price:.4f} | borrowed_total={borrowed_total:.8f} | id={resp.get("orderId")}')
+        logger.info(f'✅ SHORT CLOSE: bought {quantity:.4f} {BASE_ASSET} @ ${price:.4f} | borrowed_total={borrowed_total:.8f} | id={resp.get("orderId")}')
         time.sleep(2)
         cleanup_orphan_short_borrow()
-        after = get_margin_balance('SOL')
+        after = get_margin_balance(BASE_ASSET)
         remaining = after['borrowed'] + after['interest']
         pnl_line = ''
         if sell_price:
@@ -910,7 +910,7 @@ def close_short(price: float, confidence: int, reason: str) -> bool:
             fee = (sell_price + price) * quantity * 0.001  # 0.1% each side
             net = pnl - fee
             pnl_line = f'\n✅ Gross P&amp;L: {pnl:+.4f} USDT\n💸 Fees: -{fee:.4f} USDT\n🏦 Net P&amp;L: {net:+.4f} USDT'
-        send_telegram(f'🟢 <b>APEX — SHORT CLOSED</b>\n\n💰 Close: ${price:,.4f}\n🪙 Quantity: {quantity:.4f} SOL\n🎯 Confidence: {confidence}%\n📈 Signals: {reason}{pnl_line}')
+        send_telegram(f'🟢 <b>APEX — SHORT CLOSED</b>\n\n💰 Close: ${price:,.4f}\n🪙 Quantity: {quantity:.4f} {BASE_ASSET}\n🎯 Confidence: {confidence}%\n📈 Signals: {reason}{pnl_line}')
         return remaining < 0.01
     except Exception as e:
         logger.error(f'close_short failed: {e}')
