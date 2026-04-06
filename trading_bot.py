@@ -478,19 +478,19 @@ def build_closed_trades_from_history(trades: list) -> list:
         ts = t.get('time')
         if action == 'BUY':
             if current_trade is None:
-                current_trade = {'side': 'LONG', 'entry_price': price, 'qty': qty, 'entry_fee': fee, 'opened_at': ts}
+                current_trade = {'side': 'LONG', 'entry_price': price, 'qty': qty, 'entry_fee_usdt': price * qty * 0.001, 'opened_at': ts}
             elif current_trade['side'] == 'SHORT':
                 exit_qty = min(current_trade['qty'], qty)
-                total_fee = current_trade.get('entry_fee', 0.0) + fee
+                total_fee = current_trade.get('entry_fee_usdt', 0.0) + price * qty * 0.001
                 pnl = (current_trade['entry_price'] - price) * exit_qty - total_fee
                 closed.append({'source': 'binance', 'side': 'SHORT', 'entry_price': round(current_trade['entry_price'], 8), 'exit_price': round(price, 8), 'qty': round(exit_qty, 8), 'fee': round(total_fee, 8), 'pnl': round(pnl, 4), 'pnl_pct': round(((current_trade['entry_price'] - price) / current_trade['entry_price']) * 100 * lev, 2), 'win': pnl > 0, 'opened_at': current_trade['opened_at'], 'closed_at': ts, 'note': 'Derived from margin trade history'})
                 current_trade = None
         elif action == 'SELL':
             if current_trade is None:
-                current_trade = {'side': 'SHORT', 'entry_price': price, 'qty': qty, 'entry_fee': fee, 'opened_at': ts}
+                current_trade = {'side': 'SHORT', 'entry_price': price, 'qty': qty, 'entry_fee_usdt': price * qty * 0.001, 'opened_at': ts}
             elif current_trade['side'] == 'LONG':
                 exit_qty = min(current_trade['qty'], qty)
-                total_fee = current_trade.get('entry_fee', 0.0) + fee
+                total_fee = current_trade.get('entry_fee_usdt', 0.0) + price * qty * 0.001
                 pnl = (price - current_trade['entry_price']) * exit_qty - total_fee
                 closed.append({'source': 'binance', 'side': 'LONG', 'entry_price': round(current_trade['entry_price'], 8), 'exit_price': round(price, 8), 'qty': round(exit_qty, 8), 'fee': round(total_fee, 8), 'pnl': round(pnl, 4), 'pnl_pct': round(((price - current_trade['entry_price']) / current_trade['entry_price']) * 100 * lev, 2), 'win': pnl > 0, 'opened_at': current_trade['opened_at'], 'closed_at': ts, 'note': 'Derived from margin trade history'})
                 current_trade = None
@@ -911,6 +911,13 @@ def close_short(price: float, confidence: int, reason: str) -> bool:
         cleanup_orphan_short_borrow()
         after = get_margin_balance(BASE_ASSET)
         remaining = after['borrowed'] + after['interest']
+        # Sell any excess base asset left over from SHORT_CLOSE_BUFFER overbuy
+        if after['free'] >= step:
+            logger.info(f'🧹 Selling excess {BASE_ASSET} from short close | free={after["free"]:.4f}')
+            try:
+                margin_order('SELL', round_step(after['free'], step), 'AUTO_REPAY')
+            except Exception as ex:
+                logger.warning(f'Excess {BASE_ASSET} sell failed: {ex}')
         pnl_line = ''
         if sell_price:
             pnl = (sell_price - price) * quantity
