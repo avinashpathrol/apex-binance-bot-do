@@ -1281,9 +1281,12 @@ def run_once():
                 cooldown_map = state.get('loss_cooldown_until') or {}
                 if not isinstance(cooldown_map, dict): cooldown_map = {}
                 recent = get_trade_history(SYMBOL)
+                min_trade_qty = max(get_step_size() * 10, 0.1)  # ignore dust sells < 10 units
                 # Pair into closed trades to get last 3 results
                 _opens, _closed = [], []
                 for t in sorted(recent, key=lambda x: x['time']):
+                    if t['qty'] < min_trade_qty:
+                        continue  # skip dust fills (leftover from SHORT_CLOSE_BUFFER excess)
                     if t['action'] == 'BUY':
                         if _opens and _opens[-1]['action'] == 'BUY':
                             o = _opens[-1]
