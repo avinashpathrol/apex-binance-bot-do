@@ -1358,6 +1358,11 @@ def run_once():
             action = 'HOLD'
             status = f'SKIPPED — SHORT blocked, 1h trend is BULLISH (price > EMA-15 > EMA-40)'
             logger.info(status)
+        # DOGE is long-only — shorts perform poorly on this asset
+        if current_position is None and action == 'SHORT' and SYMBOL == 'DOGEUSDT':
+            action = 'HOLD'
+            status = 'SKIPPED — SHORT blocked for DOGE (long-only mode)'
+            logger.info(status)
 
         # AI CHOPPY filter — block new entries when AI sees choppy/indecisive market
         if current_position is None and action in ('LONG', 'SHORT') and last_ai_analysis:
