@@ -1358,21 +1358,16 @@ def run_once():
             action = 'HOLD'
             status = f'SKIPPED — SHORT blocked, 1h trend is BULLISH (price > EMA-15 > EMA-40)'
             logger.info(status)
+        # DOGE long-only: also block LONG when trend is SIDEWAYS (only trade confirmed uptrends)
+        if current_position is None and action == 'LONG' and trend == 'SIDEWAYS' and SYMBOL == 'DOGEUSDT':
+            action = 'HOLD'
+            status = 'SKIPPED — LONG blocked for DOGE, 1h trend is SIDEWAYS (needs confirmed uptrend)'
+            logger.info(status)
         # DOGE is long-only — shorts perform poorly on this asset
         if current_position is None and action == 'SHORT' and SYMBOL == 'DOGEUSDT':
             action = 'HOLD'
             status = 'SKIPPED — SHORT blocked for DOGE (long-only mode)'
             logger.info(status)
-
-        # AI CHOPPY filter — block new entries when AI sees choppy/indecisive market
-        if current_position is None and action in ('LONG', 'SHORT') and last_ai_analysis:
-            ai_verdict = (last_ai_analysis.get('verdict') or '').upper()
-            if ai_verdict == 'CHOPPY':
-                ai_strength = float(last_ai_analysis.get('strength') or 0)
-                logger.info(f'🤖 AI CHOPPY verdict (strength {ai_strength}/10) — blocking {action} entry')
-                send_telegram(f'🤖 <b>APEX — AI Blocked Entry</b>\n\nAI sees CHOPPY market (strength {ai_strength}/10)\nBot wanted to open {action} — skipping to avoid whipsaw.\n💰 Price: ${price:.4f}')
-                action = 'HOLD'
-                status = f'AI BLOCKED — CHOPPY market (strength {ai_strength}/10)'
 
         paused_symbols = cfg.get('paused_symbols', [])
         sym_label = SYMBOLS_CONFIG.get(SYMBOL, {}).get('base', 'SOL')
@@ -1458,7 +1453,7 @@ def run_once():
 
         # ── AI analysis every run ──
         if GROQ_API_KEY and run_count % AI_ANALYSIS_INTERVAL == 0:
-            last_ai_analysis = fetch_ai_analysis(price, current_position, decision)
+            last_ai_analysis = {}  # AI analysis disabled — using trend filter instead
 
         # Always fetch trade history for the active symbol specifically
         trade_history = merge_close_reasons(get_trade_history(SYMBOL))
