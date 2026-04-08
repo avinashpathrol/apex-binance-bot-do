@@ -1157,19 +1157,35 @@ def run_once():
                     _df = get_market_data(sym)
                     _price = get_current_price(sym)
                     _dec = get_decision(_df, _price)
-                    _conf = _dec['confidence'] if _dec['action'] in ('LONG', 'SHORT') else 0
-                    # Apply trend filter — only count confident trending signals
-                    if _dec['action'] == 'LONG' and not (_df.iloc[-1]['ema_20'] > _df.iloc[-1]['ema_50']):
+                    _action = _dec['action']
+                    _conf = _dec['confidence'] if _action in ('LONG', 'SHORT') else 0
+                    # Apply 15m trend filter
+                    if _action == 'LONG' and not (_df.iloc[-1]['ema_20'] > _df.iloc[-1]['ema_50']):
                         _conf = 0
-                    if _dec['action'] == 'SHORT' and not (_df.iloc[-1]['ema_20'] < _df.iloc[-1]['ema_50']):
+                    if _action == 'SHORT' and not (_df.iloc[-1]['ema_20'] < _df.iloc[-1]['ema_50']):
                         _conf = 0
-                    logger.info(f'📊 {sym}: price={_price:.4f} signal={_dec["action"]} conf={_conf}%')
+                    # Apply 1h trend filter at selection time
+                    _1h_trend = get_trend_filter(sym)
+                    if _action == 'LONG' and _1h_trend == 'BEARISH':
+                        _conf = 0
+                    if _action == 'SHORT' and _1h_trend == 'BULLISH':
+                        _conf = 0
+                    # DOGE: block LONG in SIDEWAYS, block all SHORTs
+                    if sym == 'DOGEUSDT' and _action == 'LONG' and _1h_trend == 'SIDEWAYS':
+                        _conf = 0
+                    if sym == 'DOGEUSDT' and _action == 'SHORT':
+                        _conf = 0
+                    # Respect paused symbols
+                    _paused = cfg.get('paused_symbols', []) if 'cfg' in dir() else []
+                    if SYMBOLS_CONFIG[sym]['base'] in _paused:
+                        _conf = 0
+                    logger.info(f'📊 {sym}: price={_price:.4f} signal={_action} 1h={_1h_trend} conf={_conf}%')
                     if _conf > best_conf:
                         best_conf, best_sym = _conf, sym
                 except Exception as e:
                     logger.warning(f'Symbol eval failed for {sym}: {e}')
-            # Default to SOL if nothing beats threshold
-            SYMBOL = best_sym or 'SOLUSDT'
+            # Default to DOGE if nothing beats threshold (will be blocked by filters if no signal)
+            SYMBOL = best_sym or 'DOGEUSDT'
             BASE_ASSET = SYMBOLS_CONFIG[SYMBOL]['base']
             state['active_symbol'] = SYMBOL
             logger.info(f'🎯 Selected symbol: {SYMBOL} (conf={best_conf}%)')
