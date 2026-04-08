@@ -1285,6 +1285,13 @@ def run_once():
             status = 'CLOSED BY DASHBOARD ✅' if dashboard_close_executed else 'SL/TRAIL STOP HIT ✅'
             reason = 'Dashboard close request executed' if dashboard_close_executed else sl_reason
             confidence = 0
+            # Block immediate re-entry after any close — wait 15 min before next trade
+            reentry_cooldown_map = state.get('reentry_cooldown_until') or {}
+            if not isinstance(reentry_cooldown_map, dict): reentry_cooldown_map = {}
+            reentry_cooldown_map[SYMBOL] = time.time() + 15 * 60
+            state['reentry_cooldown_until'] = reentry_cooldown_map
+            save_state()
+            logger.info(f'⏳ Post-close cooldown set — no new {SYMBOL} entries for 15 min')
             # ── Check last 3 closed trades from history for loss streak cooldown ──
             try:
                 cooldown_map = state.get('loss_cooldown_until') or {}
@@ -1356,6 +1363,16 @@ def run_once():
             remaining = int((loss_cooldown_until - time.time()) / 60)
             action = 'HOLD'
             status = f'⏸️ LOSS STREAK COOLDOWN — {remaining}m remaining on {SYMBOL}'
+            logger.info(status)
+
+        # ── Post-close re-entry cooldown — prevent immediate re-entry after SL/trail/dashboard close ──
+        reentry_cooldown_map = state.get('reentry_cooldown_until') or {}
+        if not isinstance(reentry_cooldown_map, dict): reentry_cooldown_map = {}
+        reentry_until = reentry_cooldown_map.get(SYMBOL, 0)
+        if current_position is None and action in ('LONG', 'SHORT') and time.time() < reentry_until:
+            remaining = int((reentry_until - time.time()) / 60) + 1
+            action = 'HOLD'
+            status = f'⏳ POST-CLOSE COOLDOWN — waiting {remaining}m before next {SYMBOL} entry'
             logger.info(status)
 
         # ── 1h trend alignment — block entries that fight the hourly trend ──
