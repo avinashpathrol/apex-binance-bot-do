@@ -85,7 +85,7 @@ ALLOWED_LEVERAGES = {3.0, 4.0, 5.0}
 # ── Trailing stop tuning ──
 TRAIL_ACTIVATE_ATR  = 0.75  # price must move this many × ATR in profit before trail activates
 TRAIL_DISTANCE_ATR  = 1.4   # trail follows best price, staying this many × ATR behind it
-HARD_SL_ATR         = 1.0   # hard stop loss distance from entry (before trail activates)
+HARD_SL_ATR         = 0.6   # hard stop loss distance from entry (before trail activates)
 
 run_count = 0
 last_hold_alert = 0
@@ -1083,22 +1083,15 @@ def check_sl_trail(position: str, price: float) -> tuple[bool, str]:
     trail_dist    = atr * TRAIL_DISTANCE_ATR
     activate_dist = atr * TRAIL_ACTIVATE_ATR
 
-    # ── Hard stop loss — once trail activates, floor rises to entry + fee buffer ──
-    # Fee buffer: 0.1% per side × 2 = 0.2% round trip, so close is profitable after fees
-    FEE_BUFFER = 0.005  # 0.5% of entry price — guarantees net profit after round-trip fees
+    # ── Hard stop loss — only active before trail activates ──
     profit_dist_now = (best - entry) if is_long else (entry - best)
     trail_activated = profit_dist_now >= activate_dist
-    if trail_activated:
-        # Trail active — floor guarantees profit after fees
-        sl = entry * (1 + FEE_BUFFER) if is_long else entry * (1 - FEE_BUFFER)
-    else:
+    if not trail_activated:
         sl = entry - hard_sl_dist if is_long else entry + hard_sl_dist
-    if is_long and price <= sl:
-        label = '✅ Fee-covered SL hit' if trail_activated else '🛑 Hard SL hit'
-        return True, f'{label} | entry={entry:.4f} sl={sl:.4f} price={price:.4f} | ATR={atr:.4f}'
-    if not is_long and price >= sl:
-        label = '✅ Fee-covered SL hit' if trail_activated else '🛑 Hard SL hit'
-        return True, f'{label} | entry={entry:.4f} sl={sl:.4f} price={price:.4f} | ATR={atr:.4f}'
+        if is_long and price <= sl:
+            return True, f'🛑 Hard SL hit | entry={entry:.4f} sl={sl:.4f} price={price:.4f} | ATR={atr:.4f}'
+        if not is_long and price >= sl:
+            return True, f'🛑 Hard SL hit | entry={entry:.4f} sl={sl:.4f} price={price:.4f} | ATR={atr:.4f}'
 
     # ── Update best price ──
     if is_long:
