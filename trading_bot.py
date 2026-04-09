@@ -539,8 +539,13 @@ def get_market_data(symbol: str, interval: str = '5m', limit: int = 100) -> pd.D
     df = pd.DataFrame(klines, columns=['time','open','high','low','close','volume','close_time','quote_volume','trades','taker_base','taker_quote','ignore'])
     df = df.astype({'open': float, 'high': float, 'low': float, 'close': float, 'volume': float})
     df['rsi'] = ta.momentum.RSIIndicator(df['close'], window=14).rsi()
+    stoch = ta.momentum.StochRSIIndicator(df['close'], window=14, smooth1=3, smooth2=3)
+    df['stoch_k'] = stoch.stochrsi_k() * 100
+    df['stoch_d'] = stoch.stochrsi_d() * 100
     macd = ta.trend.MACD(df['close'])
     df['macd'] = macd.macd(); df['macd_sig'] = macd.macd_signal(); df['macd_hist'] = macd.macd_diff()
+    df['ema_9']  = ta.trend.EMAIndicator(df['close'], window=9).ema_indicator()
+    df['ema_21'] = ta.trend.EMAIndicator(df['close'], window=21).ema_indicator()
     df['ema_20'] = ta.trend.EMAIndicator(df['close'], window=20).ema_indicator()
     df['ema_50'] = ta.trend.EMAIndicator(df['close'], window=50).ema_indicator()
     bb = ta.volatility.BollingerBands(df['close'], window=20, window_dev=2)
@@ -575,58 +580,81 @@ def get_decision(df: pd.DataFrame, price: float) -> dict:
     prev = df.iloc[-2]
     bullish_signals = []
     bearish_signals = []
-    if curr['rsi'] < 35:
+
+    # ── RSI ──
+    if curr['rsi'] < 32:
         bullish_signals.append(f"RSI oversold ({curr['rsi']:.1f})")
-    elif curr['rsi'] < 50 and prev['rsi'] < curr['rsi']:
+    elif curr['rsi'] < 48 and prev['rsi'] < curr['rsi']:
         bullish_signals.append(f"RSI rising from low ({curr['rsi']:.1f})")
-    if curr['rsi'] > 65:
+    if curr['rsi'] > 68:
         bearish_signals.append(f"RSI overbought ({curr['rsi']:.1f})")
-    elif curr['rsi'] > 50 and prev['rsi'] > curr['rsi']:
+    elif curr['rsi'] > 52 and prev['rsi'] > curr['rsi']:
         bearish_signals.append(f"RSI falling from high ({curr['rsi']:.1f})")
+
+    # ── Stochastic RSI ──
+    k, d, pk, pd_ = curr['stoch_k'], curr['stoch_d'], prev['stoch_k'], prev['stoch_d']
+    if k < 20 and d < 20:
+        bullish_signals.append(f"StochRSI oversold (K={k:.0f})")
+    elif pk < pd_ and k > d and k < 50:
+        bullish_signals.append(f"StochRSI bullish crossover (K={k:.0f})")
+    if k > 80 and d > 80:
+        bearish_signals.append(f"StochRSI overbought (K={k:.0f})")
+    elif pk > pd_ and k < d and k > 50:
+        bearish_signals.append(f"StochRSI bearish crossover (K={k:.0f})")
+
+    # ── MACD crossover only (not just "above/below") ──
     if prev['macd'] < prev['macd_sig'] and curr['macd'] > curr['macd_sig']:
         bullish_signals.append('MACD bullish crossover')
-    elif curr['macd'] > curr['macd_sig'] and curr['macd_hist'] > 0:
-        bullish_signals.append('MACD above signal (bullish)')
     if prev['macd'] > prev['macd_sig'] and curr['macd'] < curr['macd_sig']:
         bearish_signals.append('MACD bearish crossover')
-    elif curr['macd'] < curr['macd_sig'] and curr['macd_hist'] < 0:
-        bearish_signals.append('MACD below signal (bearish)')
-    if curr['ema_20'] > curr['ema_50']:
-        bullish_signals.append('EMA-20 above EMA-50 (uptrend)')
-    else:
-        bearish_signals.append('EMA-20 below EMA-50 (downtrend)')
-    if price > curr['ema_20']:
-        bullish_signals.append('Price above EMA-20')
-    else:
-        bearish_signals.append('Price below EMA-20')
-    bb_range = curr['bb_upper'] - curr['bb_lower']
-    if bb_range > 0:
-        bb_pct = (price - curr['bb_lower']) / bb_range
-        if bb_pct < 0.20:
-            bullish_signals.append(f"Price near BB lower band ({bb_pct*100:.0f}%)")
-        elif bb_pct > 0.80:
-            bearish_signals.append(f"Price near BB upper band ({bb_pct*100:.0f}%)")
+
+    # ── EMA-9/21 crossover (faster trend) ──
+    if prev['ema_9'] < prev['ema_21'] and curr['ema_9'] > curr['ema_21']:
+        bullish_signals.append('EMA-9 crossed above EMA-21')
+    elif curr['ema_9'] > curr['ema_21']:
+        bullish_signals.append(f"EMA-9 above EMA-21 (momentum up)")
+    if prev['ema_9'] > prev['ema_21'] and curr['ema_9'] < curr['ema_21']:
+        bearish_signals.append('EMA-9 crossed below EMA-21')
+    elif curr['ema_9'] < curr['ema_21']:
+        bearish_signals.append(f"EMA-9 below EMA-21 (momentum down)")
+
+    # ── Candle body strength (conviction candle) ──
+    body = abs(curr['close'] - curr['open'])
+    candle_range = curr['high'] - curr['low']
+    if candle_range > 0:
+        body_pct = body / candle_range
+        if body_pct > 0.65:
+            if curr['close'] > curr['open']:
+                bullish_signals.append(f"Strong bullish candle ({body_pct*100:.0f}% body)")
+            else:
+                bearish_signals.append(f"Strong bearish candle ({body_pct*100:.0f}% body)")
+
+    # ── Swing high/low breakout (last 20 candles) ──
+    lookback = df.iloc[-21:-1]
+    swing_high = lookback['high'].max()
+    swing_low  = lookback['low'].min()
+    if price > swing_high:
+        bullish_signals.append(f"Breaking 20-candle high (${swing_high:.4f})")
+    if price < swing_low:
+        bearish_signals.append(f"Breaking 20-candle low (${swing_low:.4f})")
+
+    # ── Volume confirmation ──
     avg_vol = df['volume'].tail(10).mean()
-    if curr['volume'] > avg_vol * 1.3:
+    if curr['volume'] > avg_vol * 1.4:
         if len(bullish_signals) > len(bearish_signals):
             bullish_signals.append('High volume confirms move')
-        else:
+        elif len(bearish_signals) > len(bullish_signals):
             bearish_signals.append('High volume confirms move')
+
     bull_count = len(bullish_signals)
     bear_count = len(bearish_signals)
     total = bull_count + bear_count or 1
-    trend_up = curr['ema_20'] > curr['ema_50']
-    trend_down = curr['ema_20'] < curr['ema_50']
-    if bull_count >= MIN_SIGNALS and bull_count > bear_count and trend_up:
+
+    if bull_count >= MIN_SIGNALS and bull_count > bear_count:
         return {'action': 'LONG', 'confidence': int(min(95, 55 + (bull_count / total) * 45)), 'risk_level': 'LOW' if bull_count >= 4 else 'MEDIUM', 'reason': ' | '.join(bullish_signals), 'bullish_signals': bullish_signals, 'bearish_signals': bearish_signals}
-    if bear_count >= MIN_SIGNALS and bear_count > bull_count and trend_down:
+    if bear_count >= MIN_SIGNALS and bear_count > bull_count:
         return {'action': 'SHORT', 'confidence': int(min(95, 55 + (bear_count / total) * 45)), 'risk_level': 'LOW' if bear_count >= 4 else 'MEDIUM', 'reason': ' | '.join(bearish_signals), 'bullish_signals': bullish_signals, 'bearish_signals': bearish_signals}
-    reason = f'Mixed signals — {bull_count} bullish, {bear_count} bearish'
-    if bull_count >= MIN_SIGNALS and bull_count > bear_count and not trend_up:
-        reason = f'Blocked LONG — trend filter active (EMA-20 <= EMA-50) | {bull_count} bullish, {bear_count} bearish'
-    elif bear_count >= MIN_SIGNALS and bear_count > bull_count and not trend_down:
-        reason = f'Blocked SHORT — trend filter active (EMA-20 >= EMA-50) | {bull_count} bullish, {bear_count} bearish'
-    return {'action': 'HOLD', 'confidence': 0, 'risk_level': 'MEDIUM', 'reason': reason, 'bullish_signals': bullish_signals, 'bearish_signals': bearish_signals}
+    return {'action': 'HOLD', 'confidence': 0, 'risk_level': 'MEDIUM', 'reason': f'Mixed signals — {bull_count} bullish, {bear_count} bearish', 'bullish_signals': bullish_signals, 'bearish_signals': bearish_signals}
 
 
 def fetch_dashboard_config() -> dict:
