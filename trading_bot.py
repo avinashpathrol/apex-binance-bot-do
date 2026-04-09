@@ -832,6 +832,7 @@ def open_long(price: float, confidence: int, reason: str) -> bool:
         if quantity < step:
             return False
         resp = margin_order('BUY', quantity, 'NO_SIDE_EFFECT')
+        state['trade_opened_at'] = now_utc_iso()
         init_trail(price)
         logger.info(f'✅ LONG OPEN: {quantity:.4f} {BASE_ASSET} @ ${price:.4f} | settings={format_runtime_summary()} | id={resp.get("orderId")}')
         atr = safe_float(state.get('trail_atr'), 0)
@@ -843,6 +844,28 @@ def open_long(price: float, confidence: int, reason: str) -> bool:
         logger.error(f'open_long failed: {e}')
         alert_error(f'open_long: {e}')
         return False
+
+
+def record_closed_trade(side: str, entry_price: float, exit_price: float, qty: float, reason: str) -> None:
+    """Save a closed trade record to state for accurate dashboard display."""
+    lev = runtime_settings.get('leverage', DEFAULT_LEVERAGE)
+    fee = (entry_price + exit_price) * qty * 0.001
+    if side == 'LONG':
+        pnl = round((exit_price - entry_price) * qty - fee, 4)
+    else:
+        pnl = round((entry_price - exit_price) * qty - fee, 4)
+    opened_at = state.get('trade_opened_at')
+    record = {
+        'source': 'bot', 'side': side,
+        'entry_price': round(entry_price, 8), 'exit_price': round(exit_price, 8),
+        'qty': round(qty, 8), 'fee': round(fee, 4), 'pnl': pnl,
+        'win': pnl > 0, 'opened_at': opened_at, 'closed_at': now_utc_iso(),
+        'note': reason[:120],
+    }
+    log = state.get('closed_trades_log') or []
+    log.append(record)
+    state['closed_trades_log'] = log[-200:]
+    save_state()
 
 
 def log_close_reason(reason: str) -> None:
@@ -866,15 +889,17 @@ def close_long(price: float, confidence: int, reason: str) -> bool:
         if quantity < step:
             logger.warning(f'close_long | No {BASE_ASSET} to sell (free={asset["free"]:.6f} locked={asset["locked"]:.6f}) — long already closed or balance unavailable')
             return False
+        entry_price = safe_float(state.get('trail_entry_price'), price)
         buy_price = get_last_trade_price('BUY')
         log_close_reason(reason)
         resp = margin_order('SELL', quantity, 'AUTO_REPAY')
         mark_bot_close('LONG')
         logger.info(f'✅ LONG CLOSE: sold {quantity:.4f} {BASE_ASSET} @ ${price:.4f} | id={resp.get("orderId")}')
+        record_closed_trade('LONG', entry_price, price, quantity, reason)
         pnl_line = ''
         if buy_price:
             pnl = (price - buy_price) * quantity
-            fee = (buy_price + price) * quantity * 0.001  # 0.1% each side
+            fee = (buy_price + price) * quantity * 0.001
             net = pnl - fee
             pnl_line = f'\n✅ Gross P&amp;L: {pnl:+.4f} USDT\n💸 Fees: -{fee:.4f} USDT\n🏦 Net P&amp;L: {net:+.4f} USDT'
         send_telegram(f'🔴 <b>APEX — LONG CLOSED</b>\n\n💰 Price: ${price:,.4f}\n🪙 Quantity: {quantity:.4f} {BASE_ASSET}\n🎯 Confidence: {confidence}%\n📉 Signals: {reason}{pnl_line}')
@@ -903,6 +928,7 @@ def open_short(price: float, confidence: int, reason: str) -> bool:
             return False
         time.sleep(1)
         resp = margin_order('SELL', borrow_base, 'NO_SIDE_EFFECT')
+        state['trade_opened_at'] = now_utc_iso()
         init_trail(price)
         logger.info(f'✅ SHORT OPEN: sold {borrow_base:.4f} {BASE_ASSET} @ ${price:.4f} | settings={format_runtime_summary()} | id={resp.get("orderId")}')
         atr = safe_float(state.get('trail_atr'), 0)
@@ -931,8 +957,10 @@ def close_short(price: float, confidence: int, reason: str) -> bool:
         if quantity < borrowed_total:
             quantity = round_step(borrowed_total + step, step)
         resp = margin_order('BUY', quantity, 'AUTO_REPAY')
+        entry_price = safe_float(state.get('trail_entry_price'), price)
         mark_bot_close('SHORT')
         logger.info(f'✅ SHORT CLOSE: bought {quantity:.4f} {BASE_ASSET} @ ${price:.4f} | borrowed_total={borrowed_total:.8f} | id={resp.get("orderId")}')
+        record_closed_trade('SHORT', entry_price, price, quantity, reason)
         time.sleep(2)
         cleanup_orphan_short_borrow()
         after = get_margin_balance(BASE_ASSET)
@@ -946,8 +974,8 @@ def close_short(price: float, confidence: int, reason: str) -> bool:
                 logger.warning(f'Excess {BASE_ASSET} sell failed: {ex}')
         pnl_line = ''
         if sell_price:
-            pnl = (sell_price - price) * quantity
-            fee = (sell_price + price) * quantity * 0.001  # 0.1% each side
+            pnl = (sell_price - entry_price) * quantity
+            fee = (sell_price + price) * quantity * 0.001
             net = pnl - fee
             pnl_line = f'\n✅ Gross P&amp;L: {pnl:+.4f} USDT\n💸 Fees: -{fee:.4f} USDT\n🏦 Net P&amp;L: {net:+.4f} USDT'
         send_telegram(f'🟢 <b>APEX — SHORT CLOSED</b>\n\n💰 Close: ${price:,.4f}\n🪙 Quantity: {quantity:.4f} {BASE_ASSET}\n🎯 Confidence: {confidence}%\n📈 Signals: {reason}{pnl_line}')
@@ -1432,7 +1460,13 @@ def run_once():
 
         # Always fetch trade history for the active symbol specifically
         trade_history = merge_close_reasons(get_trade_history(SYMBOL))
-        closed_trades = sorted(build_closed_trades_from_history(trade_history) + load_manual_closed_trades(), key=lambda x: x.get('closed_at') or '')
+        # Use bot's own closed_trades_log as primary source (accurate entry/exit from state)
+        # Fall back to reconstructed history only for trades predating the log
+        bot_log = state.get('closed_trades_log') or []
+        if bot_log:
+            closed_trades = sorted(bot_log + load_manual_closed_trades(), key=lambda x: x.get('closed_at') or '')
+        else:
+            closed_trades = sorted(build_closed_trades_from_history(trade_history) + load_manual_closed_trades(), key=lambda x: x.get('closed_at') or '')
         performance = summarize_performance(closed_trades)
 
         latest_position = detect_position()
