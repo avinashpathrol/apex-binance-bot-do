@@ -292,6 +292,36 @@ def margin_order(side: str, quantity: float, side_effect: str = 'NO_SIDE_EFFECT'
     })
 
 
+def extract_fill_data(resp: dict) -> dict:
+    """Extract actual avg price and total fee (in USDT) from Binance order fills."""
+    fills = resp.get('fills') or []
+    total_qty = 0.0
+    total_cost = 0.0
+    total_fee_usdt = 0.0
+    for f in fills:
+        qty = float(f.get('qty', 0))
+        price = float(f.get('price', 0))
+        fee = float(f.get('commission', 0))
+        fee_asset = f.get('commissionAsset', '')
+        total_qty += qty
+        total_cost += qty * price
+        # Convert fee to USDT: BNB fee needs price conversion, USDT/asset fee is direct
+        if fee_asset == 'USDT':
+            total_fee_usdt += fee
+        elif fee_asset == 'BNB':
+            # Approximate: use current BNB price — fallback to estimate if unavailable
+            try:
+                bnb_price = float(binance_public('/api/v3/ticker/price', {'symbol': 'BNBUSDT'})['price'])
+                total_fee_usdt += fee * bnb_price
+            except Exception:
+                total_fee_usdt += qty * price * FEE_RATE  # fallback estimate
+        else:
+            # Fee in base asset (e.g. DOGE) — convert via fill price
+            total_fee_usdt += fee * price
+    avg_price = total_cost / total_qty if total_qty > 0 else 0.0
+    return {'avg_price': avg_price, 'qty': total_qty, 'fee_usdt': total_fee_usdt}
+
+
 def get_step_size() -> float:
     info = binance_public('/api/v3/exchangeInfo', {'symbol': SYMBOL})
     for s in info.get('symbols', []):
@@ -861,9 +891,12 @@ def open_long(price: float, confidence: int, reason: str) -> bool:
         if quantity < step:
             return False
         resp = margin_order('BUY', quantity, 'NO_SIDE_EFFECT')
+        fill = extract_fill_data(resp)
+        actual_price = fill['avg_price'] or price
         state['trade_opened_at'] = now_utc_iso()
-        init_trail(price)
-        logger.info(f'✅ LONG OPEN: {quantity:.4f} {BASE_ASSET} @ ${price:.4f} | settings={format_runtime_summary()} | id={resp.get("orderId")}')
+        state['entry_fee_usdt'] = fill['fee_usdt']
+        init_trail(actual_price)
+        logger.info(f'✅ LONG OPEN: {quantity:.4f} {BASE_ASSET} @ ${actual_price:.4f} (fill) | fee=${fill["fee_usdt"]:.4f} USDT | id={resp.get("orderId")}')
         atr = safe_float(state.get('trail_atr'), 0)
         sl = price - atr * HARD_SL_ATR
         trail_activates = price + atr
@@ -875,10 +908,10 @@ def open_long(price: float, confidence: int, reason: str) -> bool:
         return False
 
 
-def record_closed_trade(side: str, entry_price: float, exit_price: float, qty: float, reason: str) -> None:
+def record_closed_trade(side: str, entry_price: float, exit_price: float, qty: float, reason: str, actual_fee: float = None) -> None:
     """Save a closed trade record to state for accurate dashboard display."""
     lev = runtime_settings.get('leverage', DEFAULT_LEVERAGE)
-    fee = (entry_price + exit_price) * qty * FEE_RATE
+    fee = actual_fee if actual_fee is not None else (entry_price + exit_price) * qty * FEE_RATE
     if side == 'LONG':
         pnl = round((exit_price - entry_price) * qty - fee, 4)
     else:
@@ -919,19 +952,20 @@ def close_long(price: float, confidence: int, reason: str) -> bool:
             logger.warning(f'close_long | No {BASE_ASSET} to sell (free={asset["free"]:.6f} locked={asset["locked"]:.6f}) — long already closed or balance unavailable')
             return False
         entry_price = safe_float(state.get('trail_entry_price'), price)
-        buy_price = get_last_trade_price('BUY')
+        entry_fee = safe_float(state.get('entry_fee_usdt'), 0.0)
         log_close_reason(reason)
         resp = margin_order('SELL', quantity, 'AUTO_REPAY')
+        fill = extract_fill_data(resp)
+        actual_close = fill['avg_price'] or price
+        close_fee = fill['fee_usdt']
+        total_fee = round(entry_fee + close_fee, 4)
         mark_bot_close('LONG')
-        logger.info(f'✅ LONG CLOSE: sold {quantity:.4f} {BASE_ASSET} @ ${price:.4f} | id={resp.get("orderId")}')
-        record_closed_trade('LONG', entry_price, price, quantity, reason)
-        pnl_line = ''
-        if buy_price:
-            pnl = (price - buy_price) * quantity
-            fee = (buy_price + price) * quantity * FEE_RATE
-            net = pnl - fee
-            pnl_line = f'\n✅ Gross P&amp;L: {pnl:+.4f} USDT\n💸 Fees: -{fee:.4f} USDT\n🏦 Net P&amp;L: {net:+.4f} USDT'
-        send_telegram(f'🔴 <b>APEX — LONG CLOSED</b>\n\n💰 Price: ${price:,.4f}\n🪙 Quantity: {quantity:.4f} {BASE_ASSET}\n🎯 Confidence: {confidence}%\n📉 Signals: {reason}{pnl_line}')
+        logger.info(f'✅ LONG CLOSE: sold {quantity:.4f} {BASE_ASSET} @ ${actual_close:.4f} (fill) | fee=${close_fee:.4f} USDT | id={resp.get("orderId")}')
+        record_closed_trade('LONG', entry_price, actual_close, quantity, reason, total_fee)
+        gross = (actual_close - entry_price) * quantity
+        net = gross - total_fee
+        pnl_line = f'\n✅ Gross P&L: {gross:+.4f} USDT\n💸 Fees: -{total_fee:.4f} USDT\n🏦 Net P&L: {net:+.4f} USDT'
+        send_telegram(f'🔴 <b>APEX — LONG CLOSED</b>\n\n💰 Price: ${actual_close:,.4f}\n🪙 Quantity: {quantity:.4f} {BASE_ASSET}\n🎯 Confidence: {confidence}%\n📉 Signals: {reason}{pnl_line}')
         return True
     except Exception as e:
         logger.error(f'close_long failed: {e}')
@@ -957,9 +991,12 @@ def open_short(price: float, confidence: int, reason: str) -> bool:
             return False
         time.sleep(1)
         resp = margin_order('SELL', borrow_base, 'NO_SIDE_EFFECT')
+        fill = extract_fill_data(resp)
+        actual_price = fill['avg_price'] or price
         state['trade_opened_at'] = now_utc_iso()
-        init_trail(price)
-        logger.info(f'✅ SHORT OPEN: sold {borrow_base:.4f} {BASE_ASSET} @ ${price:.4f} | settings={format_runtime_summary()} | id={resp.get("orderId")}')
+        state['entry_fee_usdt'] = fill['fee_usdt']
+        init_trail(actual_price)
+        logger.info(f'✅ SHORT OPEN: sold {borrow_base:.4f} {BASE_ASSET} @ ${actual_price:.4f} (fill) | fee=${fill["fee_usdt"]:.4f} USDT | id={resp.get("orderId")}')
         atr = safe_float(state.get('trail_atr'), 0)
         sl = price + atr * HARD_SL_ATR
         trail_activates = price - atr
@@ -980,20 +1017,23 @@ def close_short(price: float, confidence: int, reason: str) -> bool:
             logger.info(f'No borrowed {BASE_ASSET} to repay — short already closed')
             cleanup_orphan_short_borrow()
             return False
-        sell_price = get_last_trade_price('SELL')
+        entry_price = safe_float(state.get('trail_entry_price'), price)
+        entry_fee = safe_float(state.get('entry_fee_usdt'), 0.0)
         log_close_reason(reason)
         quantity = round_step(borrowed_total * SHORT_CLOSE_BUFFER, step)
         if quantity < borrowed_total:
             quantity = round_step(borrowed_total + step, step)
         resp = margin_order('BUY', quantity, 'AUTO_REPAY')
-        entry_price = safe_float(state.get('trail_entry_price'), price)
+        fill = extract_fill_data(resp)
+        actual_close = fill['avg_price'] or price
+        close_fee = fill['fee_usdt']
+        total_fee = round(entry_fee + close_fee, 4)
         mark_bot_close('SHORT')
-        logger.info(f'✅ SHORT CLOSE: bought {quantity:.4f} {BASE_ASSET} @ ${price:.4f} | borrowed_total={borrowed_total:.8f} | id={resp.get("orderId")}')
-        record_closed_trade('SHORT', entry_price, price, quantity, reason)
+        logger.info(f'✅ SHORT CLOSE: bought {quantity:.4f} {BASE_ASSET} @ ${actual_close:.4f} (fill) | fee=${close_fee:.4f} USDT | id={resp.get("orderId")}')
+        record_closed_trade('SHORT', entry_price, actual_close, quantity, reason, total_fee)
         time.sleep(2)
         cleanup_orphan_short_borrow()
         after = get_margin_balance(BASE_ASSET)
-        remaining = after['borrowed'] + after['interest']
         # Sell any excess base asset left over from SHORT_CLOSE_BUFFER overbuy
         if after['free'] >= step:
             logger.info(f'🧹 Selling excess {BASE_ASSET} from short close | free={after["free"]:.4f}')
@@ -1001,13 +1041,10 @@ def close_short(price: float, confidence: int, reason: str) -> bool:
                 margin_order('SELL', round_step(after['free'], step), 'AUTO_REPAY')
             except Exception as ex:
                 logger.warning(f'Excess {BASE_ASSET} sell failed: {ex}')
-        pnl_line = ''
-        if sell_price:
-            pnl = (sell_price - entry_price) * quantity
-            fee = (sell_price + price) * quantity * FEE_RATE
-            net = pnl - fee
-            pnl_line = f'\n✅ Gross P&amp;L: {pnl:+.4f} USDT\n💸 Fees: -{fee:.4f} USDT\n🏦 Net P&amp;L: {net:+.4f} USDT'
-        send_telegram(f'🟢 <b>APEX — SHORT CLOSED</b>\n\n💰 Close: ${price:,.4f}\n🪙 Quantity: {quantity:.4f} {BASE_ASSET}\n🎯 Confidence: {confidence}%\n📈 Signals: {reason}{pnl_line}')
+        gross = (entry_price - actual_close) * quantity
+        net = gross - total_fee
+        pnl_line = f'\n✅ Gross P&L: {gross:+.4f} USDT\n💸 Fees: -{total_fee:.4f} USDT\n🏦 Net P&L: {net:+.4f} USDT'
+        send_telegram(f'🟢 <b>APEX — SHORT CLOSED</b>\n\n💰 Close: ${actual_close:,.4f}\n🪙 Quantity: {quantity:.4f} {BASE_ASSET}\n🎯 Confidence: {confidence}%\n📈 Signals: {reason}{pnl_line}')
         return remaining < 0.01
     except Exception as e:
         logger.error(f'close_short failed: {e}')
