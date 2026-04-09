@@ -1045,7 +1045,8 @@ def close_short(price: float, confidence: int, reason: str) -> bool:
         net = gross - total_fee
         pnl_line = f'\n✅ Gross P&L: {gross:+.4f} USDT\n💸 Fees: -{total_fee:.4f} USDT\n🏦 Net P&L: {net:+.4f} USDT'
         send_telegram(f'🟢 <b>APEX — SHORT CLOSED</b>\n\n💰 Close: ${actual_close:,.4f}\n🪙 Quantity: {quantity:.4f} {BASE_ASSET}\n🎯 Confidence: {confidence}%\n📈 Signals: {reason}{pnl_line}')
-        return remaining < 0.01
+        after_check = get_margin_balance(BASE_ASSET)
+        return (after_check['borrowed'] + after_check['interest']) < 0.01
     except Exception as e:
         logger.error(f'close_short failed: {e}')
         alert_error(f'close_short: {e}')
@@ -1283,7 +1284,9 @@ def run_once():
                         _conf = 0
                     if _action == 'SHORT' and _1h_trend == 'BULLISH':
                         _conf = 0
-                    # DOGE: block LONG in SIDEWAYS (needs confirmed uptrend)
+                    # DOGE: long-only — block SHORTs and LONGs in SIDEWAYS
+                    if sym == 'DOGEUSDT' and _action == 'SHORT':
+                        _conf = 0
                     if sym == 'DOGEUSDT' and _action == 'LONG' and _1h_trend == 'SIDEWAYS':
                         _conf = 0
                     # Respect paused symbols
@@ -1432,7 +1435,11 @@ def run_once():
             action = 'HOLD'
             status = f'SKIPPED — SHORT blocked, 1h trend is BULLISH (price > EMA-15 > EMA-40)'
             logger.info(status)
-        # DOGE: block LONG when trend is SIDEWAYS (needs confirmed uptrend)
+        # DOGE: long-only — block SHORTs, block LONG in SIDEWAYS
+        if current_position is None and action == 'SHORT' and SYMBOL == 'DOGEUSDT':
+            action = 'HOLD'
+            status = 'SKIPPED — SHORT blocked for DOGE (long-only mode)'
+            logger.info(status)
         if current_position is None and action == 'LONG' and trend == 'SIDEWAYS' and SYMBOL == 'DOGEUSDT':
             action = 'HOLD'
             status = 'SKIPPED — LONG blocked for DOGE, 1h trend is SIDEWAYS (needs confirmed uptrend)'
