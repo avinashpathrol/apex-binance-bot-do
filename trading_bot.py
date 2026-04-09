@@ -86,6 +86,7 @@ ALLOWED_LEVERAGES = {3.0, 4.0, 5.0}
 TRAIL_ACTIVATE_ATR  = 0.75  # price must move this many × ATR in profit before trail activates
 TRAIL_DISTANCE_ATR  = 1.4   # trail follows best price, staying this many × ATR behind it
 HARD_SL_ATR         = 0.6   # hard stop loss distance from entry (before trail activates)
+FEE_RATE            = 0.00075  # 0.075% per side — BNB discount applied
 
 run_count = 0
 last_hold_alert = 0
@@ -499,7 +500,7 @@ def build_closed_trades_from_history(trades: list) -> list:
         ts = b['time']
         if action == 'BUY':
             if current_trade is None:
-                current_trade = {'side': 'LONG', 'entry_price': price, 'qty': qty, 'entry_fee_usdt': price * qty * 0.001, 'opened_at': ts}
+                current_trade = {'side': 'LONG', 'entry_price': price, 'qty': qty, 'entry_fee_usdt': price * qty * FEE_RATE, 'opened_at': ts}
             elif current_trade['side'] == 'SHORT':
                 exit_qty = current_trade['qty']
                 total_fee = current_trade.get('entry_fee_usdt', 0.0) + price * exit_qty * 0.001
@@ -508,7 +509,7 @@ def build_closed_trades_from_history(trades: list) -> list:
                 current_trade = None
         elif action == 'SELL':
             if current_trade is None:
-                current_trade = {'side': 'SHORT', 'entry_price': price, 'qty': qty, 'entry_fee_usdt': price * qty * 0.001, 'opened_at': ts}
+                current_trade = {'side': 'SHORT', 'entry_price': price, 'qty': qty, 'entry_fee_usdt': price * qty * FEE_RATE, 'opened_at': ts}
             elif current_trade['side'] == 'LONG':
                 exit_qty = current_trade['qty']
                 total_fee = current_trade.get('entry_fee_usdt', 0.0) + price * exit_qty * 0.001
@@ -877,7 +878,7 @@ def open_long(price: float, confidence: int, reason: str) -> bool:
 def record_closed_trade(side: str, entry_price: float, exit_price: float, qty: float, reason: str) -> None:
     """Save a closed trade record to state for accurate dashboard display."""
     lev = runtime_settings.get('leverage', DEFAULT_LEVERAGE)
-    fee = (entry_price + exit_price) * qty * 0.001
+    fee = (entry_price + exit_price) * qty * FEE_RATE
     if side == 'LONG':
         pnl = round((exit_price - entry_price) * qty - fee, 4)
     else:
@@ -927,7 +928,7 @@ def close_long(price: float, confidence: int, reason: str) -> bool:
         pnl_line = ''
         if buy_price:
             pnl = (price - buy_price) * quantity
-            fee = (buy_price + price) * quantity * 0.001
+            fee = (buy_price + price) * quantity * FEE_RATE
             net = pnl - fee
             pnl_line = f'\n✅ Gross P&amp;L: {pnl:+.4f} USDT\n💸 Fees: -{fee:.4f} USDT\n🏦 Net P&amp;L: {net:+.4f} USDT'
         send_telegram(f'🔴 <b>APEX — LONG CLOSED</b>\n\n💰 Price: ${price:,.4f}\n🪙 Quantity: {quantity:.4f} {BASE_ASSET}\n🎯 Confidence: {confidence}%\n📉 Signals: {reason}{pnl_line}')
@@ -1003,7 +1004,7 @@ def close_short(price: float, confidence: int, reason: str) -> bool:
         pnl_line = ''
         if sell_price:
             pnl = (sell_price - entry_price) * quantity
-            fee = (sell_price + price) * quantity * 0.001
+            fee = (sell_price + price) * quantity * FEE_RATE
             net = pnl - fee
             pnl_line = f'\n✅ Gross P&amp;L: {pnl:+.4f} USDT\n💸 Fees: -{fee:.4f} USDT\n🏦 Net P&amp;L: {net:+.4f} USDT'
         send_telegram(f'🟢 <b>APEX — SHORT CLOSED</b>\n\n💰 Close: ${price:,.4f}\n🪙 Quantity: {quantity:.4f} {BASE_ASSET}\n🎯 Confidence: {confidence}%\n📈 Signals: {reason}{pnl_line}')
