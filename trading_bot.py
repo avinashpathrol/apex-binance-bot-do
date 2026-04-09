@@ -467,21 +467,42 @@ def load_manual_closed_trades() -> list:
 
 
 def build_closed_trades_from_history(trades: list) -> list:
+    # Aggregate fills that share the same timestamp+action into one order
+    from collections import defaultdict
+    buckets: dict = defaultdict(lambda: {'qty': 0.0, 'cost': 0.0, 'action': '', 'time': '', 'reason': ''})
+    order_keys: list = []
+    for t in trades:
+        action = t.get('action', '')
+        ts = (t.get('time') or '')[:19]  # truncate to second
+        key = ts + '_' + action
+        if key not in buckets:
+            order_keys.append(key)
+        b = buckets[key]
+        qty = float(t.get('qty', 0))
+        b['qty'] += qty
+        b['cost'] += float(t.get('cost', 0)) or float(t.get('price', 0)) * qty
+        b['action'] = action
+        b['time'] = t.get('time', ts)
+        if t.get('reason'):
+            b['reason'] = t['reason']
+
     closed = []
     current_trade = None
     lev = runtime_settings['leverage']
-    for t in trades:
-        action = t.get('action')
-        price = float(t.get('price', 0))
-        qty = float(t.get('qty', 0))
-        fee = float(t.get('fee', 0))
-        ts = t.get('time')
+    for key in order_keys:
+        b = buckets[key]
+        action = b['action']
+        qty = b['qty']
+        if qty <= 0:
+            continue
+        price = b['cost'] / qty  # VWAP across fills
+        ts = b['time']
         if action == 'BUY':
             if current_trade is None:
                 current_trade = {'side': 'LONG', 'entry_price': price, 'qty': qty, 'entry_fee_usdt': price * qty * 0.001, 'opened_at': ts}
             elif current_trade['side'] == 'SHORT':
-                exit_qty = min(current_trade['qty'], qty)
-                total_fee = current_trade.get('entry_fee_usdt', 0.0) + price * qty * 0.001
+                exit_qty = current_trade['qty']
+                total_fee = current_trade.get('entry_fee_usdt', 0.0) + price * exit_qty * 0.001
                 pnl = (current_trade['entry_price'] - price) * exit_qty - total_fee
                 closed.append({'source': 'binance', 'side': 'SHORT', 'entry_price': round(current_trade['entry_price'], 8), 'exit_price': round(price, 8), 'qty': round(exit_qty, 8), 'fee': round(total_fee, 8), 'pnl': round(pnl, 4), 'pnl_pct': round(((current_trade['entry_price'] - price) / current_trade['entry_price']) * 100 * lev, 2), 'win': pnl > 0, 'opened_at': current_trade['opened_at'], 'closed_at': ts, 'note': 'Derived from margin trade history'})
                 current_trade = None
@@ -489,8 +510,8 @@ def build_closed_trades_from_history(trades: list) -> list:
             if current_trade is None:
                 current_trade = {'side': 'SHORT', 'entry_price': price, 'qty': qty, 'entry_fee_usdt': price * qty * 0.001, 'opened_at': ts}
             elif current_trade['side'] == 'LONG':
-                exit_qty = min(current_trade['qty'], qty)
-                total_fee = current_trade.get('entry_fee_usdt', 0.0) + price * qty * 0.001
+                exit_qty = current_trade['qty']
+                total_fee = current_trade.get('entry_fee_usdt', 0.0) + price * exit_qty * 0.001
                 pnl = (price - current_trade['entry_price']) * exit_qty - total_fee
                 closed.append({'source': 'binance', 'side': 'LONG', 'entry_price': round(current_trade['entry_price'], 8), 'exit_price': round(price, 8), 'qty': round(exit_qty, 8), 'fee': round(total_fee, 8), 'pnl': round(pnl, 4), 'pnl_pct': round(((price - current_trade['entry_price']) / current_trade['entry_price']) * 100 * lev, 2), 'win': pnl > 0, 'opened_at': current_trade['opened_at'], 'closed_at': ts, 'note': 'Derived from margin trade history'})
                 current_trade = None
@@ -1163,10 +1184,8 @@ def run_once():
                         _conf = 0
                     if _action == 'SHORT' and _1h_trend == 'BULLISH':
                         _conf = 0
-                    # DOGE: block LONG in SIDEWAYS, block all SHORTs
+                    # DOGE: block LONG in SIDEWAYS (needs confirmed uptrend)
                     if sym == 'DOGEUSDT' and _action == 'LONG' and _1h_trend == 'SIDEWAYS':
-                        _conf = 0
-                    if sym == 'DOGEUSDT' and _action == 'SHORT':
                         _conf = 0
                     # Respect paused symbols
                     _paused = cfg.get('paused_symbols', []) if 'cfg' in dir() else []
@@ -1384,15 +1403,10 @@ def run_once():
             action = 'HOLD'
             status = f'SKIPPED — SHORT blocked, 1h trend is BULLISH (price > EMA-15 > EMA-40)'
             logger.info(status)
-        # DOGE long-only: also block LONG when trend is SIDEWAYS (only trade confirmed uptrends)
+        # DOGE: block LONG when trend is SIDEWAYS (needs confirmed uptrend)
         if current_position is None and action == 'LONG' and trend == 'SIDEWAYS' and SYMBOL == 'DOGEUSDT':
             action = 'HOLD'
             status = 'SKIPPED — LONG blocked for DOGE, 1h trend is SIDEWAYS (needs confirmed uptrend)'
-            logger.info(status)
-        # DOGE is long-only — shorts perform poorly on this asset
-        if current_position is None and action == 'SHORT' and SYMBOL == 'DOGEUSDT':
-            action = 'HOLD'
-            status = 'SKIPPED — SHORT blocked for DOGE (long-only mode)'
             logger.info(status)
 
         paused_symbols = cfg.get('paused_symbols', [])
