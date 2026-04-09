@@ -651,14 +651,18 @@ def fetch_dashboard_config() -> dict:
         amt = safe_float(cfg.get('trade_amount_usdt') or cfg.get('trade_amount'), default['trade_amount_usdt'])
         lev = safe_float(cfg.get('leverage'), default['leverage'])
         cool = safe_int(cfg.get('manual_reentry_cooldown_minutes'), default['manual_reentry_cooldown_minutes'])
+        conf = safe_int(cfg.get('min_confidence'), 80)
         if lev not in ALLOWED_LEVERAGES:
             lev = default['leverage']
         if amt <= 0:
             amt = default['trade_amount_usdt']
         if cool <= 0:
             cool = default['manual_reentry_cooldown_minutes']
+        if not (80 <= conf <= 100):
+            conf = 80
         return {
             'trade_amount_usdt': amt, 'leverage': lev, 'manual_reentry_cooldown_minutes': cool,
+            'min_confidence': conf,
             'updated_at': cfg.get('updated_at'),
             'close_requested': bool(cfg.get('close_requested', False)),
             'close_requested_at': cfg.get('close_requested_at'),
@@ -688,9 +692,10 @@ def apply_runtime_settings(position: Optional[str]) -> dict:
         source = 'dashboard-config'
         trade_amount = cfg['trade_amount_usdt']
         leverage = cfg['leverage']
-    runtime_settings.update({'trade_amount_usdt': trade_amount, 'leverage': leverage, 'source': source})
+    min_confidence = cfg.get('min_confidence', 80)
+    runtime_settings.update({'trade_amount_usdt': trade_amount, 'leverage': leverage, 'source': source, 'min_confidence': min_confidence})
     save_state()
-    logger.info(f'⚙️ Runtime settings | amount=${trade_amount:.2f} | lev={leverage}x | cooldown={state["cooldown_minutes"]}m | source={source}')
+    logger.info(f'⚙️ Runtime settings | amount=${trade_amount:.2f} | lev={leverage}x | min_conf={min_confidence}% | source={source}')
     return cfg
 
 
@@ -1305,9 +1310,10 @@ def run_once():
             reason = 'Dashboard close request executed' if dashboard_close_executed else sl_reason
             confidence = 0
 
-        if action in ('LONG', 'SHORT') and confidence < 80:
+        min_conf = int(runtime_settings.get('min_confidence', 80))
+        if action in ('LONG', 'SHORT') and confidence < min_conf:
             action = 'HOLD'
-            status = f'SKIPPED — confidence {confidence}% below minimum 80%'
+            status = f'SKIPPED — confidence {confidence}% below minimum {min_conf}%'
 
         # ATR filter — skip entries when market is too tight to cover fees
         if current_position is None and action in ('LONG', 'SHORT'):
@@ -1318,7 +1324,7 @@ def run_once():
                 status = f'SKIPPED — ATR {_atr:.4f} too small (min {_min_atr}), market too choppy to cover fees'
                 logger.info(status)
 
-        if trend == 'SIDEWAYS' and action in ('LONG', 'SHORT') and confidence < 80:
+        if trend == 'SIDEWAYS' and action in ('LONG', 'SHORT') and confidence < min_conf:
             action = 'HOLD'
             status = f'SKIPPED — sideways + confidence {confidence}% < 85%'
 
@@ -1442,6 +1448,7 @@ def run_once():
             'symbol': SYMBOL,
             'exchange': 'Binance Margin',
             'leverage': runtime_settings['leverage'],
+            'min_confidence': runtime_settings.get('min_confidence', 80),
             'price': price,
             'usdt_balance': usdt_balance,
             'sol_balance': sol_balance,
