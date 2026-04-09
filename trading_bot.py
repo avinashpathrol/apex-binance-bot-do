@@ -534,7 +534,7 @@ def summarize_performance(closed_trades: list) -> dict:
     }
 
 
-def get_market_data(symbol: str, interval: str = '15m', limit: int = 100) -> pd.DataFrame:
+def get_market_data(symbol: str, interval: str = '5m', limit: int = 100) -> pd.DataFrame:
     klines = binance_public('/api/v3/klines', {'symbol': symbol, 'interval': interval, 'limit': limit})
     df = pd.DataFrame(klines, columns=['time','open','high','low','close','volume','close_time','quote_volume','trades','taker_base','taker_quote','ignore'])
     df = df.astype({'open': float, 'high': float, 'low': float, 'close': float, 'volume': float})
@@ -1062,7 +1062,7 @@ Respond in this exact JSON format, no extra text:
 
 def get_atr(period: int = 14) -> float:
     try:
-        klines = binance_public('/api/v3/klines', {'symbol': SYMBOL, 'interval': '15m', 'limit': period + 1})
+        klines = binance_public('/api/v3/klines', {'symbol': SYMBOL, 'interval': '5m', 'limit': period + 1})
         ranges = [float(k[2]) - float(k[3]) for k in klines]
         return sum(ranges[-period:]) / period
     except Exception as e:
@@ -1305,9 +1305,9 @@ def run_once():
             reason = 'Dashboard close request executed' if dashboard_close_executed else sl_reason
             confidence = 0
 
-        if action in ('LONG', 'SHORT') and confidence < 85:
+        if action in ('LONG', 'SHORT') and confidence < 80:
             action = 'HOLD'
-            status = f'SKIPPED — confidence {confidence}% below minimum 85%'
+            status = f'SKIPPED — confidence {confidence}% below minimum 80%'
 
         # ATR filter — skip entries when market is too tight to cover fees
         if current_position is None and action in ('LONG', 'SHORT'):
@@ -1318,7 +1318,7 @@ def run_once():
                 status = f'SKIPPED — ATR {_atr:.4f} too small (min {_min_atr}), market too choppy to cover fees'
                 logger.info(status)
 
-        if trend == 'SIDEWAYS' and action in ('LONG', 'SHORT') and confidence < 85:
+        if trend == 'SIDEWAYS' and action in ('LONG', 'SHORT') and confidence < 80:
             action = 'HOLD'
             status = f'SKIPPED — sideways + confidence {confidence}% < 85%'
 
