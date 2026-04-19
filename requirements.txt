@@ -2,4 +2,3 @@ requests
 pandas
 ta
 python-dotenv
-groq
