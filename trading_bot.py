@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
 """
 APEX v2 — Binance Cross-Margin Bot
-Symbols: SOL/USDT + DOGE/USDT (independent, simultaneous)
+Symbol: BTC/USDT
 Strategy: ADX Regime Filter + EMA21 Pullback (1H timeframe)
-Both LONG and SHORT enabled for both symbols.
+Both LONG and SHORT enabled.
 
-Entry logic (per symbol):
-  LONG:  ADX >= 22, +DI > -DI, EMA21 > EMA50,
+Entry logic:
+  LONG:  ADX >= 25, +DI > -DI, EMA21 > EMA50,
          price pulls back within 1.8% above EMA21, candle low touched EMA21, RSI 30-62
-  SHORT: ADX >= 22, -DI > +DI, EMA21 < EMA50,
+  SHORT: ADX >= 25, -DI > +DI, EMA21 < EMA50,
          price bounces within 1.8% below EMA21, candle high touched EMA21, RSI 38-70
-  HOLD:  ADX < 22 (choppy), mixed DI/EMA, price not at EMA21 yet
-
-Each symbol has its own independent state: position, trail, trade log.
+  HOLD:  ADX < 25 (choppy), mixed DI/EMA, price not at EMA21 yet
 """
 
 import os
@@ -66,8 +64,7 @@ ALLOWED_LEVERAGES         = {3.0, 4.0, 5.0}
 
 # ── Symbol Config ─────────────────────────────────────────────────────────────
 SYMBOLS_CONFIG = {
-    'SOLUSDT':  {'base': 'SOL',  'dashboard_file': 'data_binance_sol.json',  'min_atr': 0.40},
-    'DOGEUSDT': {'base': 'DOGE', 'dashboard_file': 'data_binance_doge.json', 'min_atr': 0.0008},
+    'BTCUSDT': {'base': 'BTC', 'dashboard_file': 'data_binance_btc.json', 'min_atr': 200.0},
 }
 TRADING_SYMBOLS = list(SYMBOLS_CONFIG.keys())
 
@@ -107,8 +104,7 @@ def _empty_sym_state() -> dict:
 # Top-level state file structure
 state = {
     'symbols': {
-        'SOLUSDT':  _empty_sym_state(),
-        'DOGEUSDT': _empty_sym_state(),
+        'BTCUSDT': _empty_sym_state(),
     },
     'runtime': {
         'trade_amount_usdt': DEFAULT_TRADE_AMOUNT_USDT,
@@ -158,11 +154,6 @@ def load_state() -> None:
                 state['symbols'][sym].update(loaded['symbols'][sym])
         if 'runtime' in loaded:
             state['runtime'].update(loaded['runtime'])
-    # Old flat format fallback — migrate SOL state only
-    elif 'closed_trades_log' in loaded:
-        state['symbols']['SOLUSDT'].update({
-            k: loaded[k] for k in _empty_sym_state() if k in loaded
-        })
 
 def save_state() -> None:
     write_json(BOT_STATE_FILE, state)
@@ -310,9 +301,10 @@ def detect_position(symbol: str) -> Optional[str]:
     base = SYMBOLS_CONFIG[symbol]['base']
     asset = get_margin_balance(base)
     step  = get_step_size(symbol)
-    if asset['net'] >= step and asset['net'] > 0.05:
+    min_qty = max(step * 2, step)
+    if asset['net'] > min_qty:
         return 'LONG'
-    if (asset['borrowed'] + asset['interest']) > 0.05:
+    if (asset['borrowed'] + asset['interest']) > min_qty:
         return 'SHORT'
     return None
 
@@ -322,9 +314,10 @@ def get_current_price(symbol: str) -> float:
 def cleanup_orphan_borrows(symbol: str) -> None:
     base = SYMBOLS_CONFIG[symbol]['base']
     try:
+        step  = get_step_size(symbol)
         asset = get_margin_balance(base)
         borrowed = asset['borrowed'] + asset['interest']
-        if borrowed > 0.001 and asset['free'] > 0.001:
+        if borrowed > step and asset['free'] > step:
             repay_margin(base, min(asset['free'], borrowed))
     except Exception as e:
         logger.warning(f'cleanup {base} borrow: {e}')
@@ -1059,15 +1052,15 @@ def main():
     amt = state['runtime']['trade_amount_usdt']
     lev = state['runtime']['leverage']
 
-    logger.info('🚀 APEX v2 — SOL/USDT + DOGE/USDT')
-    logger.info('   Strategy: ADX Regime + EMA21 Pullback (1H) | Long + Short both symbols')
+    logger.info('🚀 APEX v2 — BTC/USDT')
+    logger.info('   Strategy: ADX Regime + EMA21 Pullback (1H) | Long + Short')
     logger.info(f'  ${amt:.2f} @ {lev:.0f}x | API Key: {mask(BINANCE_API_KEY)} | GH: {mask(GH_TOKEN)}')
 
     send_telegram(
-        f'🚀 <b>APEX v2 Started — SOL + DOGE</b>\n\n'
-        f'📌 SOL/USDT + DOGE/USDT Cross-Margin\n'
+        f'🚀 <b>APEX v2 Started — BTC/USDT</b>\n\n'
+        f'📌 BTC/USDT Cross-Margin\n'
         f'🎯 ADX Regime + EMA21 Pullback (1H)\n'
-        f'↕️ Long + Short enabled for both symbols\n'
+        f'↕️ Long + Short enabled\n'
         f'💰 ${amt:.2f} @ {lev:.0f}x per trade\n'
         f'⏱ Cycle: every {CHECK_INTERVAL}s'
     )
