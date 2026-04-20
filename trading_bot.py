@@ -1047,17 +1047,22 @@ def main():
         sym_state(sym)['force_trail_processed'] = False
     save_state()
 
+    startup_cfg = fetch_dashboard_config()
+    apply_runtime_settings(startup_cfg)
+
+    amt = state['runtime']['trade_amount_usdt']
+    lev = state['runtime']['leverage']
+
     logger.info('🚀 APEX v2 — SOL/USDT + DOGE/USDT')
     logger.info('   Strategy: ADX Regime + EMA21 Pullback (1H) | Long + Short both symbols')
-    logger.info(f'  Default: ${DEFAULT_TRADE_AMOUNT_USDT:.2f} @ {DEFAULT_LEVERAGE:.0f}x')
-    logger.info(f'  API Key: {mask(BINANCE_API_KEY)} | GH: {mask(GH_TOKEN)}')
+    logger.info(f'  ${amt:.2f} @ {lev:.0f}x | API Key: {mask(BINANCE_API_KEY)} | GH: {mask(GH_TOKEN)}')
 
     send_telegram(
         f'🚀 <b>APEX v2 Started — SOL + DOGE</b>\n\n'
         f'📌 SOL/USDT + DOGE/USDT Cross-Margin\n'
         f'🎯 ADX Regime + EMA21 Pullback (1H)\n'
         f'↕️ Long + Short enabled for both symbols\n'
-        f'💰 ${DEFAULT_TRADE_AMOUNT_USDT:.2f} @ {DEFAULT_LEVERAGE:.0f}x per trade\n'
+        f'💰 ${amt:.2f} @ {lev:.0f}x per trade\n'
         f'⏱ Cycle: every {CHECK_INTERVAL}s'
     )
 
