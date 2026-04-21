@@ -18,7 +18,6 @@ import json
 import time
 import hmac
 import hashlib
-import base64
 import logging
 import requests
 import pandas as pd
@@ -844,24 +843,15 @@ def close_short(symbol: str, price: float, reason: str) -> bool:
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
+WEB_ROOT = os.environ.get('WEB_ROOT', '/var/www/apex').strip()
+
 def push_dashboard_data(data: dict, dashboard_file: str) -> None:
-    if not GH_TOKEN or not DASHBOARD_REPO: return
     try:
-        url     = f'https://api.github.com/repos/{DASHBOARD_REPO}/contents/{dashboard_file}'
-        headers = {'Authorization': f'token {GH_TOKEN}', 'Accept': 'application/vnd.github+json'}
-        content = base64.b64encode(json.dumps(data, indent=2).encode()).decode()
-        r       = requests.get(url, headers=headers, timeout=10)
-        sha     = r.json().get('sha') if r.status_code == 200 else None
-        base_lbl = data.get('symbol', 'BOT')[:4]
-        payload = {'message': f'bot: {base_lbl} {datetime.now(MST).strftime("%H:%M MST")}', 'content': content}
-        if sha: payload['sha'] = sha
-        r = requests.put(url, headers=headers, json=payload, timeout=15)
-        if r.status_code in (200, 201):
-            logger.info(f'✅ Dashboard updated ({dashboard_file})')
-        else:
-            logger.warning(f'Dashboard push failed: {r.status_code}')
+        path = os.path.join(WEB_ROOT, dashboard_file)
+        write_json(path, data)
+        logger.info(f'✅ Dashboard written ({path})')
     except Exception as e:
-        logger.warning(f'Dashboard push error ({dashboard_file}): {e}')
+        logger.warning(f'Dashboard write error ({dashboard_file}): {e}')
 
 def fetch_dashboard_config() -> dict:
     default = {
@@ -870,13 +860,9 @@ def fetch_dashboard_config() -> dict:
         'bot_paused': False, 'force_trail': False, 'force_trail_at': None,
         'close_symbol': None, 'updated_at': None,
     }
-    if not GH_TOKEN or not DASHBOARD_REPO: return default
     try:
-        url     = f'https://api.github.com/repos/{DASHBOARD_REPO}/contents/{BOT_CONFIG_FILE}'
-        headers = {'Authorization': f'token {GH_TOKEN}', 'Accept': 'application/vnd.github+json'}
-        r       = requests.get(url, headers=headers, timeout=10)
-        if not r.ok: return default
-        cfg = json.loads(base64.b64decode(r.json()['content'].replace('\n', '')).decode())
+        cfg = read_json(os.path.join(WEB_ROOT, BOT_CONFIG_FILE), None)
+        if not isinstance(cfg, dict): return default
         amt = safe_float(cfg.get('trade_amount_usdt') or cfg.get('trade_amount'), DEFAULT_TRADE_AMOUNT_USDT)
         lev = safe_float(cfg.get('leverage'), DEFAULT_LEVERAGE)
         if lev not in ALLOWED_LEVERAGES: lev = DEFAULT_LEVERAGE
@@ -885,7 +871,7 @@ def fetch_dashboard_config() -> dict:
             'trade_amount_usdt':  amt, 'leverage': lev,
             'close_requested':    bool(cfg.get('close_requested', False)),
             'close_requested_at': cfg.get('close_requested_at'),
-            'close_symbol':       cfg.get('close_symbol'),   # which symbol to close
+            'close_symbol':       cfg.get('close_symbol'),
             'bot_paused':         bool(cfg.get('bot_paused', False)),
             'force_trail':        bool(cfg.get('force_trail', False)),
             'force_trail_at':     cfg.get('force_trail_at'),
@@ -903,22 +889,14 @@ def apply_runtime_settings(cfg: dict) -> None:
     logger.info(f'⚙️ Runtime | ${amt:.2f} @ {lev:.0f}x')
 
 def clear_flag(flag_name: str) -> None:
-    if not GH_TOKEN or not DASHBOARD_REPO: return
     try:
-        url     = f'https://api.github.com/repos/{DASHBOARD_REPO}/contents/{BOT_CONFIG_FILE}'
-        headers = {'Authorization': f'token {GH_TOKEN}', 'Accept': 'application/vnd.github+json'}
-        r       = requests.get(url, headers=headers, timeout=10)
-        if not r.ok: return
-        j   = r.json()
-        cfg = json.loads(base64.b64decode(j['content'].replace('\n', '')).decode())
+        path = os.path.join(WEB_ROOT, BOT_CONFIG_FILE)
+        cfg  = read_json(path, {})
         cfg[flag_name] = False
         if flag_name == 'close_requested':
             cfg.pop('close_requested_at', None)
             cfg.pop('close_symbol', None)
-        content = base64.b64encode(json.dumps(cfg, indent=2).encode()).decode()
-        requests.put(url, headers=headers,
-                     json={'message': f'bot: clear {flag_name}', 'content': content, 'sha': j.get('sha')},
-                     timeout=15)
+        write_json(path, cfg)
         logger.info(f'✅ Cleared flag: {flag_name}')
     except Exception as e:
         logger.warning(f'clear_flag({flag_name}) failed: {e}')
