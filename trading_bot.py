@@ -65,7 +65,8 @@ ALLOWED_LEVERAGES         = {3.0, 4.0, 5.0}
 
 # ── Symbol Config ─────────────────────────────────────────────────────────────
 SYMBOLS_CONFIG = {
-    'BTCUSDT': {'base': 'BTC', 'dashboard_file': 'data_binance_btc.json', 'min_atr': 200.0},
+    'BTCUSDT':  {'base': 'BTC',  'dashboard_file': 'data_binance_btc.json',  'min_atr': 200.0, 'trade_amount': 10.0},
+    'PAXGUSDT': {'base': 'PAXG', 'dashboard_file': 'data_binance_paxg.json', 'min_atr': 8.0,   'trade_amount': 40.0},
 }
 TRADING_SYMBOLS = list(SYMBOLS_CONFIG.keys())
 
@@ -105,7 +106,8 @@ def _empty_sym_state() -> dict:
 # Top-level state file structure
 state = {
     'symbols': {
-        'BTCUSDT': _empty_sym_state(),
+        'BTCUSDT':  _empty_sym_state(),
+        'PAXGUSDT': _empty_sym_state(),
     },
     'runtime': {
         'trade_amount_usdt': DEFAULT_TRADE_AMOUNT_USDT,
@@ -678,7 +680,7 @@ def open_long(symbol: str, price: float, confidence: int, reason: str) -> bool:
     try:
         step       = get_step_size(symbol)
         usdt       = get_margin_balance('USDT')
-        collateral = float(state['runtime']['trade_amount_usdt'])
+        collateral = float(SYMBOLS_CONFIG[symbol].get('trade_amount') or state['runtime']['trade_amount_usdt'])
         leverage   = float(state['runtime']['leverage'])
         gross_usdt = collateral * leverage
         borrow_amt = round(gross_usdt - collateral, 2)
@@ -759,7 +761,7 @@ def open_short(symbol: str, price: float, confidence: int, reason: str) -> bool:
     try:
         step        = get_step_size(symbol)
         usdt        = get_margin_balance('USDT')
-        collateral  = float(state['runtime']['trade_amount_usdt'])
+        collateral  = float(SYMBOLS_CONFIG[symbol].get('trade_amount') or state['runtime']['trade_amount_usdt'])
         leverage    = float(state['runtime']['leverage'])
         gross_usdt  = collateral * leverage
         borrow_base = round_step((gross_usdt * 0.995) / price, step)
@@ -1135,16 +1137,16 @@ def main():
     amt = state['runtime']['trade_amount_usdt']
     lev = state['runtime']['leverage']
 
-    logger.info('🚀 APEX v2 — BTC/USDT')
+    logger.info('🚀 APEX v2 — BTC/USDT + PAXG/USDT')
     logger.info('   Strategy: ADX Regime + EMA21 Pullback (1H) | Long + Short')
-    logger.info(f'  ${amt:.2f} @ {lev:.0f}x | API Key: {mask(BINANCE_API_KEY)} | GH: {mask(GH_TOKEN)}')
+    logger.info(f'  BTC: $10 | PAXG: $40 | {lev:.0f}x | API Key: {mask(BINANCE_API_KEY)} | GH: {mask(GH_TOKEN)}')
 
     send_telegram(
-        f'🚀 <b>APEX v2 Started — BTC/USDT</b>\n\n'
-        f'📌 BTC/USDT Cross-Margin\n'
+        f'🚀 <b>APEX v2 Started — BTC + Gold (PAXG)</b>\n\n'
+        f'📌 BTC/USDT: $10 @ {lev:.0f}x\n'
+        f'📌 PAXG/USDT (Gold): $40 @ {lev:.0f}x\n'
         f'🎯 ADX Regime + EMA21 Pullback (1H)\n'
-        f'↕️ Long + Short enabled\n'
-        f'💰 ${amt:.2f} @ {lev:.0f}x per trade\n'
+        f'↕️ Long + Short enabled on both\n'
         f'⏱ Cycle: every {CHECK_INTERVAL}s'
     )
 
