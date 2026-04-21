@@ -361,6 +361,50 @@ def get_btc_sentiment() -> Optional[float]:
         return None
 
 
+# ── 4H Trend Confirmation ─────────────────────────────────────────────────────
+_4h_cache: dict = {}          # symbol → {'trend': str, 'ts': float}
+H4_CACHE_TTL    = 1800        # 30 minutes
+
+def get_4h_trend(symbol: str) -> str:
+    """Return '4H BULLISH', '4H BEARISH', or '4H NEUTRAL' based on 4H EMA21/EMA50 + ADX."""
+    now = time.time()
+    cached = _4h_cache.get(symbol)
+    if cached and (now - cached['ts']) < H4_CACHE_TTL:
+        return cached['trend']
+    try:
+        klines = binance_public('/api/v3/klines', {'symbol': symbol, 'interval': '4h', 'limit': 60})
+        df4 = pd.DataFrame(klines, columns=[
+            'time','open','high','low','close','volume',
+            'close_time','quote_volume','trades','taker_base','taker_quote','ignore',
+        ])
+        for col in ('high','low','close'):
+            df4[col] = df4[col].astype(float)
+        adx_ind       = ta.trend.ADXIndicator(df4['high'], df4['low'], df4['close'], window=14)
+        df4['adx']     = adx_ind.adx()
+        df4['adx_pos'] = adx_ind.adx_pos()
+        df4['adx_neg'] = adx_ind.adx_neg()
+        df4['ema21']   = ta.trend.EMAIndicator(df4['close'], window=21).ema_indicator()
+        df4['ema50']   = ta.trend.EMAIndicator(df4['close'], window=50).ema_indicator()
+        c4 = df4.iloc[-1]
+        adx4     = float(c4['adx'])
+        adx_pos4 = float(c4['adx_pos'])
+        adx_neg4 = float(c4['adx_neg'])
+        ema21_4  = float(c4['ema21'])
+        ema50_4  = float(c4['ema50'])
+        if adx4 >= 20 and adx_pos4 > adx_neg4 and ema21_4 > ema50_4:
+            trend4 = '4H BULLISH'
+        elif adx4 >= 20 and adx_neg4 > adx_pos4 and ema21_4 < ema50_4:
+            trend4 = '4H BEARISH'
+        else:
+            trend4 = '4H NEUTRAL'
+        _4h_cache[symbol] = {'trend': trend4, 'ts': now}
+        logger.info(f'📊 [{symbol}] 4H trend: {trend4} | ADX={adx4:.1f} +DI={adx_pos4:.1f} -DI={adx_neg4:.1f} EMA21={ema21_4:.2f} EMA50={ema50_4:.2f}')
+        return trend4
+    except Exception as e:
+        logger.warning(f'get_4h_trend [{symbol}] failed: {e}')
+        return '4H NEUTRAL'
+
+
 # ── Market Data & Signal ──────────────────────────────────────────────────────
 def get_market_data(symbol: str) -> pd.DataFrame:
     klines = binance_public('/api/v3/klines', {'symbol': symbol, 'interval': '1h', 'limit': 100})
@@ -421,6 +465,8 @@ def get_decision(symbol: str, df: pd.DataFrame) -> dict:
     di_bullish  = adx_pos > adx_neg
     ema_bullish = ema21 > ema50
 
+    trend4 = get_4h_trend(symbol)
+
     if di_bullish and ema_bullish:
         trend = 'BULLISH'
     elif not di_bullish and not ema_bullish:
@@ -437,6 +483,8 @@ def get_decision(symbol: str, df: pd.DataFrame) -> dict:
         candle_dipped = lo <= ema21 * 1.008
         rsi_ok        = RSI_LONG_MIN <= rsi <= RSI_LONG_MAX
         if in_zone and candle_dipped and rsi_ok:
+            if trend4 != '4H BULLISH':
+                return hold(f'BULLISH 1H setup blocked — 4H trend is {trend4}, need 4H BULLISH', trend)
             sentiment = get_btc_sentiment()
             if sentiment is not None and sentiment < 50:
                 return hold(f'BULLISH setup blocked — social sentiment {sentiment:.0f}% bearish', trend)
@@ -468,6 +516,8 @@ def get_decision(symbol: str, df: pd.DataFrame) -> dict:
         candle_tapped = hi >= ema21 * 0.992
         rsi_ok        = RSI_SHORT_MIN <= rsi <= RSI_SHORT_MAX
         if in_zone and candle_tapped and rsi_ok:
+            if trend4 != '4H BEARISH':
+                return hold(f'BEARISH 1H setup blocked — 4H trend is {trend4}, need 4H BEARISH', trend)
             sentiment = get_btc_sentiment()
             if sentiment is not None and sentiment > 50:
                 return hold(f'BEARISH setup blocked — social sentiment {sentiment:.0f}% bullish', trend)
