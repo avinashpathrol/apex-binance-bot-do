@@ -8,6 +8,7 @@
 <meta name="apple-mobile-web-app-title" content="APEX Bot"/>
 <meta name="theme-color" content="#0d0f14"/>
 <link rel="manifest" href="/manifest.json"/>
+<script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
 <title>APEX Bot</title>
 <style>
 :root {
@@ -31,8 +32,8 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 #app{display:flex;flex-direction:column;height:100%;height:100dvh}
 #header{flex-shrink:0;background:var(--card);border-bottom:1px solid var(--border);padding:12px 16px 10px;padding-top:max(12px, env(safe-area-inset-top))}
 #content{flex:1;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch}
-#tab-content{display:none;padding:14px 14px calc(80px + var(--safe));min-height:100%}
-#tab-content.active{display:block}
+.tab-content{display:none;padding:14px 14px calc(80px + var(--safe));min-height:100%}
+.tab-content.active{display:block}
 #bottomnav{flex-shrink:0;background:var(--card);border-top:1px solid var(--border);display:flex;padding-bottom:max(12px, var(--safe));padding-bottom:max(12px, env(safe-area-inset-bottom))}
 .nav-btn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:10px 4px 4px;background:none;border:none;color:var(--muted);cursor:pointer;font-size:10px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;transition:color .2s}
 .nav-btn svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
@@ -159,6 +160,23 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .btn-cancel{flex:1;background:var(--card2);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:14px;cursor:pointer;font-size:15px;font-family:inherit}
 
 #toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:rgba(30,35,50,.96);border:1px solid var(--border);border-radius:12px;padding:10px 20px;font-size:13px;font-weight:600;display:none;z-index:200;white-space:nowrap;backdrop-filter:blur(10px)}
+
+/* ── Chart tab ── */
+#tab-chart{padding:0!important}
+#chart-wrap{position:relative;width:100%;height:calc(100dvh - 60px - 65px - 48px)}
+#lw-chart{width:100%;height:100%}
+#zone-canvas{position:absolute;top:0;left:0;pointer-events:none}
+#chart-toolbar{display:flex;gap:8px;padding:8px 12px;background:var(--card);border-bottom:1px solid var(--border);overflow-x:auto}
+.tf-btn{padding:5px 12px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--muted);font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;font-family:inherit}
+.tf-btn.active{border-color:var(--accent);color:var(--accent);background:rgba(247,147,26,.1)}
+.zone-add-green{padding:5px 12px;border-radius:8px;border:1px solid #166534;background:rgba(34,197,94,.1);color:var(--green);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap}
+.zone-add-red{padding:5px 12px;border-radius:8px;border:1px solid #7f1d1d;background:rgba(239,68,68,.1);color:var(--red);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap}
+.zone-clear{padding:5px 12px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--muted);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap}
+.zones-list{padding:8px 12px;display:flex;flex-wrap:wrap;gap:6px;background:var(--bg)}
+.zone-chip{display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:8px;font-size:11px;font-weight:700}
+.zone-chip-green{background:rgba(34,197,94,.12);border:1px solid #166534;color:var(--green)}
+.zone-chip-red{background:rgba(239,68,68,.12);border:1px solid #7f1d1d;color:var(--red)}
+.zone-chip button{background:none;border:none;color:inherit;cursor:pointer;font-size:13px;line-height:1;padding:0;opacity:.7}
 </style>
 </head>
 <body>
@@ -227,7 +245,20 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 
   <!-- CHART -->
   <div id="tab-chart" class="tab-content">
-    <div id="tv-container"></div>
+    <div id="chart-toolbar">
+      <button class="tf-btn active" id="tf-1h" onclick="setTf('1h')">1H</button>
+      <button class="tf-btn" id="tf-4h" onclick="setTf('4h')">4H</button>
+      <button class="tf-btn" id="tf-1d" onclick="setTf('1d')">1D</button>
+      <div style="flex:1"></div>
+      <button class="zone-add-green" onclick="openZone('green')">＋ Support</button>
+      <button class="zone-add-red"   onclick="openZone('red')">＋ Resistance</button>
+      <button class="zone-clear"     onclick="clearZones()">✕ Clear</button>
+    </div>
+    <div id="chart-wrap">
+      <div id="lw-chart"></div>
+      <canvas id="zone-canvas"></canvas>
+    </div>
+    <div class="zones-list" id="zones-list"></div>
   </div>
 
   <!-- ANALYSIS -->
@@ -345,6 +376,21 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
   </div>
 </div>
 
+<!-- Zone Sheet -->
+<div class="overlay" id="zone-overlay" onclick="if(event.target===this)closeZone()">
+  <div class="sheet">
+    <div class="sheet-handle"></div>
+    <h2 id="zone-sheet-title">Add Support Zone</h2>
+    <div class="field"><label>Label (optional)</label><input type="text" id="zone-label" placeholder="e.g. Strong support"/></div>
+    <div class="field"><label>Price High</label><input type="number" id="zone-high" placeholder="e.g. 76500" step="any"/></div>
+    <div class="field"><label>Price Low</label><input type="number" id="zone-low" placeholder="e.g. 75800" step="any"/></div>
+    <div class="sheet-actions">
+      <button class="btn-cancel" onclick="closeZone()">Cancel</button>
+      <button class="btn-primary" id="zone-save-btn" onclick="saveZone()">Add Zone</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast"></div>
 
 <script>
@@ -363,8 +409,17 @@ let botData    = null;
 let prevPrice  = null;
 let heldTimer  = null;
 let entryTs    = null;
-let tvWidget   = null;
+
+// Chart state
+let lwChart    = null;
+let candleSeries = null;
+let ema21Series  = null;
+let ema50Series  = null;
+let chartTf    = '1h';
 let chartSym   = null;
+let chartTimer = null;
+let zoneColor  = 'green';
+let zones      = JSON.parse(localStorage.getItem('apex_zones') || '[]');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 const qs  = (s,el=document)=>el.querySelector(s);
@@ -399,6 +454,7 @@ function showTab(tab){
   qs('#tab-'+tab).classList.add('active');
   qs('#nav-'+tab).classList.add('active');
   if(tab==='chart') buildChart();
+  else if(chartTimer){clearInterval(chartTimer);chartTimer=null;chartSym=null;}
 }
 
 // ── Symbol switch ─────────────────────────────────────────────────────────────
@@ -413,39 +469,188 @@ function switchSym(sym){
   fetchData();
 }
 
-// ── TradingView chart ─────────────────────────────────────────────────────────
-function buildChart(){
-  const src=SOURCES[activeSym];
-  if(chartSym===src.tv)return;
-  chartSym=src.tv;
-  const wrap=qs('#tv-container');
-  wrap.innerHTML='';
-  const script=document.createElement('script');
-  script.src='https://s3.tradingview.com/tv.js';
-  script.onload=()=>{
-    new TradingView.widget({
-      container_id:'tv-container',
-      width:'100%',height:'100%',
-      symbol:src.tv,
-      interval:'60',
-      timezone:'Etc/UTC',
-      theme:'dark',
-      style:'1',
-      locale:'en',
-      toolbar_bg:'#13161f',
-      hide_side_toolbar:true,
-      allow_symbol_change:false,
-      save_image:false,
-      studies:['RSI@tv-basicstudies','MAExp@tv-basicstudies'],
-      overrides:{
-        'paneProperties.background':'#0d0f14',
-        'paneProperties.backgroundType':'solid',
-        'scalesProperties.lineColor':'#232738',
-        'scalesProperties.textColor':'#5a6282',
-      }
+// ── Lightweight Charts ────────────────────────────────────────────────────────
+function calcEMA(data, period) {
+  const k = 2 / (period + 1);
+  const out = [];
+  let ema = null;
+  for (const d of data) {
+    if (ema === null) { ema = d.close; }
+    else { ema = d.close * k + ema * (1 - k); }
+    out.push({ time: d.time, value: parseFloat(ema.toFixed(2)) });
+  }
+  return out;
+}
+
+async function buildChart() {
+  const sym = SOURCES[activeSym].sym;
+  if (chartSym === sym + chartTf) return;
+  chartSym = sym + chartTf;
+
+  // Fetch candles from Binance public API
+  let candles;
+  try {
+    const r = await fetch(`https://api.binance.com/api/v3/klines?symbol=${sym}&interval=${chartTf}&limit=200`);
+    const raw = await r.json();
+    candles = raw.map(k => ({
+      time:  Math.floor(k[0] / 1000),
+      open:  parseFloat(k[1]),
+      high:  parseFloat(k[2]),
+      low:   parseFloat(k[3]),
+      close: parseFloat(k[4]),
+    }));
+  } catch(e) { toast('Chart data failed: ' + e.message); return; }
+
+  // Init or reuse chart
+  const el = qs('#lw-chart');
+  if (!lwChart) {
+    lwChart = LightweightCharts.createChart(el, {
+      layout:     { background: { color: '#0d0f14' }, textColor: '#5a6282' },
+      grid:       { vertLines: { color: '#1a1e2a' }, horzLines: { color: '#1a1e2a' } },
+      crosshair:  { mode: LightweightCharts.CrosshairMode.Normal },
+      rightPriceScale: { borderColor: '#232738' },
+      timeScale:  { borderColor: '#232738', timeVisible: true, secondsVisible: false },
+      handleScale: { axisPressedMouseMove: true },
     });
-  };
-  wrap.appendChild(script);
+    lwChart.timeScale().fitContent();
+
+    // Resize observer
+    new ResizeObserver(() => {
+      lwChart.applyOptions({ width: el.clientWidth, height: el.clientHeight });
+      drawZoneOverlay();
+    }).observe(el);
+
+    // Redraw zones on scroll/zoom
+    lwChart.timeScale().subscribeVisibleTimeRangeChange(drawZoneOverlay);
+    lwChart.subscribeCrosshairMove(drawZoneOverlay);
+  } else {
+    if (candleSeries) lwChart.removeSeries(candleSeries);
+    if (ema21Series)  lwChart.removeSeries(ema21Series);
+    if (ema50Series)  lwChart.removeSeries(ema50Series);
+  }
+
+  // Candles
+  candleSeries = lwChart.addCandlestickSeries({
+    upColor: '#22c55e', downColor: '#ef4444',
+    borderUpColor: '#22c55e', borderDownColor: '#ef4444',
+    wickUpColor: '#22c55e', wickDownColor: '#ef4444',
+  });
+  candleSeries.setData(candles);
+
+  // EMA 21
+  ema21Series = lwChart.addLineSeries({ color: '#f7931a', lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false });
+  ema21Series.setData(calcEMA(candles, 21));
+
+  // EMA 50
+  ema50Series = lwChart.addLineSeries({ color: '#3b82f6', lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false });
+  ema50Series.setData(calcEMA(candles, 50));
+
+  lwChart.applyOptions({ width: el.clientWidth, height: el.clientHeight });
+  lwChart.timeScale().fitContent();
+
+  drawZoneOverlay();
+  renderZoneChips();
+
+  // Auto-refresh
+  if (chartTimer) clearInterval(chartTimer);
+  chartTimer = setInterval(() => { chartSym = null; buildChart(); }, 30000);
+}
+
+function setTf(tf) {
+  chartTf = tf;
+  chartSym = null;
+  ['1h','4h','1d'].forEach(t => qs('#tf-'+t).className = 'tf-btn' + (t === tf ? ' active' : ''));
+  buildChart();
+}
+
+// ── Zone overlay ──────────────────────────────────────────────────────────────
+function drawZoneOverlay() {
+  if (!lwChart || !candleSeries) return;
+  const wrap  = qs('#chart-wrap');
+  const canvas = qs('#zone-canvas');
+  canvas.width  = wrap.clientWidth;
+  canvas.height = wrap.clientHeight;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  zones.forEach(z => {
+    const topY = candleSeries.priceToCoordinate(z.high);
+    const botY = candleSeries.priceToCoordinate(z.low);
+    if (topY === null || botY === null) return;
+    const y1 = Math.min(topY, botY), y2 = Math.max(topY, botY), h = y2 - y1;
+    if (z.color === 'green') {
+      ctx.fillStyle   = 'rgba(34,197,94,0.13)';
+      ctx.strokeStyle = 'rgba(34,197,94,0.5)';
+    } else {
+      ctx.fillStyle   = 'rgba(239,68,68,0.13)';
+      ctx.strokeStyle = 'rgba(239,68,68,0.5)';
+    }
+    ctx.fillRect(0, y1, canvas.width, h);
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, y1); ctx.lineTo(canvas.width, y1); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, y2); ctx.lineTo(canvas.width, y2); ctx.stroke();
+    if (z.label) {
+      ctx.fillStyle = z.color === 'green' ? 'rgba(34,197,94,0.9)' : 'rgba(239,68,68,0.9)';
+      ctx.font = 'bold 11px -apple-system,sans-serif';
+      ctx.fillText(z.label, 8, y1 - 4);
+    }
+  });
+}
+
+function renderZoneChips() {
+  qs('#zones-list').innerHTML = zones.length ? zones.map((z,i) =>
+    `<span class="zone-chip zone-chip-${z.color}">
+      ${z.label || (z.color==='green'?'Support':'Resistance')}
+      ${z.high.toFixed(0)}–${z.low.toFixed(0)}
+      <button onclick="deleteZone(${i})">✕</button>
+    </span>`
+  ).join('') : '';
+}
+
+function deleteZone(i) {
+  zones.splice(i, 1);
+  localStorage.setItem('apex_zones', JSON.stringify(zones));
+  drawZoneOverlay(); renderZoneChips();
+}
+
+function clearZones() {
+  if (!zones.length) return;
+  if (!confirm('Clear all zones?')) return;
+  zones = []; localStorage.setItem('apex_zones', JSON.stringify(zones));
+  drawZoneOverlay(); renderZoneChips();
+}
+
+// ── Zone modal ────────────────────────────────────────────────────────────────
+function openZone(color) {
+  zoneColor = color;
+  qs('#zone-sheet-title').textContent = color === 'green' ? '🟢 Add Support Zone' : '🔴 Add Resistance Zone';
+  qs('#zone-save-btn').style.background = color === 'green' ? '#16a34a' : '#dc2626';
+  qs('#zone-high').value = '';
+  qs('#zone-low').value  = '';
+  qs('#zone-label').value = '';
+  // Pre-fill with current price as hint
+  if (botData) {
+    const p = n(botData.price);
+    qs('#zone-high').placeholder = 'e.g. ' + (p + 200).toFixed(0);
+    qs('#zone-low').placeholder  = 'e.g. ' + (p - 200).toFixed(0);
+  }
+  qs('#zone-overlay').classList.add('open');
+  setTimeout(() => qs('#zone-high').focus(), 300);
+}
+
+function closeZone() { qs('#zone-overlay').classList.remove('open'); }
+
+function saveZone() {
+  const high  = parseFloat(qs('#zone-high').value);
+  const low   = parseFloat(qs('#zone-low').value);
+  const label = qs('#zone-label').value.trim();
+  if (!high || !low || isNaN(high) || isNaN(low)) { toast('Enter valid prices'); return; }
+  zones.push({ color: zoneColor, high: Math.max(high,low), low: Math.min(high,low), label });
+  localStorage.setItem('apex_zones', JSON.stringify(zones));
+  closeZone();
+  drawZoneOverlay();
+  renderZoneChips();
+  toast((zoneColor==='green'?'🟢':'🔴') + ' Zone added');
 }
 
 // ── Fetch data ────────────────────────────────────────────────────────────────
