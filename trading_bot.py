@@ -415,12 +415,6 @@ def get_decision(symbol: str, df: pd.DataFrame) -> dict:
     if adx < ADX_MIN:
         return hold(f'ADX {adx:.1f} < {ADX_MIN} — market choppy, no entry')
 
-    ss = sym_state(symbol)
-    last_closed_ts = ss.get('last_bot_closed_ts', 0)
-    if last_closed_ts and (time.time() - last_closed_ts) < 3600:
-        mins_left = int((3600 - (time.time() - last_closed_ts)) / 60) + 1
-        return hold(f'Post-trade cooldown — {mins_left}m remaining before next entry')
-
     if atr < min_atr:
         return hold(f'ATR {atr:.6f} too low (min {min_atr}) — not enough movement to cover fees')
 
