@@ -52,8 +52,9 @@ BINANCE_API_KEY    = os.environ.get('BINANCE_API_KEY', '').strip()
 BINANCE_API_SECRET = os.environ.get('BINANCE_API_SECRET', '').strip()
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '').strip()
 TELEGRAM_CHAT_ID   = os.environ.get('TELEGRAM_CHAT_ID', '').strip()
-GH_TOKEN           = os.environ.get('GH_TOKEN', '').strip()
-DASHBOARD_REPO     = os.environ.get('DASHBOARD_REPO', 'avinashpathrol/apex-dashboard').strip()
+GH_TOKEN            = os.environ.get('GH_TOKEN', '').strip()
+LUNARCRUSH_API_KEY  = os.environ.get('LUNARCRUSH_API_KEY', '').strip()
+DASHBOARD_REPO      = os.environ.get('DASHBOARD_REPO', 'avinashpathrol/apex-dashboard').strip()
 BOT_CONFIG_FILE    = os.environ.get('BOT_CONFIG_FILE', 'bot_config.json').strip()
 BOT_STATE_FILE     = os.environ.get('BOT_STATE_FILE', 'bot_state.json').strip()
 
@@ -331,6 +332,35 @@ def cleanup_orphan_borrows(symbol: str) -> None:
         logger.warning(f'cleanup USDT borrow ({symbol}): {e}')
 
 
+# ── LunarCrush Sentiment ─────────────────────────────────────────────────────
+_sentiment_cache: dict = {'value': None, 'ts': 0}
+SENTIMENT_CACHE_TTL = 600  # 10 minutes
+
+def get_btc_sentiment() -> Optional[float]:
+    """Fetch BTC social sentiment from LunarCrush (0-100). Returns None on failure or no key."""
+    if not LUNARCRUSH_API_KEY:
+        return None
+    now = time.time()
+    if _sentiment_cache['value'] is not None and (now - _sentiment_cache['ts']) < SENTIMENT_CACHE_TTL:
+        return _sentiment_cache['value']
+    try:
+        r = requests.get(
+            'https://lunarcrush.com/api4/public/topic/bitcoin/v1',
+            headers={'Authorization': f'Bearer {LUNARCRUSH_API_KEY}'},
+            timeout=10,
+        )
+        r.raise_for_status()
+        data = r.json()
+        sentiment = float((data.get('data') or {}).get('sentiment') or 0)
+        _sentiment_cache['value'] = sentiment
+        _sentiment_cache['ts'] = now
+        logger.info(f'🌙 LunarCrush BTC sentiment: {sentiment:.0f}%')
+        return sentiment
+    except Exception as e:
+        logger.warning(f'LunarCrush sentiment fetch failed: {e}')
+        return None
+
+
 # ── Market Data & Signal ──────────────────────────────────────────────────────
 def get_market_data(symbol: str) -> pd.DataFrame:
     klines = binance_public('/api/v3/klines', {'symbol': symbol, 'interval': '1h', 'limit': 100})
@@ -413,11 +443,15 @@ def get_decision(symbol: str, df: pd.DataFrame) -> dict:
         candle_dipped = lo <= ema21 * 1.008
         rsi_ok        = RSI_LONG_MIN <= rsi <= RSI_LONG_MAX
         if in_zone and candle_dipped and rsi_ok:
+            sentiment = get_btc_sentiment()
+            if sentiment is not None and sentiment < 50:
+                return hold(f'BULLISH setup blocked — social sentiment {sentiment:.0f}% bearish', trend)
             conf = 70
             if adx > ADX_STRONG:             conf += 7
             if vol > vol_ma * 0.8:           conf += 5
             if 40 <= rsi <= 55:              conf += 5
             if float(p['close']) < ema21:    conf += 5
+            if sentiment is not None and sentiment >= 70: conf += 5
             return {
                 'action': 'LONG', 'confidence': min(conf, 90),
                 'regime': 'TRENDING', 'trend_direction': trend,
@@ -440,11 +474,15 @@ def get_decision(symbol: str, df: pd.DataFrame) -> dict:
         candle_tapped = hi >= ema21 * 0.992
         rsi_ok        = RSI_SHORT_MIN <= rsi <= RSI_SHORT_MAX
         if in_zone and candle_tapped and rsi_ok:
+            sentiment = get_btc_sentiment()
+            if sentiment is not None and sentiment > 50:
+                return hold(f'BEARISH setup blocked — social sentiment {sentiment:.0f}% bullish', trend)
             conf = 70
             if adx > ADX_STRONG:             conf += 7
             if vol > vol_ma * 0.8:           conf += 5
             if 45 <= rsi <= 60:              conf += 5
             if float(p['close']) > ema21:    conf += 5
+            if sentiment is not None and sentiment <= 30: conf += 5
             return {
                 'action': 'SHORT', 'confidence': min(conf, 90),
                 'regime': 'TRENDING', 'trend_direction': trend,
@@ -1006,6 +1044,7 @@ def run_symbol(symbol: str, cfg: dict) -> dict:
             'trend_direction': trend,
             'reason':          reason,
             'indicators':      indicators,
+            'sentiment':       _sentiment_cache.get('value'),
             'closed_trades':   closed_trades,
             'performance':     performance,
             'trail':           trail_info,
