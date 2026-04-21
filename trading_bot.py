@@ -1143,16 +1143,30 @@ def main():
                 if quick_cfg.get('close_requested') or quick_cfg.get('force_trail'):
                     logger.info('⚡ Flag detected mid-sleep — waking up')
                     break
-                # Mid-sleep SL check for both symbols
+                wake = False
                 for sym in TRADING_SYMBOLS:
                     ss  = sym_state(sym)
                     pos = ss.get('position')
+                    _price = get_current_price(sym)
+                    # Update live price in dashboard every 5s
+                    dash_file = SYMBOLS_CONFIG[sym]['dashboard_file']
+                    dash_path = os.path.join(WEB_ROOT, dash_file)
+                    try:
+                        existing = read_json(dash_path, {})
+                        if existing:
+                            existing['price'] = _price
+                            existing['generated_at'] = now_utc_iso()
+                            write_json(dash_path, existing)
+                    except Exception:
+                        pass
+                    # SL check
                     if pos and ss.get('trail_entry_price') and ss.get('trail_atr'):
-                        _price = get_current_price(sym)
                         _hit, _reason = check_sl_trail(sym, pos, _price)
                         if _hit:
                             logger.info(f'⚡ [{sym}] Trail/SL hit mid-sleep — waking up')
-                            break
+                            wake = True
+                if wake:
+                    break
             except Exception:
                 pass
 
