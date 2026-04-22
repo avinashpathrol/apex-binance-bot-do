@@ -340,8 +340,8 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
   <div class="sheet">
     <div class="sheet-handle"></div>
     <h2>⚙️ Bot Settings</h2>
-    <div class="field"><label>Leverage</label>
-      <select id="cfg-lev"><option value="3">3×</option><option value="4">4×</option><option value="5" selected>5×</option><option value="10">10× (Futures only)</option></select>
+    <div class="field"><label id="cfg-lev-label">Leverage</label>
+      <select id="cfg-lev"></select>
     </div>
     <div class="field"><label>Bot Status</label>
       <select id="cfg-pause"><option value="false">▶ Running</option><option value="true">⏸ Paused</option></select>
@@ -767,7 +767,21 @@ async function doForceTrail(){
 }
 
 function openSettings(){
-  if(botData){qs('#cfg-lev').value=n(botData.leverage,5);qs('#cfg-pause').value=botData.bot_paused?'true':'false';}
+  const isFut = activeSym==='eth'||activeSym==='sol';
+  const levSel = qs('#cfg-lev');
+  levSel.innerHTML = '';
+  const opts = isFut
+    ? [5,7,10,12,15,20]
+    : [3,4,5];
+  const curLev = n(botData&&botData.leverage, isFut?10:5);
+  opts.forEach(v=>{
+    const o=document.createElement('option');
+    o.value=v; o.textContent=v+'×'+(v>=15?' ⚠️':'');
+    if(v===curLev)o.selected=true;
+    levSel.appendChild(o);
+  });
+  qs('#cfg-lev-label').textContent = isFut ? 'Futures Leverage' : 'Leverage';
+  if(botData){qs('#cfg-pause').value=botData.bot_paused?'true':'false';}
   qs('#settings-overlay').classList.add('open');
 }
 function closeSettings(){qs('#settings-overlay').classList.remove('open');}
@@ -775,7 +789,7 @@ async function saveSettings(){
   const lev=parseFloat(qs('#cfg-lev').value);
   const paused=qs('#cfg-pause').value==='true';
   const isFut = activeSym==='eth'||activeSym==='sol';
-  const validLevs = isFut ? [3,4,5,10] : [3,4,5];
+  const validLevs = isFut ? [5,7,10,12,15,20] : [3,4,5];
   if(!validLevs.includes(lev)){alert('Invalid leverage for this mode');return;}
   try{
     const patch = isFut
