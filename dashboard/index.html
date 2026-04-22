@@ -551,7 +551,8 @@ function renderHome(d,price,pos,trail,pf,ind){
       ? n(d.unrealized_pnl, 0)
       : (pos==='LONG'?(price-ep)*qty:(ep-price)*qty);
     qs('#pm-entry').textContent=fmtP(ep);
-    qs('#pm-pnl').textContent=sgn(upnl)+upnl.toFixed(4)+' USDT';
+    const pct = ep>0 ? (pos==='LONG'?(price-ep)/ep*100:(ep-price)/ep*100) : 0;
+    qs('#pm-pnl').textContent=sgn(upnl)+upnl.toFixed(4)+' USDT  ('+sgn(pct)+pct.toFixed(2)+'%)';
     qs('#pm-pnl').style.color=clr(upnl);
     qs('#pm-size').textContent='$'+n(d.trade_amount,10)+' × '+n(d.leverage,5)+'x';
     if(!heldTimer){entryTs=d.trade_opened_at;heldTimer=setInterval(()=>{qs('#pm-held').textContent=elapsed(entryTs)},1000);}
