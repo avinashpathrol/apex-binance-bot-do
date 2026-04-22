@@ -51,7 +51,7 @@ BOT_CONFIG_FILE    = os.environ.get('BOT_CONFIG_FILE', 'bot_config.json').strip(
 BOT_STATE_FILE     = os.environ.get('BOT_STATE_FILE_FUTURES', 'bot_state_futures.json').strip()
 
 DEFAULT_TRADE_AMOUNT_USDT = float(os.environ.get('FUTURES_TRADE_AMOUNT_USDT', '20'))
-DEFAULT_LEVERAGE          = float(os.environ.get('FUTURES_LEVERAGE', '5'))
+DEFAULT_LEVERAGE          = float(os.environ.get('FUTURES_LEVERAGE', '10'))
 CHECK_INTERVAL            = int(os.environ.get('CHECK_INTERVAL', '60'))
 ALLOWED_LEVERAGES         = {3.0, 4.0, 5.0, 10.0}
 
