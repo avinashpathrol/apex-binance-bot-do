@@ -590,7 +590,7 @@ def check_sl_trail(symbol: str, position: str, price: float) -> Tuple[bool, str]
         logger.info(f'📐 [{symbol}] Trail not active | profit={profit_dist:.4f} < {activate_dist:.4f}')
         return False, ''
 
-    dyn_dist   = max(atr * 0.5, profit_dist * 0.35)
+    dyn_dist   = max(atr * 0.4, profit_dist * 0.25)
     trail_stop = best - dyn_dist if is_long else best + dyn_dist
     locked_pct = round((profit_dist - dyn_dist) / profit_dist * 100) if profit_dist > 0 else 0
     if (is_long and price <= trail_stop) or (not is_long and price >= trail_stop):
@@ -612,7 +612,7 @@ def build_trail_info(symbol: str, position: Optional[str]) -> dict:
     if ep and bp and atr:
         profit = (bp - ep) if position == 'LONG' else (ep - bp)
         if profit >= atr * TRAIL_ACTIVATE_ATR:
-            dyn = max(atr * 0.5, profit * 0.35)
+            dyn = max(atr * 0.4, profit * 0.25)
             info['trail_stop'] = round(bp - dyn, 4) if position == 'LONG' else round(bp + dyn, 4)
             info['active'] = True
     return info
