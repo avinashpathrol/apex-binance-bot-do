@@ -549,7 +549,7 @@ function renderHome(d,price,pos,trail,pf,ind){
     const qty=n(d.active_qty,0);
     const upnl=pos==='LONG'?(price-ep)*qty:(ep-price)*qty;
     qs('#pm-entry').textContent=fmtP(ep);
-    qs('#pm-pnl').textContent=sgn(upnl)+upnl.toFixed(3)+' USDT';
+    qs('#pm-pnl').textContent=sgn(upnl)+upnl.toFixed(4)+' USDT';
     qs('#pm-pnl').style.color=clr(upnl);
     qs('#pm-size').textContent='$'+n(d.trade_amount,10)+' × '+n(d.leverage,5)+'x';
     if(!heldTimer){entryTs=d.trade_opened_at;heldTimer=setInterval(()=>{qs('#pm-held').textContent=elapsed(entryTs)},1000);}
