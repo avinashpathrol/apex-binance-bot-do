@@ -426,7 +426,6 @@ def get_decision(symbol: str, df: pd.DataFrame) -> dict:
 
     di_bullish  = adx_pos > adx_neg
     ema_bullish = ema21 > ema50
-    trend4 = get_4h_trend(symbol)
 
     if di_bullish and ema_bullish:
         trend = 'BULLISH'
@@ -444,8 +443,6 @@ def get_decision(symbol: str, df: pd.DataFrame) -> dict:
         candle_dipped = lo <= ema21 * 1.008
         rsi_ok        = RSI_LONG_MIN <= rsi <= RSI_LONG_MAX
         if in_zone and candle_dipped and rsi_ok:
-            if trend4 != '4H BULLISH':
-                return hold(f'BULLISH 1H setup blocked — 4H is {trend4}', trend)
             sentiment = get_eth_sentiment()
             if sentiment is not None and sentiment < 50:
                 return hold(f'BULLISH blocked — ETH sentiment {sentiment:.0f}% bearish', trend)
@@ -474,8 +471,6 @@ def get_decision(symbol: str, df: pd.DataFrame) -> dict:
         candle_tapped = hi >= ema21 * 0.992
         rsi_ok        = RSI_SHORT_MIN <= rsi <= RSI_SHORT_MAX
         if in_zone and candle_tapped and rsi_ok:
-            if trend4 != '4H BEARISH':
-                return hold(f'BEARISH 1H setup blocked — 4H is {trend4}', trend)
             sentiment = get_eth_sentiment()
             if sentiment is not None and sentiment > 50:
                 return hold(f'BEARISH blocked — ETH sentiment {sentiment:.0f}% bullish', trend)
