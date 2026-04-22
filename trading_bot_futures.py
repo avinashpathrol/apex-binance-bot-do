@@ -227,9 +227,14 @@ def detect_futures_position(symbol: str) -> Optional[str]:
     try:
         positions = binance_futures_private('GET', '/fapi/v2/positionRisk', {'symbol': symbol})
         for p in positions:
-            if p['symbol'] == symbol:
-                amt = float(p['positionAmt'])
-                if amt > 1e-8:  return 'LONG'
+            if p['symbol'] != symbol:
+                continue
+            amt      = float(p['positionAmt'])
+            pos_side = p.get('positionSide', 'BOTH')
+            if pos_side == 'LONG'  and amt >  1e-8: return 'LONG'
+            if pos_side == 'SHORT' and amt < -1e-8: return 'SHORT'
+            if pos_side == 'BOTH':
+                if amt >  1e-8: return 'LONG'
                 if amt < -1e-8: return 'SHORT'
     except Exception as e:
         logger.warning(f'detect_futures_position [{symbol}]: {e}')
@@ -249,21 +254,21 @@ def set_futures_margin_type(symbol: str, margin_type: str = 'ISOLATED') -> None:
                                 {'symbol': symbol, 'marginType': margin_type})
         logger.info(f'⚙️ [{symbol}] Margin type → {margin_type}')
     except Exception as e:
-        # -4046 = already set to that type; ignore
-        if '-4046' not in str(e):
+        # -4046 = already set to that type
+        # -4168 = Multi-Assets Mode active (ISOLATED not supported) — both are fine to ignore
+        if '-4046' not in str(e) and '-4168' not in str(e):
             logger.warning(f'set_futures_margin_type [{symbol}]: {e}')
 
 def futures_market_order(symbol: str, side: str, quantity: float,
-                         reduce_only: bool = False) -> dict:
-    params = {
-        'symbol':   symbol,
-        'side':     side,
-        'type':     'MARKET',
-        'quantity': str(quantity),
-    }
-    if reduce_only:
-        params['reduceOnly'] = 'true'
-    return binance_futures_private('POST', '/fapi/v1/order', params)
+                         position_side: str = 'LONG') -> dict:
+    # Always send positionSide to support both Hedge Mode and One-way Mode
+    return binance_futures_private('POST', '/fapi/v1/order', {
+        'symbol':       symbol,
+        'side':         side,
+        'type':         'MARKET',
+        'quantity':     str(quantity),
+        'positionSide': position_side,
+    })
 
 _step_cache: dict = {}
 
@@ -643,7 +648,7 @@ def open_long(symbol: str, price: float, confidence: int, reason: str) -> bool:
         if quantity < step:
             return False
 
-        resp         = futures_market_order(symbol, 'BUY', quantity)
+        resp         = futures_market_order(symbol, 'BUY', quantity, position_side='LONG')
         actual_price = float(resp.get('avgPrice') or price)
         qty_filled   = float(resp.get('executedQty') or quantity)
         fee_usdt     = qty_filled * actual_price * FEE_RATE
@@ -680,8 +685,9 @@ def close_long(symbol: str, price: float, reason: str) -> bool:
         positions = binance_futures_private('GET', '/fapi/v2/positionRisk', {'symbol': symbol})
         qty_held  = 0.0
         for p in positions:
-            if p['symbol'] == symbol:
+            if p['symbol'] == symbol and p.get('positionSide', 'BOTH') in ('LONG', 'BOTH'):
                 qty_held = abs(float(p['positionAmt']))
+                if qty_held > 1e-8: break
         quantity = round_step(qty_held, step)
         if quantity < step:
             logger.warning(f'[{symbol}] No {base} long position to close')
@@ -690,7 +696,7 @@ def close_long(symbol: str, price: float, reason: str) -> bool:
         entry_price = safe_float(ss.get('trail_entry_price'), price)
         entry_fee   = safe_float(ss.get('entry_fee_usdt'), 0.0)
 
-        resp         = futures_market_order(symbol, 'SELL', quantity, reduce_only=True)
+        resp         = futures_market_order(symbol, 'SELL', quantity, position_side='LONG')
         actual_close = float(resp.get('avgPrice') or price)
         exit_fee     = quantity * actual_close * FEE_RATE
         total_fee    = round(entry_fee + exit_fee, 6)
@@ -734,7 +740,7 @@ def open_short(symbol: str, price: float, confidence: int, reason: str) -> bool:
         if quantity < step:
             return False
 
-        resp         = futures_market_order(symbol, 'SELL', quantity)
+        resp         = futures_market_order(symbol, 'SELL', quantity, position_side='SHORT')
         actual_price = float(resp.get('avgPrice') or price)
         qty_filled   = float(resp.get('executedQty') or quantity)
         fee_usdt     = qty_filled * actual_price * FEE_RATE
@@ -771,8 +777,9 @@ def close_short(symbol: str, price: float, reason: str) -> bool:
         positions = binance_futures_private('GET', '/fapi/v2/positionRisk', {'symbol': symbol})
         qty_held  = 0.0
         for p in positions:
-            if p['symbol'] == symbol:
+            if p['symbol'] == symbol and p.get('positionSide', 'BOTH') in ('SHORT', 'BOTH'):
                 qty_held = abs(float(p['positionAmt']))
+                if qty_held > 1e-8: break
         quantity = round_step(qty_held, step)
         if quantity < step:
             logger.warning(f'[{symbol}] No {base} short position to close')
@@ -781,7 +788,7 @@ def close_short(symbol: str, price: float, reason: str) -> bool:
         entry_price = safe_float(ss.get('trail_entry_price'), price)
         entry_fee   = safe_float(ss.get('entry_fee_usdt'), 0.0)
 
-        resp         = futures_market_order(symbol, 'BUY', quantity, reduce_only=True)
+        resp         = futures_market_order(symbol, 'BUY', quantity, position_side='SHORT')
         actual_close = float(resp.get('avgPrice') or price)
         exit_fee     = quantity * actual_close * FEE_RATE
         total_fee    = round(entry_fee + exit_fee, 6)
