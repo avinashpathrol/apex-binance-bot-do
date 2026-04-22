@@ -44,6 +44,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .sym-tab{padding:5px 12px;border-radius:20px;border:1px solid var(--border);background:transparent;color:var(--muted);font-size:12px;font-weight:700;cursor:pointer;transition:all .2s;font-family:inherit}
 .sym-tab.active-btc{border-color:var(--accent);color:var(--accent);background:rgba(247,147,26,.1)}
 .sym-tab.active-gold{border-color:#ffd700;color:#ffd700;background:rgba(255,215,0,.08)}
+.sym-tab.active-eth{border-color:#627eea;color:#627eea;background:rgba(98,126,234,.1)}
 .hdr-actions{display:flex;gap:8px;align-items:center}
 .icon-btn{background:none;border:1px solid var(--border);color:var(--muted);border-radius:8px;width:34px;height:34px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:16px}
 .hdr-price{display:flex;align-items:baseline;gap:10px}
@@ -174,6 +175,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
     <div class="symbol-tabs">
       <button class="sym-tab active-btc" id="sym-btc"  onclick="switchSym('btc')">₿ BTC</button>
       <button class="sym-tab"            id="sym-gold" onclick="switchSym('gold')">🥇 Gold</button>
+      <button class="sym-tab"            id="sym-eth"  onclick="switchSym('eth')">⚡ ETH</button>
     </div>
     <div class="hdr-actions">
       <div class="live-dot" id="live-dot"></div>
@@ -337,7 +339,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
     <div class="sheet-handle"></div>
     <h2>⚙️ Bot Settings</h2>
     <div class="field"><label>Leverage</label>
-      <select id="cfg-lev"><option value="3">3×</option><option value="4">4×</option><option value="5" selected>5×</option></select>
+      <select id="cfg-lev"><option value="3">3×</option><option value="4">4×</option><option value="5" selected>5×</option><option value="10">10× (Futures only)</option></select>
     </div>
     <div class="field"><label>Bot Status</label>
       <select id="cfg-pause"><option value="false">▶ Running</option><option value="true">⏸ Paused</option></select>
@@ -355,8 +357,9 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 'use strict';
 
 const SOURCES = {
-  btc:  {api:'/data_binance_btc.json',  sym:'BTCUSDT',  tv:'BINANCE:BTCUSDT',  label:'BTC/USDT'},
-  gold: {api:'/data_binance_paxg.json', sym:'PAXGUSDT', tv:'BINANCE:PAXGUSDT', label:'Gold/USDT'},
+  btc:  {api:'/data_binance_btc.json',  sym:'BTCUSDT',  tv:'BINANCE:BTCUSDT',    label:'BTC/USDT'},
+  gold: {api:'/data_binance_paxg.json', sym:'PAXGUSDT', tv:'BINANCE:PAXGUSDT',   label:'Gold/USDT'},
+  eth:  {api:'/data_futures_eth.json',  sym:'ETHUSDT',  tv:'BINANCE:ETHUSDT.P',  label:'ETH Futures'},
 };
 const CONFIG_API = '/bot_config.json';
 const REFRESH_MS = 5000;
@@ -413,7 +416,8 @@ function switchSym(sym){
   if(heldTimer){clearInterval(heldTimer);heldTimer=null;entryTs=null;}
   qs('#sym-btc').className ='sym-tab'+(sym==='btc'?' active-btc':'');
   qs('#sym-gold').className='sym-tab'+(sym==='gold'?' active-gold':'');
-  if(tvWidget){tvWidget=null;chartSym=null;}
+  qs('#sym-eth').className ='sym-tab'+(sym==='eth'?' active-eth':'');
+  chartSym=null;
   if(activeTab==='chart')buildChart();
   fetchData();
 }
@@ -505,16 +509,17 @@ function render(d){
 
 function renderHome(d,price,pos,trail,pf,ind){
   const hero=qs('#pos-hero');
+  const modeLabel = (d.exchange||'').includes('Futures') ? 'futures' : 'margin';
   if(pos==='LONG'){
     hero.className='long';
     qs('#pos-status').textContent='LONG POSITION';
     qs('#pos-title').textContent='🟢 Riding the uptrend';
-    qs('#pos-sub').textContent=n(d.leverage,5)+'x margin · '+SOURCES[activeSym].label;
+    qs('#pos-sub').textContent=n(d.leverage,5)+'x '+modeLabel+' · '+SOURCES[activeSym].label;
   }else if(pos==='SHORT'){
     hero.className='short';
     qs('#pos-status').textContent='SHORT POSITION';
     qs('#pos-title').textContent='🔴 Riding the downtrend';
-    qs('#pos-sub').textContent=n(d.leverage,5)+'x margin · '+SOURCES[activeSym].label;
+    qs('#pos-sub').textContent=n(d.leverage,5)+'x '+modeLabel+' · '+SOURCES[activeSym].label;
   }else{
     hero.className='flat';
     qs('#pos-status').textContent='NO POSITION';
@@ -732,14 +737,26 @@ async function writeConfig(patch){
 async function doClose(){
   if(!botData?.position)return;
   if(!confirm('Close '+botData.position+' '+SOURCES[activeSym].label+' at market?'))return;
-  try{await writeConfig({close_requested:true,close_requested_at:new Date().toISOString(),close_symbol:SOURCES[activeSym].sym});toast('✅ Close sent — executes within 60s');}
-  catch(e){toast('⚠️ Failed: '+e.message);}
+  try{
+    const isFut = activeSym==='eth';
+    const patch = isFut
+      ? {futures_close_requested:true,futures_close_requested_at:new Date().toISOString(),futures_close_symbol:SOURCES[activeSym].sym}
+      : {close_requested:true,close_requested_at:new Date().toISOString(),close_symbol:SOURCES[activeSym].sym};
+    await writeConfig(patch);
+    toast('✅ Close sent — executes within 60s');
+  }catch(e){toast('⚠️ Failed: '+e.message);}
 }
 
 async function doForceTrail(){
   if(!botData?.position)return;
-  try{await writeConfig({force_trail:true,force_trail_at:new Date().toISOString(),force_trail_symbol:SOURCES[activeSym].sym});toast('🔒 Trail locked — activates next cycle');}
-  catch(e){toast('⚠️ Failed: '+e.message);}
+  try{
+    const isFut = activeSym==='eth';
+    const patch = isFut
+      ? {futures_force_trail:true,futures_force_trail_at:new Date().toISOString(),futures_force_trail_symbol:SOURCES[activeSym].sym}
+      : {force_trail:true,force_trail_at:new Date().toISOString(),force_trail_symbol:SOURCES[activeSym].sym};
+    await writeConfig(patch);
+    toast('🔒 Trail locked — activates next cycle');
+  }catch(e){toast('⚠️ Failed: '+e.message);}
 }
 
 function openSettings(){
@@ -750,9 +767,17 @@ function closeSettings(){qs('#settings-overlay').classList.remove('open');}
 async function saveSettings(){
   const lev=parseFloat(qs('#cfg-lev').value);
   const paused=qs('#cfg-pause').value==='true';
-  if(![3,4,5].includes(lev)){alert('Leverage must be 3×, 4×, or 5×');return;}
-  try{await writeConfig({leverage:lev,bot_paused:paused});closeSettings();toast('✅ Settings saved');}
-  catch(e){toast('⚠️ Save failed: '+e.message);}
+  const isFut = activeSym==='eth';
+  const validLevs = isFut ? [3,4,5,10] : [3,4,5];
+  if(!validLevs.includes(lev)){alert('Invalid leverage for this mode');return;}
+  try{
+    const patch = isFut
+      ? {futures_leverage:lev, futures_bot_paused:paused}
+      : {leverage:lev, bot_paused:paused};
+    await writeConfig(patch);
+    closeSettings();
+    toast('✅ Settings saved');
+  }catch(e){toast('⚠️ Save failed: '+e.message);}
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────

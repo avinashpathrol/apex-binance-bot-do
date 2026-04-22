@@ -1,0 +1,15 @@
+[Unit]
+Description=APEX Futures Bot — ETH/USDT Perpetual
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/binance-bot/apex-binance-bot-do
+ExecStart=/usr/bin/python3 trading_bot_futures.py
+Restart=always
+RestartSec=10
+EnvironmentFile=/root/binance-bot/apex-binance-bot-do/.env
+
+[Install]
+WantedBy=multi-user.target
