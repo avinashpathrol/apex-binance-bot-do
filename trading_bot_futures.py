@@ -223,7 +223,9 @@ def get_futures_balance(asset: str = 'USDT') -> dict:
         logger.warning(f'get_futures_balance: {e}')
     return {'free': 0.0, 'total': 0.0}
 
-def detect_futures_position(symbol: str) -> Optional[str]:
+def get_position_details(symbol: str) -> dict:
+    """Returns {side, qty, entry_price, unrealized_pnl} from Binance positionRisk."""
+    result = {'side': None, 'qty': 0.0, 'entry_price': None, 'unrealized_pnl': None}
     try:
         positions = binance_futures_private('GET', '/fapi/v2/positionRisk', {'symbol': symbol})
         for p in positions:
@@ -231,14 +233,24 @@ def detect_futures_position(symbol: str) -> Optional[str]:
                 continue
             amt      = float(p['positionAmt'])
             pos_side = p.get('positionSide', 'BOTH')
-            if pos_side == 'LONG'  and amt >  1e-8: return 'LONG'
-            if pos_side == 'SHORT' and amt < -1e-8: return 'SHORT'
+            side = None
+            if pos_side == 'LONG'  and amt >  1e-8: side = 'LONG'
+            if pos_side == 'SHORT' and amt < -1e-8: side = 'SHORT'
             if pos_side == 'BOTH':
-                if amt >  1e-8: return 'LONG'
-                if amt < -1e-8: return 'SHORT'
+                if amt >  1e-8: side = 'LONG'
+                if amt < -1e-8: side = 'SHORT'
+            if side:
+                result['side']           = side
+                result['qty']            = abs(amt)
+                result['entry_price']    = safe_float(p.get('entryPrice'), None)
+                result['unrealized_pnl'] = safe_float(p.get('unRealizedProfit'), None)
+                break
     except Exception as e:
-        logger.warning(f'detect_futures_position [{symbol}]: {e}')
-    return None
+        logger.warning(f'get_position_details [{symbol}]: {e}')
+    return result
+
+def detect_futures_position(symbol: str) -> Optional[str]:
+    return get_position_details(symbol)['side']
 
 def set_futures_leverage(symbol: str, leverage: int) -> None:
     try:
@@ -936,7 +948,17 @@ def run_symbol(symbol: str, cfg: dict, allow_new_entry: bool = True) -> dict:
 
         # ── Trail sync ────────────────────────────────────────────────────────
         if position and ss.get('trail_entry_price') is None:
-            init_trail(symbol, price)
+            # Restore entry price and qty from Binance (e.g. after bot restart)
+            pos_details = get_position_details(symbol)
+            restored_ep = pos_details['entry_price']
+            if restored_ep:
+                init_trail(symbol, restored_ep)
+                logger.info(f'🔄 [{symbol}] Restored entry from Binance: ${restored_ep:.4f}')
+            else:
+                init_trail(symbol, price)
+            if pos_details['qty'] and not ss.get('active_qty'):
+                ss['active_qty'] = pos_details['qty']
+                logger.info(f'🔄 [{symbol}] Restored qty from Binance: {pos_details["qty"]}')
         if not position and ss.get('trail_entry_price') is not None:
             clear_trail(symbol)
 
@@ -1004,7 +1026,8 @@ def run_symbol(symbol: str, cfg: dict, allow_new_entry: bool = True) -> dict:
         status = status or f'HOLD — {reason}'
 
         # ── Final state ───────────────────────────────────────────────────────
-        latest_pos = detect_futures_position(symbol)
+        final_pos_details = get_position_details(symbol)
+        latest_pos = final_pos_details['side']
         ss['position'] = latest_pos
         save_state()
 
@@ -1022,7 +1045,8 @@ def run_symbol(symbol: str, cfg: dict, allow_new_entry: bool = True) -> dict:
             'leverage':        state['runtime']['leverage'],
             'trade_amount':    state['runtime']['trade_amount_usdt'],
             'position':        latest_pos,
-            'active_qty':      ss.get('active_qty'),
+            'active_qty':      ss.get('active_qty') or final_pos_details['qty'] or None,
+            'unrealized_pnl':  final_pos_details['unrealized_pnl'],
             'trade_opened_at': ss.get('trade_opened_at'),
             'action':          action,
             'confidence':      confidence,
