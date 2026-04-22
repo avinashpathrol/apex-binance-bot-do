@@ -785,7 +785,24 @@ async function saveSettings(){
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
-fetchData();
+async function autoSelectActiveSymbol(){
+  const syms = Object.keys(SOURCES);
+  const results = await Promise.all(syms.map(sym=>
+    fetch(SOURCES[sym].api+'?t='+Date.now(),{cache:'no-store'})
+      .then(r=>r.ok?r.json():null).catch(()=>null)
+  ));
+  // Pick first symbol that has an open position
+  for(let i=0;i<syms.length;i++){
+    const d=results[i];
+    if(d && d.position && (d.position==='LONG'||d.position==='SHORT')){
+      switchSym(syms[i]);
+      return;
+    }
+  }
+  // No active position — just load default (btc)
+  fetchData();
+}
+autoSelectActiveSymbol();
 setInterval(fetchData,REFRESH_MS);
 </script>
 </body>
