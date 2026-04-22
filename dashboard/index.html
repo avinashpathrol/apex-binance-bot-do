@@ -45,6 +45,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .sym-tab.active-btc{border-color:var(--accent);color:var(--accent);background:rgba(247,147,26,.1)}
 .sym-tab.active-gold{border-color:#ffd700;color:#ffd700;background:rgba(255,215,0,.08)}
 .sym-tab.active-eth{border-color:#627eea;color:#627eea;background:rgba(98,126,234,.1)}
+.sym-tab.active-sol{border-color:#9945ff;color:#9945ff;background:rgba(153,69,255,.1)}
 .hdr-actions{display:flex;gap:8px;align-items:center}
 .icon-btn{background:none;border:1px solid var(--border);color:var(--muted);border-radius:8px;width:34px;height:34px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:16px}
 .hdr-price{display:flex;align-items:baseline;gap:10px}
@@ -176,6 +177,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
       <button class="sym-tab active-btc" id="sym-btc"  onclick="switchSym('btc')">₿ BTC</button>
       <button class="sym-tab"            id="sym-gold" onclick="switchSym('gold')">🥇 Gold</button>
       <button class="sym-tab"            id="sym-eth"  onclick="switchSym('eth')">⚡ ETH</button>
+      <button class="sym-tab"            id="sym-sol"  onclick="switchSym('sol')">◎ SOL</button>
     </div>
     <div class="hdr-actions">
       <div class="live-dot" id="live-dot"></div>
@@ -360,6 +362,7 @@ const SOURCES = {
   btc:  {api:'/data_binance_btc.json',  sym:'BTCUSDT',  tv:'BINANCE:BTCUSDT',    label:'BTC/USDT'},
   gold: {api:'/data_binance_paxg.json', sym:'PAXGUSDT', tv:'BINANCE:PAXGUSDT',   label:'Gold/USDT'},
   eth:  {api:'/data_futures_eth.json',  sym:'ETHUSDT',  tv:'BINANCE:ETHUSDT.P',  label:'ETH Futures'},
+  sol:  {api:'/data_futures_sol.json',  sym:'SOLUSDT',  tv:'BINANCE:SOLUSDT.P',  label:'SOL Futures'},
 };
 const CONFIG_API = '/bot_config.json';
 const REFRESH_MS = 5000;
@@ -417,6 +420,7 @@ function switchSym(sym){
   qs('#sym-btc').className ='sym-tab'+(sym==='btc'?' active-btc':'');
   qs('#sym-gold').className='sym-tab'+(sym==='gold'?' active-gold':'');
   qs('#sym-eth').className ='sym-tab'+(sym==='eth'?' active-eth':'');
+  qs('#sym-sol').className ='sym-tab'+(sym==='sol'?' active-sol':'');
   chartSym=null;
   if(activeTab==='chart')buildChart();
   fetchData();
@@ -738,7 +742,7 @@ async function doClose(){
   if(!botData?.position)return;
   if(!confirm('Close '+botData.position+' '+SOURCES[activeSym].label+' at market?'))return;
   try{
-    const isFut = activeSym==='eth';
+    const isFut = activeSym==='eth'||activeSym==='sol';
     const patch = isFut
       ? {futures_close_requested:true,futures_close_requested_at:new Date().toISOString(),futures_close_symbol:SOURCES[activeSym].sym}
       : {close_requested:true,close_requested_at:new Date().toISOString(),close_symbol:SOURCES[activeSym].sym};
@@ -750,7 +754,7 @@ async function doClose(){
 async function doForceTrail(){
   if(!botData?.position)return;
   try{
-    const isFut = activeSym==='eth';
+    const isFut = activeSym==='eth'||activeSym==='sol';
     const patch = isFut
       ? {futures_force_trail:true,futures_force_trail_at:new Date().toISOString(),futures_force_trail_symbol:SOURCES[activeSym].sym}
       : {force_trail:true,force_trail_at:new Date().toISOString(),force_trail_symbol:SOURCES[activeSym].sym};
@@ -767,7 +771,7 @@ function closeSettings(){qs('#settings-overlay').classList.remove('open');}
 async function saveSettings(){
   const lev=parseFloat(qs('#cfg-lev').value);
   const paused=qs('#cfg-pause').value==='true';
-  const isFut = activeSym==='eth';
+  const isFut = activeSym==='eth'||activeSym==='sol';
   const validLevs = isFut ? [3,4,5,10] : [3,4,5];
   if(!validLevs.includes(lev)){alert('Invalid leverage for this mode');return;}
   try{

@@ -60,9 +60,15 @@ SYMBOLS_CONFIG = {
     'ETHUSDT': {
         'base': 'ETH',
         'dashboard_file': 'data_futures_eth.json',
-        'min_atr': 8.0,   # ETH 1H ATR is typically $15-50; $8 min ensures fee coverage
+        'min_atr': 8.0,    # ETH 1H ATR typically $15-50
         'trade_amount': 20.0,
-    }
+    },
+    'SOLUSDT': {
+        'base': 'SOL',
+        'dashboard_file': 'data_futures_sol.json',
+        'min_atr': 1.5,    # SOL 1H ATR typically $2-8
+        'trade_amount': 20.0,
+    },
 }
 TRADING_SYMBOLS = list(SYMBOLS_CONFIG.keys())
 
@@ -99,7 +105,10 @@ def _empty_sym_state() -> dict:
     }
 
 state = {
-    'symbols': {'ETHUSDT': _empty_sym_state()},
+    'symbols': {
+        'ETHUSDT': _empty_sym_state(),
+        'SOLUSDT': _empty_sym_state(),
+    },
     'runtime': {
         'trade_amount_usdt': DEFAULT_TRADE_AMOUNT_USDT,
         'leverage':          DEFAULT_LEVERAGE,
@@ -863,7 +872,7 @@ def clear_flag(flag_name: str) -> None:
 
 
 # ── Per-symbol cycle ──────────────────────────────────────────────────────────
-def run_symbol(symbol: str, cfg: dict) -> dict:
+def run_symbol(symbol: str, cfg: dict, allow_new_entry: bool = True) -> dict:
     global last_hold_alert
     ss        = sym_state(symbol)
     base      = SYMBOLS_CONFIG[symbol]['base']
@@ -948,7 +957,9 @@ def run_symbol(symbol: str, cfg: dict) -> dict:
             action = 'HOLD'
             status = 'CLOSED ✅'
         elif not bot_paused:
-            if position is None and action in ('LONG', 'SHORT'):
+            if position is None and action in ('LONG', 'SHORT') and not allow_new_entry:
+                status = f'HOLD — other symbol has better setup right now'
+            elif position is None and action in ('LONG', 'SHORT'):
                 if action == 'LONG':
                     ok = open_long(symbol, price, confidence, reason)
                     status = 'LONG OPENED ✅' if ok else 'LONG FAILED ❌'
@@ -1044,8 +1055,36 @@ def run_once():
     try:
         cfg = fetch_dashboard_config()
         apply_runtime_settings(cfg)
+
+        # ── Find which symbols already have open positions ────────────────────
+        open_syms = set()
+        for sym in TRADING_SYMBOLS:
+            if detect_futures_position(sym) is not None:
+                open_syms.add(sym)
+
+        # ── If no position open, pick highest-confidence signal ───────────────
+        best_entry_sym = None
+        if not open_syms:
+            best_conf = -1
+            for sym in TRADING_SYMBOLS:
+                try:
+                    df  = get_market_data(sym)
+                    dec = get_decision(sym, df)
+                    if dec['action'] in ('LONG', 'SHORT') and dec['confidence'] > best_conf:
+                        best_conf      = dec['confidence']
+                        best_entry_sym = sym
+                except Exception as e:
+                    logger.warning(f'Pre-scan [{sym}]: {e}')
+            if best_entry_sym:
+                logger.info(f'🏆 Best entry selected: {best_entry_sym} (conf={best_conf}%)')
+            else:
+                logger.info('⏳ No actionable setup on either symbol — holding')
+
+        # ── Run each symbol; only winner gets to open a new trade ─────────────
         for symbol in TRADING_SYMBOLS:
-            run_symbol(symbol, cfg)
+            allow_entry = (symbol in open_syms) or (symbol == best_entry_sym)
+            run_symbol(symbol, cfg, allow_new_entry=allow_entry)
+
         if cfg.get('force_trail'):
             clear_flag('futures_force_trail')
     except Exception as e:
@@ -1065,13 +1104,14 @@ def main():
     amt = state['runtime']['trade_amount_usdt']
     lev = state['runtime']['leverage']
 
-    logger.info('🚀 APEX Futures v1 — ETH/USDT Perpetual')
+    logger.info('🚀 APEX Futures v1 — ETH + SOL Perpetuals')
     logger.info(f'   Trade: ${amt:.2f} @ {lev:.0f}x ISOLATED | API: {mask(BINANCE_API_KEY)}')
-    logger.info(f'   Fee rate: {FEE_RATE*100:.3f}% taker | Min ATR: {SYMBOLS_CONFIG["ETHUSDT"]["min_atr"]}')
+    logger.info(f'   Mode: best-signal selector (1 trade at a time)')
 
     send_telegram(
-        f'🚀 <b>APEX Futures Started — ETH/USDT Perp</b>\n\n'
-        f'📌 ETH/USDT: ${amt:.2f} @ {lev:.0f}x (isolated margin)\n'
+        f'🚀 <b>APEX Futures Started — ETH + SOL Perps</b>\n\n'
+        f'📌 ETH/USDT + SOL/USDT: ${amt:.2f} @ {lev:.0f}x (isolated)\n'
+        f'🏆 Best-signal selector — trades highest confidence setup\n'
         f'🎯 ADX Regime + EMA21 Pullback (1H)\n'
         f'↕️ Long + Short | Fee: 0.05% taker\n'
         f'⏱ Cycle: every {CHECK_INTERVAL}s'
