@@ -181,7 +181,9 @@ def load_trade_log() -> list:
         path = os.path.join(os.path.dirname(BOT_STATE_FILE), TRADES_LOG_FILE) \
                if os.path.dirname(BOT_STATE_FILE) else TRADES_LOG_FILE
         data = read_json(path, [])
-        return data if isinstance(data, list) else []
+        result = data if isinstance(data, list) else []
+        logger.info(f'📒 Trade log: {len(result)} records from {path}')
+        return result
     except Exception as e:
         logger.warning(f'load_trade_log: {e}')
         return []
