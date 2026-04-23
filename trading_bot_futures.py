@@ -69,6 +69,12 @@ SYMBOLS_CONFIG = {
         'min_atr': 1.5,    # SOL 1H ATR typically $2-8
         'trade_amount': 20.0,
     },
+    'AAVEUSDT': {
+        'base': 'AAVE',
+        'dashboard_file': 'data_futures_aave.json',
+        'min_atr': 0.8,    # AAVE 1H ATR typically $1-3
+        'trade_amount': 20.0,
+    },
 }
 TRADING_SYMBOLS = list(SYMBOLS_CONFIG.keys())
 
@@ -105,10 +111,7 @@ def _empty_sym_state() -> dict:
     }
 
 state = {
-    'symbols': {
-        'ETHUSDT': _empty_sym_state(),
-        'SOLUSDT': _empty_sym_state(),
-    },
+    'symbols': {sym: _empty_sym_state() for sym in ['ETHUSDT', 'SOLUSDT', 'AAVEUSDT']},
     'runtime': {
         'trade_amount_usdt': DEFAULT_TRADE_AMOUNT_USDT,
         'leverage':          DEFAULT_LEVERAGE,
@@ -1144,13 +1147,13 @@ def main():
     amt = state['runtime']['trade_amount_usdt']
     lev = state['runtime']['leverage']
 
-    logger.info('🚀 APEX Futures v1 — ETH + SOL Perpetuals')
+    logger.info('🚀 APEX Futures v1 — ETH + SOL + AAVE Perpetuals')
     logger.info(f'   Trade: ${amt:.2f} @ {lev:.0f}x ISOLATED | API: {mask(BINANCE_API_KEY)}')
     logger.info(f'   Mode: best-signal selector (1 trade at a time)')
 
     send_telegram(
-        f'🚀 <b>APEX Futures Started — ETH + SOL Perps</b>\n\n'
-        f'📌 ETH/USDT + SOL/USDT: ${amt:.2f} @ {lev:.0f}x (isolated)\n'
+        f'🚀 <b>APEX Futures Started — ETH + SOL + AAVE Perps</b>\n\n'
+        f'📌 ETH/USDT + SOL/USDT + AAVE/USDT: ${amt:.2f} @ {lev:.0f}x (isolated)\n'
         f'🏆 Best-signal selector — trades highest confidence setup\n'
         f'🎯 ADX Regime + EMA21 Pullback (1H)\n'
         f'↕️ Long + Short | Fee: 0.05% taker\n'

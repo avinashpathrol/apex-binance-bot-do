@@ -46,6 +46,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .sym-tab.active-gold{border-color:#ffd700;color:#ffd700;background:rgba(255,215,0,.08)}
 .sym-tab.active-eth{border-color:#627eea;color:#627eea;background:rgba(98,126,234,.1)}
 .sym-tab.active-sol{border-color:#9945ff;color:#9945ff;background:rgba(153,69,255,.1)}
+.sym-tab.active-aave{border-color:#b6509e;color:#b6509e;background:rgba(182,80,158,.1)}
 .hdr-actions{display:flex;gap:8px;align-items:center}
 .icon-btn{background:none;border:1px solid var(--border);color:var(--muted);border-radius:8px;width:34px;height:34px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:16px}
 .hdr-price{display:flex;align-items:baseline;gap:10px}
@@ -178,6 +179,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
       <button class="sym-tab"            id="sym-gold" onclick="switchSym('gold')">🥇 Gold</button>
       <button class="sym-tab"            id="sym-eth"  onclick="switchSym('eth')">⚡ ETH</button>
       <button class="sym-tab"            id="sym-sol"  onclick="switchSym('sol')">◎ SOL</button>
+      <button class="sym-tab"            id="sym-aave" onclick="switchSym('aave')">👻 AAVE</button>
     </div>
     <div class="hdr-actions">
       <div class="live-dot" id="live-dot"></div>
@@ -384,6 +386,7 @@ const SOURCES = {
   gold: {api:'/data_binance_paxg.json', sym:'PAXGUSDT', tv:'BINANCE:PAXGUSDT',   label:'Gold/USDT'},
   eth:  {api:'/data_futures_eth.json',  sym:'ETHUSDT',  tv:'BINANCE:ETHUSDT.P',  label:'ETH Futures'},
   sol:  {api:'/data_futures_sol.json',  sym:'SOLUSDT',  tv:'BINANCE:SOLUSDT.P',  label:'SOL Futures'},
+  aave: {api:'/data_futures_aave.json', sym:'AAVEUSDT', tv:'BINANCE:AAVEUSDT.P', label:'AAVE Futures'},
 };
 const CONFIG_API = '/bot_config.json';
 const REFRESH_MS = 5000;
@@ -442,6 +445,7 @@ function switchSym(sym){
   qs('#sym-gold').className='sym-tab'+(sym==='gold'?' active-gold':'');
   qs('#sym-eth').className ='sym-tab'+(sym==='eth'?' active-eth':'');
   qs('#sym-sol').className ='sym-tab'+(sym==='sol'?' active-sol':'');
+  qs('#sym-aave').className='sym-tab'+(sym==='aave'?' active-aave':'');
   chartSym=null;
   if(activeTab==='chart')buildChart();
   fetchData();
@@ -799,7 +803,7 @@ async function doClose(){
   if(!botData?.position)return;
   if(!confirm('Close '+botData.position+' '+SOURCES[activeSym].label+' at market?'))return;
   try{
-    const isFut = activeSym==='eth'||activeSym==='sol';
+    const isFut = activeSym==='eth'||activeSym==='sol'||activeSym==='aave';
     const patch = isFut
       ? {futures_close_requested:true,futures_close_requested_at:new Date().toISOString(),futures_close_symbol:SOURCES[activeSym].sym}
       : {close_requested:true,close_requested_at:new Date().toISOString(),close_symbol:SOURCES[activeSym].sym};
@@ -811,7 +815,7 @@ async function doClose(){
 async function doForceTrail(){
   if(!botData?.position)return;
   try{
-    const isFut = activeSym==='eth'||activeSym==='sol';
+    const isFut = activeSym==='eth'||activeSym==='sol'||activeSym==='aave';
     const patch = isFut
       ? {futures_force_trail:true,futures_force_trail_at:new Date().toISOString(),futures_force_trail_symbol:SOURCES[activeSym].sym}
       : {force_trail:true,force_trail_at:new Date().toISOString(),force_trail_symbol:SOURCES[activeSym].sym};
@@ -821,7 +825,7 @@ async function doForceTrail(){
 }
 
 function openSettings(){
-  const isFut = activeSym==='eth'||activeSym==='sol';
+  const isFut = activeSym==='eth'||activeSym==='sol'||activeSym==='aave';
   const levSel = qs('#cfg-lev');
   levSel.innerHTML = '';
   const opts = isFut
@@ -842,7 +846,7 @@ function closeSettings(){qs('#settings-overlay').classList.remove('open');}
 async function saveSettings(){
   const lev=parseFloat(qs('#cfg-lev').value);
   const paused=qs('#cfg-pause').value==='true';
-  const isFut = activeSym==='eth'||activeSym==='sol';
+  const isFut = activeSym==='eth'||activeSym==='sol'||activeSym==='aave';
   const validLevs = isFut ? [5,7,10,12,15,20] : [3,4,5];
   if(!validLevs.includes(lev)){alert('Invalid leverage for this mode');return;}
   try{
