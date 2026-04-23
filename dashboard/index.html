@@ -40,13 +40,16 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 
 /* ── Header ── */
 .hdr-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
-.symbol-tabs{display:flex;gap:6px}
-.sym-tab{padding:5px 12px;border-radius:20px;border:1px solid var(--border);background:transparent;color:var(--muted);font-size:12px;font-weight:700;cursor:pointer;transition:all .2s;font-family:inherit}
-.sym-tab.active-btc{border-color:var(--accent);color:var(--accent);background:rgba(247,147,26,.1)}
-.sym-tab.active-gold{border-color:#ffd700;color:#ffd700;background:rgba(255,215,0,.08)}
-.sym-tab.active-eth{border-color:#627eea;color:#627eea;background:rgba(98,126,234,.1)}
-.sym-tab.active-sol{border-color:#9945ff;color:#9945ff;background:rgba(153,69,255,.1)}
-.sym-tab.active-aave{border-color:#b6509e;color:#b6509e;background:rgba(182,80,158,.1)}
+.sym-groups{display:flex;gap:8px;align-items:center}
+.sym-group{display:flex;flex-direction:column;gap:3px}
+.sym-group-label{font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding-left:2px}
+.sym-group-btns{display:flex;gap:4px;background:var(--card2);border:1px solid var(--border);border-radius:20px;padding:3px}
+.sym-tab{padding:4px 10px;border-radius:16px;border:none;background:transparent;color:var(--muted);font-size:11px;font-weight:700;cursor:pointer;transition:all .18s;font-family:inherit;white-space:nowrap}
+.sym-tab.active-btc{background:rgba(247,147,26,.18);color:var(--accent)}
+.sym-tab.active-gold{background:rgba(255,215,0,.13);color:#ffd700}
+.sym-tab.active-eth{background:rgba(98,126,234,.18);color:#627eea}
+.sym-tab.active-sol{background:rgba(153,69,255,.18);color:#9945ff}
+.sym-tab.active-aave{background:rgba(182,80,158,.18);color:#b6509e}
 .hdr-actions{display:flex;gap:8px;align-items:center}
 .icon-btn{background:none;border:1px solid var(--border);color:var(--muted);border-radius:8px;width:34px;height:34px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:16px}
 .hdr-price{display:flex;align-items:baseline;gap:10px}
@@ -174,12 +177,22 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 <!-- ── Header ── -->
 <div id="header">
   <div class="hdr-top">
-    <div class="symbol-tabs">
-      <button class="sym-tab active-btc" id="sym-btc"  onclick="switchSym('btc')">₿ BTC</button>
-      <button class="sym-tab"            id="sym-gold" onclick="switchSym('gold')">🥇 Gold</button>
-      <button class="sym-tab"            id="sym-eth"  onclick="switchSym('eth')">⚡ ETH</button>
-      <button class="sym-tab"            id="sym-sol"  onclick="switchSym('sol')">◎ SOL</button>
-      <button class="sym-tab"            id="sym-aave" onclick="switchSym('aave')">👻 AAVE</button>
+    <div class="sym-groups">
+      <div class="sym-group">
+        <div class="sym-group-label">Margin</div>
+        <div class="sym-group-btns">
+          <button class="sym-tab active-btc" id="sym-btc"  onclick="switchSym('btc')">₿ BTC</button>
+          <button class="sym-tab"            id="sym-gold" onclick="switchSym('gold')">🥇 Gold</button>
+        </div>
+      </div>
+      <div class="sym-group">
+        <div class="sym-group-label">Futures</div>
+        <div class="sym-group-btns">
+          <button class="sym-tab" id="sym-eth"  onclick="switchSym('eth')">⚡ ETH</button>
+          <button class="sym-tab" id="sym-sol"  onclick="switchSym('sol')">◎ SOL</button>
+          <button class="sym-tab" id="sym-aave" onclick="switchSym('aave')">👻 AAVE</button>
+        </div>
+      </div>
     </div>
     <div class="hdr-actions">
       <div class="live-dot" id="live-dot"></div>
