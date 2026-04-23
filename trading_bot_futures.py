@@ -181,9 +181,7 @@ def load_trade_log() -> list:
         path = os.path.join(os.path.dirname(BOT_STATE_FILE), TRADES_LOG_FILE) \
                if os.path.dirname(BOT_STATE_FILE) else TRADES_LOG_FILE
         data = read_json(path, [])
-        result = data if isinstance(data, list) else []
-        logger.info(f'📒 Trade log: {len(result)} records from {path}')
-        return result
+        return data if isinstance(data, list) else []
     except Exception as e:
         logger.warning(f'load_trade_log: {e}')
         return []
@@ -1079,7 +1077,6 @@ def run_symbol(symbol: str, cfg: dict, allow_new_entry: bool = True) -> dict:
         # Read from persistent log (survives restarts); filter to this symbol
         all_logged    = load_trade_log()
         closed_trades = [t for t in all_logged if t.get('symbol') == symbol]
-        logger.info(f'📒 [{symbol}] filtered trades: {len(closed_trades)} / {len(all_logged)} total')
         performance   = summarize_performance(closed_trades)
         trail_info    = build_trail_info(symbol, latest_pos)
         balance       = get_futures_balance('USDT')
