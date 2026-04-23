@@ -49,6 +49,7 @@ TELEGRAM_CHAT_ID   = os.environ.get('TELEGRAM_CHAT_ID', '').strip()
 LUNARCRUSH_API_KEY = os.environ.get('LUNARCRUSH_API_KEY', '').strip()
 BOT_CONFIG_FILE    = os.environ.get('BOT_CONFIG_FILE', 'bot_config.json').strip()
 BOT_STATE_FILE     = os.environ.get('BOT_STATE_FILE_FUTURES', 'bot_state_futures.json').strip()
+TRADES_LOG_FILE    = os.environ.get('FUTURES_TRADES_LOG', 'trades_log_futures.json').strip()
 
 DEFAULT_TRADE_AMOUNT_USDT = float(os.environ.get('FUTURES_TRADE_AMOUNT_USDT', '20'))
 DEFAULT_LEVERAGE          = float(os.environ.get('FUTURES_LEVERAGE', '10'))
@@ -160,6 +161,30 @@ def save_state() -> None:
 
 def sym_state(symbol: str) -> dict:
     return state['symbols'][symbol]
+
+def append_trade_log(record: dict) -> None:
+    """Append a closed trade to the persistent log file (never overwritten)."""
+    try:
+        path = os.path.join(os.path.dirname(BOT_STATE_FILE), TRADES_LOG_FILE) \
+               if os.path.dirname(BOT_STATE_FILE) else TRADES_LOG_FILE
+        existing = read_json(path, [])
+        if not isinstance(existing, list):
+            existing = []
+        existing.append(record)
+        write_json(path, existing)
+    except Exception as e:
+        logger.warning(f'append_trade_log: {e}')
+
+def load_trade_log() -> list:
+    """Load all trades from the persistent log file."""
+    try:
+        path = os.path.join(os.path.dirname(BOT_STATE_FILE), TRADES_LOG_FILE) \
+               if os.path.dirname(BOT_STATE_FILE) else TRADES_LOG_FILE
+        data = read_json(path, [])
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        logger.warning(f'load_trade_log: {e}')
+        return []
 
 def mask(v: str, s: int = 6, e: int = 4) -> str:
     if not v: return 'MISSING'
@@ -554,6 +579,7 @@ def record_closed_trade(symbol: str, side: str, entry_price: float, exit_price: 
     log = ss.get('closed_trades_log') or []
     log.append(record)
     ss['closed_trades_log'] = log[-200:]
+    append_trade_log(record)   # persist to append-only file (survives restarts)
     save_state()
     logger.info(f'📋 [{symbol}] Trade | {side} | pnl={pnl:+.4f} USDT | win={pnl > 0}')
 
@@ -1048,7 +1074,9 @@ def run_symbol(symbol: str, cfg: dict, allow_new_entry: bool = True) -> dict:
         ss['position'] = latest_pos
         save_state()
 
-        closed_trades = ss.get('closed_trades_log') or []
+        # Read from persistent log (survives restarts); filter to this symbol
+        all_logged    = load_trade_log()
+        closed_trades = [t for t in all_logged if t.get('symbol') == symbol]
         performance   = summarize_performance(closed_trades)
         trail_info    = build_trail_info(symbol, latest_pos)
         balance       = get_futures_balance('USDT')
