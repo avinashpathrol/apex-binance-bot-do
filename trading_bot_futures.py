@@ -1079,6 +1079,7 @@ def run_symbol(symbol: str, cfg: dict, allow_new_entry: bool = True) -> dict:
         # Read from persistent log (survives restarts); filter to this symbol
         all_logged    = load_trade_log()
         closed_trades = [t for t in all_logged if t.get('symbol') == symbol]
+        logger.info(f'📒 [{symbol}] filtered trades: {len(closed_trades)} / {len(all_logged)} total')
         performance   = summarize_performance(closed_trades)
         trail_info    = build_trail_info(symbol, latest_pos)
         balance       = get_futures_balance('USDT')
