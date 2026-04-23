@@ -231,6 +231,27 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 
     <!-- Status bar -->
     <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px 14px;font-size:12px;color:var(--muted);line-height:1.5" id="status-bar">Connecting...</div>
+
+    <!-- Inline Analysis (shown when flat) -->
+    <div id="home-analysis" style="display:none">
+      <div class="signal-hero hold-bg" id="h-sig-hero" style="margin-top:10px">
+        <div class="sig-badge sig-hold" id="h-sig-badge">HOLD</div>
+        <div style="font-size:16px;font-weight:800;margin-bottom:4px" id="h-sig-title">Waiting for setup</div>
+        <div style="font-size:12px;color:rgba(255,255,255,.6);margin-bottom:10px" id="h-sig-regime">— · —</div>
+        <div class="reason-box" id="h-sig-reason">—</div>
+      </div>
+      <div class="card" style="margin-top:10px">
+        <div class="card-label">Indicators (1H)</div>
+        <div class="ind-grid">
+          <div class="ind-cell"><div class="ind-name">ADX (14)</div><div class="ind-val" id="h-i-adx">—</div><div class="ind-sub" id="h-i-adx-s">—</div></div>
+          <div class="ind-cell"><div class="ind-name">+DI / −DI</div><div class="ind-val" id="h-i-di">—</div><div class="ind-sub" id="h-i-di-s">—</div></div>
+          <div class="ind-cell"><div class="ind-name">RSI (14)</div><div class="ind-val" id="h-i-rsi">—</div><div class="ind-sub" id="h-i-rsi-s">—</div></div>
+          <div class="ind-cell"><div class="ind-name">ATR (14)</div><div class="ind-val" id="h-i-atr">—</div><div class="ind-sub">1H avg range</div></div>
+          <div class="ind-cell"><div class="ind-name">EMA 21</div><div class="ind-val" id="h-i-e21">—</div><div class="ind-sub" id="h-i-e21-s">—</div></div>
+          <div class="ind-cell"><div class="ind-name">EMA 50</div><div class="ind-val" id="h-i-e50">—</div><div class="ind-sub" id="h-i-e50-s">—</div></div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- CHART -->
@@ -692,6 +713,39 @@ function renderAnalysis(d,price,pos,trail,ind){
     qs('#sent-fill').style.width=sent+'%';
     qs('#sent-fill').style.background=sent>=70?'var(--green)':sent>=50?'var(--yellow)':'var(--red)';
     qs('#sent-label').textContent=sent>=70?'Strongly bullish':sent>=50?'Leans bullish':sent>=30?'Neutral/mixed':'Bearish crowd';
+  }
+
+  // Home tab inline analysis (shown when flat, hidden when in trade)
+  const homeAnal = qs('#home-analysis');
+  if(!pos){
+    homeAnal.style.display='block';
+    const hHero=qs('#h-sig-hero');
+    const hBadge=qs('#h-sig-badge');
+    if(action==='LONG'){hHero.className='signal-hero long-bg';hBadge.className='sig-badge sig-long';}
+    else if(action==='SHORT'){hHero.className='signal-hero short-bg';hBadge.className='sig-badge sig-short';}
+    else{hHero.className='signal-hero hold-bg';hBadge.className='sig-badge sig-hold';}
+    hBadge.textContent=action;
+    qs('#h-sig-title').textContent=titles[action]||'Waiting for setup';
+    qs('#h-sig-regime').textContent=regime+' · '+trend;
+    qs('#h-sig-reason').textContent=d.reason||'—';
+    // Indicators
+    qs('#h-i-adx').textContent=adx.toFixed(1);
+    qs('#h-i-adx').style.color=adx>=30?'var(--green)':adx>=25?'var(--yellow)':'var(--red)';
+    qs('#h-i-adx-s').textContent=adx>=30?'Strong trend ✓':adx>=25?'Trending ✓':'Choppy ✗';
+    qs('#h-i-di').textContent='+'+adx_pos.toFixed(1)+' / −'+adx_neg.toFixed(1);
+    qs('#h-i-di').style.color=adx_pos>adx_neg?'var(--green)':'var(--red)';
+    qs('#h-i-di-s').textContent=adx_pos>adx_neg?'Bulls in control':'Bears in control';
+    qs('#h-i-rsi').textContent=rsi.toFixed(1);
+    qs('#h-i-rsi').style.color=rsi<35?'var(--blue)':rsi>65?'var(--red)':'var(--text)';
+    qs('#h-i-rsi-s').textContent=rsi<35?'Oversold':rsi>65?'Overbought':'Neutral';
+    qs('#h-i-atr').textContent='$'+n(ind.atr,0).toFixed(2);
+    qs('#h-i-e21').textContent=fmtP(ema21);
+    qs('#h-i-e21').style.color=ema21>ema50?'var(--green)':'var(--red)';
+    qs('#h-i-e21-s').textContent=ema21>ema50?'Above EMA50 ↑':'Below EMA50 ↓';
+    qs('#h-i-e50').textContent=fmtP(ema50);
+    qs('#h-i-e50-s').textContent=ema21>ema50?'EMA21 above (bullish)':'EMA21 below (bearish)';
+  }else{
+    homeAnal.style.display='none';
   }
 }
 
