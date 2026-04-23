@@ -282,6 +282,20 @@ def futures_market_order(symbol: str, side: str, quantity: float,
         'positionSide': position_side,
     })
 
+def get_fill_price(resp: dict, fallback: float) -> float:
+    """Binance futures market orders return avgPrice='0' — use cumQuote/executedQty instead."""
+    try:
+        avg = float(resp.get('avgPrice', 0))
+        if avg > 0:
+            return avg
+        cum_quote = float(resp.get('cumQuote', 0))
+        exec_qty  = float(resp.get('executedQty', 0))
+        if cum_quote > 0 and exec_qty > 0:
+            return cum_quote / exec_qty
+    except Exception:
+        pass
+    return fallback
+
 _step_cache: dict = {}
 
 def get_futures_step_size(symbol: str) -> float:
@@ -661,7 +675,7 @@ def open_long(symbol: str, price: float, confidence: int, reason: str) -> bool:
             return False
 
         resp         = futures_market_order(symbol, 'BUY', quantity, position_side='LONG')
-        actual_price = float(resp.get('avgPrice') or price)
+        actual_price = get_fill_price(resp, price)
         qty_filled   = float(resp.get('executedQty') or quantity)
         fee_usdt     = qty_filled * actual_price * FEE_RATE
 
@@ -709,7 +723,7 @@ def close_long(symbol: str, price: float, reason: str) -> bool:
         entry_fee   = safe_float(ss.get('entry_fee_usdt'), 0.0)
 
         resp         = futures_market_order(symbol, 'SELL', quantity, position_side='LONG')
-        actual_close = float(resp.get('avgPrice') or price)
+        actual_close = get_fill_price(resp, price)
         exit_fee     = quantity * actual_close * FEE_RATE
         total_fee    = round(entry_fee + exit_fee, 6)
 
@@ -753,7 +767,7 @@ def open_short(symbol: str, price: float, confidence: int, reason: str) -> bool:
             return False
 
         resp         = futures_market_order(symbol, 'SELL', quantity, position_side='SHORT')
-        actual_price = float(resp.get('avgPrice') or price)
+        actual_price = get_fill_price(resp, price)
         qty_filled   = float(resp.get('executedQty') or quantity)
         fee_usdt     = qty_filled * actual_price * FEE_RATE
 
@@ -801,7 +815,7 @@ def close_short(symbol: str, price: float, reason: str) -> bool:
         entry_fee   = safe_float(ss.get('entry_fee_usdt'), 0.0)
 
         resp         = futures_market_order(symbol, 'BUY', quantity, position_side='SHORT')
-        actual_close = float(resp.get('avgPrice') or price)
+        actual_close = get_fill_price(resp, price)
         exit_fee     = quantity * actual_close * FEE_RATE
         total_fee    = round(entry_fee + exit_fee, 6)
 
