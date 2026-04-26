@@ -141,9 +141,14 @@ def read_json(path: str, default):
         return default
 
 def write_json(path: str, data) -> None:
-    tmp = path + '.tmp'
-    with open(tmp, 'w', encoding='utf-8') as f: json.dump(data, f, indent=2)
-    os.replace(tmp, path)
+    tmp = f'{path}.{os.getpid()}.tmp'
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f: json.dump(data, f, indent=2)
+        os.replace(tmp, path)
+    except Exception as e:
+        logger.warning(f'write_json {path}: {e}')
+        try: os.remove(tmp)
+        except Exception: pass
 
 def load_state() -> None:
     global state
