@@ -545,7 +545,8 @@ function showTab(tab){
   else if(chartTimer){clearInterval(chartTimer);chartTimer=null;chartSym=null;}
   if(tab==='cal'){
     if(calLoaded){ renderCalOverall(); renderCalGrid(calYear,calMonth); }
-    else buildCalendar();
+    else if(!calLoading){ buildCalendar(); }
+    // if calLoading — background fetch already in progress, it will render when done
   }
 }
 
@@ -1022,9 +1023,10 @@ setInterval(fetchData,REFRESH_MS);
 
 // ── Calendar ──────────────────────────────────────────────────────────────────
 let calAllTrades = [];
-let calYear  = new Date().getFullYear();
-let calMonth = new Date().getMonth(); // 0-indexed
-let calLoaded = false;
+let calYear    = new Date().getFullYear();
+let calMonth   = new Date().getMonth();
+let calLoaded  = false;
+let calLoading = false;
 
 const CAL_MONTHS = ['January','February','March','April','May','June',
                     'July','August','September','October','November','December'];
@@ -1032,13 +1034,13 @@ const CAL_SYMLABEL = {btc:'BTC',gold:'GOLD',eth:'ETH',sol:'SOL',aave:'AAVE'};
 const CAL_SYMCOLOR = {btc:'var(--accent)',gold:'#ffd700',eth:'#627eea',sol:'#9945ff',aave:'#b6509e'};
 
 async function buildCalendar(prefetchedResults, prefetchedKeys){
+  if(calLoading) return;  // already in progress — don't double-fetch
+  calLoading = true;
   const keys = prefetchedKeys || Object.keys(SOURCES);
-  // Use pre-fetched data if available, otherwise fetch fresh
   const results = prefetchedResults || await Promise.all(keys.map(k=>
     fetch(SOURCES[k].api+'?t='+Date.now(),{cache:'no-store'})
       .then(r=>r.ok?r.json():null).catch(()=>null)
   ));
-  // Combine all closed_trades, tagging each with its symbol key
   calAllTrades = [];
   results.forEach((d,i)=>{
     if(!d) return;
@@ -1047,7 +1049,9 @@ async function buildCalendar(prefetchedResults, prefetchedKeys){
       calAllTrades.push({...t, _sym: symKey});
     });
   });
-  calLoaded = true;
+  calLoaded  = true;
+  calLoading = false;
+  // Always render when done — whether user is on tab or not
   renderCalOverall();
   renderCalGrid(calYear, calMonth);
 }
