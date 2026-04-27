@@ -1162,10 +1162,6 @@ def run_once():
         cfg = fetch_dashboard_config()
         apply_runtime_settings(cfg)
 
-        # ── Dust cleanup every 10 cycles (~10 min) ────────────────────────────
-        if run_count % 10 == 1:
-            cleanup_dust()
-
         # ── Find which symbols already have open positions ────────────────────
         open_syms = set()
         for sym in TRADING_SYMBOLS:
@@ -1191,9 +1187,18 @@ def run_once():
                 logger.info('⏳ No actionable setup on either symbol — holding')
 
         # ── Run each symbol; only winner gets to open a new trade ─────────────
+        closed_this_cycle = set()
         for symbol in TRADING_SYMBOLS:
-            allow_entry = (symbol in open_syms) or (symbol == best_entry_sym)
-            run_symbol(symbol, cfg, allow_new_entry=allow_entry)
+            was_in_trade = symbol in open_syms
+            allow_entry  = was_in_trade or (symbol == best_entry_sym)
+            result       = run_symbol(symbol, cfg, allow_new_entry=allow_entry)
+            # Detect if a close just happened this cycle
+            if was_in_trade and result and not result.get('position'):
+                closed_this_cycle.add(symbol)
+
+        # ── Dust cleanup immediately after any close ──────────────────────────
+        if closed_this_cycle:
+            cleanup_dust()
 
         if cfg.get('force_trail'):
             clear_flag('futures_force_trail')
