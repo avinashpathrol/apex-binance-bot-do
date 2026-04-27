@@ -1121,6 +1121,36 @@ def run_symbol(symbol: str, cfg: dict, allow_new_entry: bool = True) -> dict:
         return {}
 
 
+# ── Dust Cleanup ──────────────────────────────────────────────────────────────
+DUST_USDT_THRESHOLD = 5.0  # close residual positions worth less than $5
+
+def cleanup_dust():
+    """Close tiny leftover positions that are below the dust threshold."""
+    for symbol in TRADING_SYMBOLS:
+        try:
+            positions = binance_futures_private('GET', '/fapi/v2/positionRisk', {'symbol': symbol})
+            for p in positions:
+                if p['symbol'] != symbol: continue
+                amt      = float(p.get('positionAmt', 0))
+                entry    = safe_float(p.get('entryPrice'), 0)
+                notional = abs(amt) * entry
+                if abs(amt) < 1e-8 or notional >= DUST_USDT_THRESHOLD: continue
+                # This is dust — bot state says no position but Binance has a residual
+                ss = sym_state(symbol)
+                if ss.get('position'): continue  # bot thinks it's in a real trade, skip
+                pos_side = p.get('positionSide', 'BOTH')
+                side     = 'LONG' if (pos_side == 'LONG' or (pos_side == 'BOTH' and amt > 0)) else 'SHORT'
+                close_side = 'SELL' if side == 'LONG' else 'BUY'
+                step     = get_futures_step_size(symbol)
+                quantity = round_step(abs(amt), step)
+                if quantity < step: continue
+                logger.warning(f'🧹 [{symbol}] Dust detected: {amt} {side} (${notional:.2f}) — closing')
+                futures_market_order(symbol, close_side, quantity, position_side=pos_side if pos_side != 'BOTH' else None)
+                send_telegram(f'🧹 <b>Dust Cleaned [{symbol}]</b>\nResidual {side} {abs(amt):.4f} (${notional:.2f}) auto-closed')
+        except Exception as e:
+            logger.warning(f'cleanup_dust [{symbol}]: {e}')
+
+
 # ── Main Loop ─────────────────────────────────────────────────────────────────
 def run_once():
     global run_count
@@ -1131,6 +1161,10 @@ def run_once():
     try:
         cfg = fetch_dashboard_config()
         apply_runtime_settings(cfg)
+
+        # ── Dust cleanup every 10 cycles (~10 min) ────────────────────────────
+        if run_count % 10 == 1:
+            cleanup_dust()
 
         # ── Find which symbols already have open positions ────────────────────
         open_syms = set()
