@@ -207,12 +207,27 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 
 #toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:rgba(30,35,50,.96);border:1px solid var(--border);border-radius:12px;padding:10px 20px;font-size:13px;font-weight:600;display:none;z-index:200;white-space:nowrap;backdrop-filter:blur(10px)}
 
+/* ── Loading overlay ── */
+#loading-overlay{position:fixed;inset:0;background:var(--bg);z-index:300;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;transition:opacity .3s}
+#loading-overlay.hidden{opacity:0;pointer-events:none}
+.loader-logo{font-size:32px;font-weight:800;letter-spacing:-.02em;color:var(--accent)}
+.loader-sub{font-size:12px;color:var(--muted);font-weight:600;letter-spacing:.08em;text-transform:uppercase}
+.loader-spinner{width:32px;height:32px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
 /* ── Chart tab ── */
 #tab-chart{padding:0!important}
 #tv-container{width:100%;height:calc(100dvh - 60px - 65px)}
 </style>
 </head>
 <body>
+<!-- ── Loading overlay ── -->
+<div id="loading-overlay">
+  <div class="loader-logo">APEX</div>
+  <div class="loader-spinner"></div>
+  <div class="loader-sub">Loading live data…</div>
+</div>
+
 <div id="app">
 
 <!-- ── Header ── -->
@@ -528,7 +543,10 @@ function showTab(tab){
   qs('#nav-'+tab).classList.add('active');
   if(tab==='chart') buildChart();
   else if(chartTimer){clearInterval(chartTimer);chartTimer=null;chartSym=null;}
-  if(tab==='cal') buildCalendar();
+  if(tab==='cal'){
+    if(calLoaded){ renderCalOverall(); renderCalGrid(calYear,calMonth); }
+    else buildCalendar();
+  }
 }
 
 // ── Symbol switch ─────────────────────────────────────────────────────────────
@@ -955,22 +973,49 @@ async function saveSettings(){
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
+function hideLoader(){
+  const el = qs('#loading-overlay');
+  el.classList.add('hidden');
+  setTimeout(()=>el.style.display='none', 350);
+}
+
 async function autoSelectActiveSymbol(){
   const syms = Object.keys(SOURCES);
   const results = await Promise.all(syms.map(sym=>
     fetch(SOURCES[sym].api+'?t='+Date.now(),{cache:'no-store'})
       .then(r=>r.ok?r.json():null).catch(()=>null)
   ));
-  // Pick first symbol that has an open position
+
+  // Pick first symbol with an active position
   for(let i=0;i<syms.length;i++){
     const d=results[i];
-    if(d && d.position && (d.position==='LONG'||d.position==='SHORT')){
-      switchSym(syms[i]);
+    if(d && (d.position==='LONG'||d.position==='SHORT')){
+      activeSym = syms[i];
+      // Update tab styling
+      Object.keys(SOURCES).forEach(k=>{
+        const el=qs('#sym-'+k);
+        if(el) el.className='sym-tab'+(k===activeSym?' active-'+k:'');
+      });
+      botData = d;
+      render(d);
+      hideLoader();
+      // Pre-fetch calendar in background
+      buildCalendar(results, syms);
       return;
     }
   }
-  // No active position — just load default (btc)
-  fetchData();
+
+  // No active position — use btc, reuse already-fetched data
+  const btcIdx = syms.indexOf('btc');
+  if(btcIdx>=0 && results[btcIdx]){
+    botData = results[btcIdx];
+    render(results[btcIdx]);
+  } else {
+    await fetchData();
+  }
+  hideLoader();
+  // Pre-fetch calendar in background
+  buildCalendar(results, syms);
 }
 autoSelectActiveSymbol();
 setInterval(fetchData,REFRESH_MS);
@@ -986,10 +1031,10 @@ const CAL_MONTHS = ['January','February','March','April','May','June',
 const CAL_SYMLABEL = {btc:'BTC',gold:'GOLD',eth:'ETH',sol:'SOL',aave:'AAVE'};
 const CAL_SYMCOLOR = {btc:'var(--accent)',gold:'#ffd700',eth:'#627eea',sol:'#9945ff',aave:'#b6509e'};
 
-async function buildCalendar(){
-  // Fetch all sources in parallel
-  const keys = Object.keys(SOURCES);
-  const results = await Promise.all(keys.map(k=>
+async function buildCalendar(prefetchedResults, prefetchedKeys){
+  const keys = prefetchedKeys || Object.keys(SOURCES);
+  // Use pre-fetched data if available, otherwise fetch fresh
+  const results = prefetchedResults || await Promise.all(keys.map(k=>
     fetch(SOURCES[k].api+'?t='+Date.now(),{cache:'no-store'})
       .then(r=>r.ok?r.json():null).catch(()=>null)
   ));
