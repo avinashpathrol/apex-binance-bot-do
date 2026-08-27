@@ -40,16 +40,55 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 
 /* ── Header ── */
 .hdr-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
-.sym-groups{display:flex;gap:8px;align-items:center}
-.sym-group{display:flex;flex-direction:column;gap:3px}
+.sym-groups{display:flex;gap:8px;align-items:center;flex:1;min-width:0;overflow:hidden}
+.sym-group{display:flex;flex-direction:column;gap:3px;min-width:0;width:100%}
 .sym-group-label{font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding-left:2px}
-.sym-group-btns{display:flex;gap:4px;background:var(--card2);border:1px solid var(--border);border-radius:20px;padding:3px}
+.sym-group-btns{display:flex;gap:4px;background:var(--card2);border:1px solid var(--border);border-radius:20px;padding:3px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;flex-wrap:nowrap;width:100%}
+.sym-group-btns::-webkit-scrollbar{display:none}
 .sym-tab{padding:4px 10px;border-radius:16px;border:none;background:transparent;color:var(--muted);font-size:11px;font-weight:700;cursor:pointer;transition:all .18s;font-family:inherit;white-space:nowrap}
 .sym-tab.active-btc{background:rgba(247,147,26,.18);color:var(--accent)}
+.sym-tab.active-btcf{background:rgba(247,147,26,.18);color:var(--accent)}
 .sym-tab.active-gold{background:rgba(255,215,0,.13);color:#ffd700}
 .sym-tab.active-eth{background:rgba(98,126,234,.18);color:#627eea}
 .sym-tab.active-sol{background:rgba(153,69,255,.18);color:#9945ff}
 .sym-tab.active-aave{background:rgba(182,80,158,.18);color:#b6509e}
+.sym-tab.active-nvda{background:rgba(118,185,0,.18);color:#76b900}
+.sym-tab.active-amd{background:rgba(237,27,47,.18);color:var(--accent)}
+.sym-tab.active-pltr{background:rgba(90,0,255,.18);color:var(--accent)}
+.sym-tab.active-tsla{background:rgba(204,0,0,.18);color:#cc0000}
+.sym-tab.active-nbis{background:rgba(0,188,212,.18);color:#00bcd4}
+.sym-tab.active-asts{background:rgba(0,180,255,.18);color:#00b4ff}
+.sym-tab.active-spcx{background:rgba(255,255,255,.12);color:#e2e8f0}
+.sym-tab.active-mu{background:rgba(99,102,241,.18);color:#818cf8}
+/* ── MU Overnight Tab ── */
+.mu-pos-card{background:var(--card2);border:1px solid var(--border);border-radius:14px;padding:14px;margin-bottom:12px}
+.mu-pos-open{border-color:rgba(99,102,241,.4)}
+.mu-stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px}
+.mu-stat{text-align:center;background:var(--card2);border:1px solid var(--border);border-radius:10px;padding:10px 6px}
+.mu-stat-lbl{font-size:9px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:3px}
+.mu-stat-val{font-size:15px;font-weight:800}
+.mu-table{width:100%;border-collapse:collapse;font-size:11px}
+.mu-table th{color:var(--muted);font-weight:700;letter-spacing:.05em;text-transform:uppercase;font-size:9px;padding:6px 4px;border-bottom:1px solid var(--border);text-align:left}
+.mu-table td{padding:8px 4px;border-bottom:1px solid rgba(35,39,56,.6);vertical-align:middle}
+.mu-table tr:last-child td{border-bottom:none}
+.mu-win{color:var(--green)}
+.mu-loss{color:var(--red)}
+/* ── Manual Trades Tab ── */
+.mt-card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:14px;margin-bottom:12px}
+.mt-card-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.mt-card-sym{font-size:13px;font-weight:800}
+.mt-badge{font-size:10px;font-weight:700;padding:3px 9px;border-radius:20px;background:rgba(255,255,255,.06);color:var(--muted)}
+.mt-badge.long{background:rgba(34,197,94,.18);color:var(--green)}
+.mt-badge.short{background:rgba(239,68,68,.18);color:var(--red)}
+.mt-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+.mt-metric{text-align:center}
+.mt-ml{font-size:9px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:2px}
+.mt-mv{font-size:13px;font-weight:700}
+.mt-form{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
+.mt-form label{font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:3px}
+.mt-form input,.mt-form select{width:100%;background:var(--card2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;font-weight:600;padding:8px 10px;font-family:inherit}
+.mt-btns{display:flex;gap:8px}
+.mt-btns .btn{flex:1;font-size:12px;padding:9px 0}
 .hdr-actions{display:flex;gap:8px;align-items:center}
 .icon-btn{background:none;border:1px solid var(--border);color:var(--muted);border-radius:8px;width:34px;height:34px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:16px}
 .hdr-price{display:flex;align-items:baseline;gap:10px}
@@ -79,6 +118,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .btn:active{opacity:.7}
 .btn-danger{background:#dc2626;color:#fff}
 .btn-yellow{background:var(--yellow);color:#000}
+.btn-green{background:#16a34a;color:#fff}
 .btn-outline{background:transparent;border:1px solid var(--border);color:var(--text)}
 
 /* ── Levels strip ── */
@@ -157,6 +197,10 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .cal-stat-val{font-size:20px;font-weight:800;margin-bottom:2px}
 .cal-stat-lbl{font-size:10px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.06em}
 .cal-nav{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.cal-month-summary{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:12px;background:var(--card2);border:1px solid var(--border);border-radius:12px;padding:10px}
+.cal-mstat{text-align:center}
+.cal-mstat-val{font-size:16px;font-weight:800;margin-bottom:1px}
+.cal-mstat-lbl{font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.06em}
 .cal-nav-btn{background:var(--card2);border:1px solid var(--border);border-radius:8px;color:var(--text);width:34px;height:34px;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center}
 .cal-month-label{font-size:15px;font-weight:700}
 .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
@@ -235,18 +279,24 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
   <div class="hdr-top">
     <div class="sym-groups">
       <div class="sym-group">
-        <div class="sym-group-label">Margin</div>
-        <div class="sym-group-btns">
-          <button class="sym-tab active-btc" id="sym-btc"  onclick="switchSym('btc')">₿ BTC</button>
-          <button class="sym-tab"            id="sym-gold" onclick="switchSym('gold')">🥇 Gold</button>
-        </div>
-      </div>
-      <div class="sym-group">
         <div class="sym-group-label">Futures</div>
         <div class="sym-group-btns">
-          <button class="sym-tab" id="sym-eth"  onclick="switchSym('eth')">⚡ ETH</button>
-          <button class="sym-tab" id="sym-sol"  onclick="switchSym('sol')">◎ SOL</button>
-          <button class="sym-tab" id="sym-aave" onclick="switchSym('aave')">👻 AAVE</button>
+          <button class="sym-tab" id="sym-nbis" onclick="switchSym('nbis')">🔵 NBIS</button>
+          <button class="sym-tab" id="sym-amd" onclick="switchSym('amd')">🔴 AMD</button>
+          <button class="sym-tab" id="sym-spcx" onclick="switchSym('spcx')">🚀 SPCX</button>
+          <button class="sym-tab" id="sym-asts" onclick="switchSym('asts')">🛰️ ASTS</button>
+          <button class="sym-tab" id="sym-tsla" onclick="switchSym('tsla')">🔴 TSLA</button>
+          <button class="sym-tab" id="sym-pltr" onclick="switchSym('pltr')">🟣 PLTR</button>
+          <button class="sym-tab" id="sym-mu" onclick="switchSym('mu')">🌙 MU</button>
+          <button class="sym-tab" id="sym-nvda" onclick="switchSym('nvda')">🟢 NVDA</button>
+        </div>
+      </div>
+      <!-- Margin group hidden temporarily during futures testing -->
+      <div class="sym-group" style="display:none">
+        <div class="sym-group-label">Margin</div>
+        <div class="sym-group-btns">
+          <button class="sym-tab" id="sym-btc"  onclick="switchSym('btc')">₿ BTC</button>
+          <button class="sym-tab" id="sym-gold" onclick="switchSym('gold')">🥇 Gold</button>
         </div>
       </div>
     </div>
@@ -405,6 +455,10 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 
   <!-- CALENDAR -->
   <div id="tab-cal" class="tab-content">
+    <!-- Refresh button always visible (outside cal-body) -->
+    <div style="display:flex;justify-content:flex-end;margin-bottom:8px">
+      <button class="cal-nav-btn" id="cal-refresh-btn" onclick="buildCalendar(true)" title="Refresh" style="font-size:14px">↻</button>
+    </div>
     <!-- Loading state -->
     <div id="cal-loading" style="display:none;flex-direction:column;align-items:center;justify-content:center;padding:60px 0;gap:14px">
       <div class="loader-spinner"></div>
@@ -423,6 +477,12 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
       <span class="cal-month-label" id="cal-month-label">—</span>
       <button class="cal-nav-btn" onclick="calNextMonth()">›</button>
     </div>
+    <!-- Monthly summary -->
+    <div class="cal-month-summary" id="cal-month-summary" style="display:none">
+      <div class="cal-mstat"><div class="cal-mstat-val" id="cal-m-trades">—</div><div class="cal-mstat-lbl">Trades</div></div>
+      <div class="cal-mstat"><div class="cal-mstat-val" id="cal-m-wr">—</div><div class="cal-mstat-lbl">Win Rate</div></div>
+      <div class="cal-mstat"><div class="cal-mstat-val" id="cal-m-pnl">—</div><div class="cal-mstat-lbl">Month P&amp;L</div></div>
+    </div>
     <!-- Calendar grid -->
     <div class="cal-grid" id="cal-grid">
       <div class="cal-dow">Sun</div><div class="cal-dow">Mon</div><div class="cal-dow">Tue</div>
@@ -430,6 +490,129 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
       <div id="cal-cells" style="display:contents"></div>
     </div>
     </div><!-- #cal-body -->
+  </div>
+
+  <!-- MANUAL TRADES -->
+  <div id="tab-manual" class="tab-content">
+
+    <!-- BTC Card -->
+    <div class="mt-card">
+      <div class="mt-card-header">
+        <span class="mt-card-sym">₿ BTC Perpetual</span>
+        <span class="mt-badge" id="mt-btc-badge">FLAT</span>
+      </div>
+      <div class="mt-metrics" id="mt-btc-metrics" style="display:none">
+        <div class="mt-metric"><div class="mt-ml">Entry</div><div class="mt-mv" id="mt-btc-entry">—</div></div>
+        <div class="mt-metric"><div class="mt-ml">Current</div><div class="mt-mv" id="mt-btc-price">—</div></div>
+        <div class="mt-metric"><div class="mt-ml">P&L</div><div class="mt-mv" id="mt-btc-pnl">—</div></div>
+      </div>
+      <div class="mt-form" id="mt-btc-form">
+        <div><label>Amount (USDT)</label><input type="number" id="mt-btc-amount" value="100" min="10" max="500" step="10"></div>
+        <div><label>Leverage</label>
+          <select id="mt-btc-lev">
+            <option value="2">2×</option>
+            <option value="3">3×</option>
+            <option value="5" selected>5×</option>
+            <option value="7">7×</option>
+            <option value="10">10×</option>
+            <option value="15">15×</option>
+            <option value="20">20×</option>
+          </select>
+        </div>
+      </div>
+      <div class="mt-btns" id="mt-btc-open-btns">
+        <button class="btn btn-green" onclick="doManualOpen('BTCUSDT','LONG')">▲ Long</button>
+        <button class="btn btn-danger" onclick="doManualOpen('BTCUSDT','SHORT')">▼ Short</button>
+      </div>
+      <div class="mt-btns" id="mt-btc-close-btn" style="display:none">
+        <button class="btn btn-yellow" onclick="doManualClose('BTCUSDT')" style="flex:1">✕ Close Position</button>
+      </div>
+    </div>
+
+    <!-- NBIS Card -->
+    <div class="mt-card">
+      <div class="mt-card-header">
+        <span class="mt-card-sym">📡 NBIS Perpetual</span>
+        <span class="mt-badge" id="mt-nbis-badge">FLAT</span>
+      </div>
+      <div class="mt-metrics" id="mt-nbis-metrics" style="display:none">
+        <div class="mt-metric"><div class="mt-ml">Entry</div><div class="mt-mv" id="mt-nbis-entry">—</div></div>
+        <div class="mt-metric"><div class="mt-ml">Current</div><div class="mt-mv" id="mt-nbis-price">—</div></div>
+        <div class="mt-metric"><div class="mt-ml">P&L</div><div class="mt-mv" id="mt-nbis-pnl">—</div></div>
+      </div>
+      <div class="mt-form" id="mt-nbis-form">
+        <div><label>Amount (USDT)</label><input type="number" id="mt-nbis-amount" value="30" min="10" max="200" step="10"></div>
+        <div><label>Leverage</label>
+          <select id="mt-nbis-lev">
+            <option value="5">5×</option>
+            <option value="10">10×</option>
+            <option value="15">15×</option>
+            <option value="20" selected>20×</option>
+          </select>
+        </div>
+      </div>
+      <div class="mt-btns" id="mt-nbis-open-btns">
+        <button class="btn btn-green" onclick="doManualOpen('NBISUSDT','LONG')">▲ Long</button>
+        <button class="btn btn-danger" onclick="doManualOpen('NBISUSDT','SHORT')">▼ Short</button>
+      </div>
+      <div class="mt-btns" id="mt-nbis-close-btn" style="display:none">
+        <button class="btn btn-yellow" onclick="doManualClose('NBISUSDT')" style="flex:1">✕ Close Position</button>
+      </div>
+    </div>
+
+    <div style="font-size:11px;color:var(--muted);text-align:center;line-height:1.6;padding:4px 0 8px">
+      Orders execute within 60s · Isolated margin · Telegram alert on fill
+    </div>
+  </div>
+
+  <!-- MICRON OVERNIGHT -->
+  <div id="tab-mu" class="tab-content">
+
+    <!-- Current position -->
+    <div class="mu-pos-card" id="mu-pos-card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <span style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)">🌙 Overnight Position</span>
+        <span id="mu-pos-badge" style="font-size:10px;font-weight:700;padding:3px 9px;border-radius:20px;background:rgba(255,255,255,.06);color:var(--muted)">FLAT</span>
+      </div>
+      <div id="mu-pos-body" style="color:var(--muted);font-size:12px">No active overnight position · Next entry Mon–Thu at market close</div>
+    </div>
+
+    <!-- Stats -->
+    <div class="card" style="margin-bottom:12px">
+      <div class="card-label">Performance</div>
+      <div class="mu-stat-grid">
+        <div class="mu-stat"><div class="mu-stat-lbl">Trades</div><div class="mu-stat-val" id="mu-total">0</div></div>
+        <div class="mu-stat"><div class="mu-stat-lbl">Win Rate</div><div class="mu-stat-val" id="mu-wr">—</div></div>
+        <div class="mu-stat"><div class="mu-stat-lbl">Net P&L</div><div class="mu-stat-val" id="mu-net">$0</div></div>
+      </div>
+      <div class="mu-stat-grid">
+        <div class="mu-stat"><div class="mu-stat-lbl">Win P&L</div><div class="mu-stat-val mu-win" id="mu-win-pnl">$0</div></div>
+        <div class="mu-stat"><div class="mu-stat-lbl">Loss P&L</div><div class="mu-stat-val mu-loss" id="mu-loss-pnl">$0</div></div>
+        <div class="mu-stat"><div class="mu-stat-lbl">Fees</div><div class="mu-stat-val" style="color:var(--muted)" id="mu-fees">$0</div></div>
+      </div>
+    </div>
+
+    <!-- Trade log -->
+    <div class="card">
+      <div class="card-label">Trade History</div>
+      <div style="overflow-x:auto">
+        <table class="mu-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Entry</th>
+              <th>Exit</th>
+              <th>Fee</th>
+              <th>Net</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody id="mu-trade-rows">
+            <tr><td colspan="6" style="color:var(--muted);text-align:center;padding:20px 0">No trades yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
   </div>
 
 </div><!-- #content -->
@@ -469,6 +652,10 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
     <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
     Calendar
   </button>
+  <button class="nav-btn" id="nav-manual" onclick="showTab('manual');fetchManual()">
+    <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    Manual
+  </button>
 </nav>
 
 </div><!-- #app -->
@@ -497,16 +684,24 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 'use strict';
 
 const SOURCES = {
-  btc:  {api:'/data_binance_btc.json',  sym:'BTCUSDT',  tv:'BINANCE:BTCUSDT',    label:'BTC/USDT'},
-  gold: {api:'/data_binance_paxg.json', sym:'PAXGUSDT', tv:'BINANCE:PAXGUSDT',   label:'Gold/USDT'},
+  asts: {api:'/data_futures_asts.json',  sym:'ASTSUSDT',  tv:'BINANCE:ASTSUSDT.P',  label:'ASTS Futures'},
+  spcx: {api:'/data_futures_spcx.json',  sym:'SPCXUSDT',  tv:'BINANCE:SPCXUSDT.P',  label:'SpaceX Futures'},
+  nvda: {api:'/data_futures_nvda.json', sym:'NVDAUSDT', tv:'BINANCE:NVDAUSDT.P', label:'NVDA Futures'},
+  amd: {api:'/data_futures_amd.json', sym:'AMDUSDT', tv:'BINANCE:AMDUSDT.P', label:'AMD Futures'},
+  pltr: {api:'/data_futures_pltr.json', sym:'PLTRUSDT', tv:'BINANCE:PLTRUSDT.P', label:'PLTR Futures'},
+  tsla: {api:'/data_futures_tsla.json', sym:'TSLAUSDT', tv:'BINANCE:TSLAUSDT.P', label:'TSLA Futures'},
+  nbis: {api:'/data_futures_nbis.json', sym:'NBISUSDT', tv:'BINANCE:NBISUSDT.P', label:'NBIS Futures'},
   eth:  {api:'/data_futures_eth.json',  sym:'ETHUSDT',  tv:'BINANCE:ETHUSDT.P',  label:'ETH Futures'},
   sol:  {api:'/data_futures_sol.json',  sym:'SOLUSDT',  tv:'BINANCE:SOLUSDT.P',  label:'SOL Futures'},
+  btcf: {api:'/data_futures_btc.json',  sym:'BTCUSDT',  tv:'BINANCE:BTCUSDT.P',  label:'BTC Futures'},
   aave: {api:'/data_futures_aave.json', sym:'AAVEUSDT', tv:'BINANCE:AAVEUSDT.P', label:'AAVE Futures'},
+  btc:  {api:'/data_binance_btc.json',  sym:'BTCUSDT',  tv:'BINANCE:BTCUSDT',    label:'BTC/USDT'},
+  gold: {api:'/data_binance_paxg.json', sym:'PAXGUSDT', tv:'BINANCE:PAXGUSDT',   label:'Gold/USDT'},
 };
 const CONFIG_API = '/bot_config.json';
-const REFRESH_MS = 5000;
+const REFRESH_MS = 2000;
 
-let activeSym  = 'btc';
+let activeSym  = 'nvda';
 let activeTab  = 'home';
 let botData    = null;
 let prevPrice  = null;
@@ -551,14 +746,7 @@ function showTab(tab){
   if(tab==='chart') buildChart();
   else if(chartTimer){clearInterval(chartTimer);chartTimer=null;chartSym=null;}
   if(tab==='cal'){
-    if(calLoaded){ renderCalOverall(); renderCalGrid(calYear,calMonth); }
-    else if(calLoading){
-      // background fetch in progress — show spinner until it finishes
-      qs('#cal-loading').style.display='flex';
-      qs('#cal-body').style.display='none';
-    } else {
-      buildCalendar();
-    }
+    buildCalendar();
   }
 }
 
@@ -567,11 +755,21 @@ function switchSym(sym){
   activeSym=sym;
   prevPrice=null;botData=null;
   if(heldTimer){clearInterval(heldTimer);heldTimer=null;entryTs=null;}
-  qs('#sym-btc').className ='sym-tab'+(sym==='btc'?' active-btc':'');
-  qs('#sym-gold').className='sym-tab'+(sym==='gold'?' active-gold':'');
-  qs('#sym-eth').className ='sym-tab'+(sym==='eth'?' active-eth':'');
-  qs('#sym-sol').className ='sym-tab'+(sym==='sol'?' active-sol':'');
-  qs('#sym-aave').className='sym-tab'+(sym==='aave'?' active-aave':'');
+  ['nvda','amd','tsla','nbis','pltr','asts','spcx','mu','eth','sol','btcf','aave','btc','gold'].forEach(s=>{
+    const el=qs('#sym-'+s); if(el) el.className='sym-tab'+(sym===s?' active-'+s:'');
+  });
+  if(sym==='mu'){
+    // Show MU tab, hide home
+    qs('#tab-home').classList.remove('active');
+    qs('#tab-mu').classList.add('active');
+    fetchMU();
+    return;
+  }
+  // Coming back from MU — restore home tab
+  qs('#tab-mu').classList.remove('active');
+  if(!['history','cal','manual','chart'].includes(activeTab)){
+    qs('#tab-home').classList.add('active');
+  }
   chartSym=null;
   if(activeTab==='chart')buildChart();
   fetchData();
@@ -624,6 +822,8 @@ async function fetchData(){
     qs('#live-dot').style.background='var(--red)';
     qs('#status-bar').textContent='⚠️ '+e.message;
   }
+  fetchManual();
+  if(activeSym==='mu') fetchMU();
 }
 
 // ── Render ────────────────────────────────────────────────────────────────────
@@ -753,8 +953,11 @@ function renderAnalysis(d,price,pos,trail,ind){
   qs('#sig-title').textContent=pos?('Holding '+pos+' position'):titles[action]||'Waiting';
   qs('#sig-regime').textContent=regime+' · '+trend;
   qs('#sig-conf').textContent=conf+'%';
-  qs('#sig-fill').style.width=conf+'%';
-  qs('#sig-fill').style.background=conf>=75?'var(--green)':conf>=55?'var(--yellow)':'var(--muted)';
+  // When holding with 0% confidence, show a faint bar so it's clear data loaded
+  const displayWidth = (action==='HOLD'&&conf===0) ? 100 : conf;
+  const displayColor = (action==='HOLD'&&conf===0) ? 'var(--border)' : conf>=75?'var(--green)':conf>=55?'var(--yellow)':'var(--muted)';
+  qs('#sig-fill').style.width=displayWidth+'%';
+  qs('#sig-fill').style.background=displayColor;
   qs('#sig-reason').textContent=d.reason||'—';
 
   // Checklist
@@ -930,7 +1133,7 @@ async function doClose(){
   if(!botData?.position)return;
   if(!confirm('Close '+botData.position+' '+SOURCES[activeSym].label+' at market?'))return;
   try{
-    const isFut = activeSym==='eth'||activeSym==='sol'||activeSym==='aave';
+    const isFut = activeSym==='nvda'||activeSym==='amd'||activeSym==='eth'||activeSym==='sol'||activeSym==='aave'||activeSym==='btcf'||activeSym==='tsla'||activeSym==='nbis'||activeSym==='pltr'||activeSym==='asts'||activeSym==='spcx';
     const patch = isFut
       ? {futures_close_requested:true,futures_close_requested_at:new Date().toISOString(),futures_close_symbol:SOURCES[activeSym].sym}
       : {close_requested:true,close_requested_at:new Date().toISOString(),close_symbol:SOURCES[activeSym].sym};
@@ -942,7 +1145,7 @@ async function doClose(){
 async function doForceTrail(){
   if(!botData?.position)return;
   try{
-    const isFut = activeSym==='eth'||activeSym==='sol'||activeSym==='aave';
+    const isFut = activeSym==='nvda'||activeSym==='amd'||activeSym==='eth'||activeSym==='sol'||activeSym==='aave'||activeSym==='btcf'||activeSym==='tsla'||activeSym==='nbis'||activeSym==='pltr'||activeSym==='asts'||activeSym==='spcx';
     const patch = isFut
       ? {futures_force_trail:true,futures_force_trail_at:new Date().toISOString(),futures_force_trail_symbol:SOURCES[activeSym].sym}
       : {force_trail:true,force_trail_at:new Date().toISOString(),force_trail_symbol:SOURCES[activeSym].sym};
@@ -951,8 +1154,152 @@ async function doForceTrail(){
   }catch(e){toast('⚠️ Failed: '+e.message);}
 }
 
+// ── Manual Trades ─────────────────────────────────────────────────────────────
+const MT_SYMS = {
+  'BTCUSDT':  {id:'btc',  label:'BTC',  decimals:0},
+  'NBISUSDT': {id:'nbis', label:'NBIS', decimals:2},
+};
+
+async function fetchManual(){
+  try{
+    const r = await fetch('/data_futures_manual.json?t='+Date.now(),{cache:'no-store'});
+    if(r.ok){ renderManual(await r.json()); }
+  }catch(e){}
+}
+
+function renderManual(d){
+  if(!d || !d.positions) return;
+  for(const [sym, cfg] of Object.entries(MT_SYMS)){
+    const pos  = d.positions[sym] || {};
+    const side = pos.position;
+    const id   = cfg.id;
+    const dec  = cfg.decimals;
+    const badge = qs('#mt-'+id+'-badge');
+    if(side){
+      badge.textContent = side;
+      badge.className   = 'mt-badge '+(side==='LONG'?'long':'short');
+    } else {
+      badge.textContent = 'FLAT';
+      badge.className   = 'mt-badge';
+    }
+    qs('#mt-'+id+'-metrics').style.display  = side ? 'grid' : 'none';
+    qs('#mt-'+id+'-form').style.display     = side ? 'none' : 'grid';
+    qs('#mt-'+id+'-open-btns').style.display = side ? 'none' : 'flex';
+    qs('#mt-'+id+'-close-btn').style.display = side ? 'flex' : 'none';
+    if(side){
+      const ep  = pos.entry_price  || 0;
+      const cp  = pos.current_price || 0;
+      const pnl = pos.pnl || 0;
+      const fmt = v => '$'+v.toLocaleString('en-US',{minimumFractionDigits:dec,maximumFractionDigits:dec});
+      qs('#mt-'+id+'-entry').textContent = fmt(ep);
+      qs('#mt-'+id+'-price').textContent = fmt(cp);
+      const pnlEl = qs('#mt-'+id+'-pnl');
+      pnlEl.textContent = (pnl>=0?'+':'')+pnl.toFixed(2);
+      pnlEl.style.color = pnl>=0?'var(--green)':'var(--red)';
+    }
+  }
+}
+
+async function doManualOpen(symbol, side){
+  const cfg     = MT_SYMS[symbol];
+  const id      = cfg.id;
+  const amount  = parseFloat(qs('#mt-'+id+'-amount').value) || 100;
+  const leverage= parseInt(qs('#mt-'+id+'-lev').value)      || 5;
+  const dir     = side === 'LONG' ? '▲ LONG' : '▼ SHORT';
+  if(!confirm(`Open ${dir} ${cfg.label} — $${amount} at ${leverage}× leverage?\n\nExectes within 60s.`)) return;
+  try{
+    await writeConfig({manual_trade:{action:'open', symbol, side, amount_usdt:amount, leverage}});
+    toast(`${dir} ${cfg.label} queued — executes within 60s`);
+    setTimeout(fetchManual, 5000);
+  }catch(e){ toast('⚠️ Failed: '+e.message); }
+}
+
+async function doManualClose(symbol){
+  const label = MT_SYMS[symbol]?.label || symbol;
+  if(!confirm(`Close ${label} manual position at market price?`)) return;
+  try{
+    await writeConfig({manual_trade:{action:'close', symbol}});
+    toast(`✕ ${label} close queued — executes within 60s`);
+    setTimeout(fetchManual, 5000);
+  }catch(e){ toast('⚠️ Failed: '+e.message); }
+}
+
+// ── MU Overnight ──────────────────────────────────────────────────────────────
+async function fetchMU(){
+  try{
+    const r=await fetch('/data_overnight_mu.json?t='+Date.now(),{cache:'no-store'});
+    if(!r.ok) return;
+    renderMU(await r.json());
+  }catch(e){}
+}
+
+function renderMU(d){
+  if(!d) return;
+  const p=d.performance||{};
+  const fmt=v=>v>=0?'+$'+v.toFixed(2):'-$'+Math.abs(v).toFixed(2);
+
+  // Stats
+  qs('#mu-total').textContent = p.total||0;
+  qs('#mu-wr').textContent    = p.total ? p.win_rate+'%' : '—';
+  const net=p.net_pnl||0;
+  const netEl=qs('#mu-net');
+  netEl.textContent=p.total?fmt(net):'$0';
+  netEl.style.color=net>0?'var(--green)':net<0?'var(--red)':'var(--muted)';
+  qs('#mu-win-pnl').textContent  = p.wins  ? '+$'+(p.win_pnl||0).toFixed(2)  : '$0';
+  qs('#mu-loss-pnl').textContent = p.losses? '-$'+Math.abs(p.loss_pnl||0).toFixed(2): '$0';
+  qs('#mu-fees').textContent     = '-$'+(p.total_fees||0).toFixed(2);
+
+  // Current position
+  const card=qs('#mu-pos-card');
+  const badge=qs('#mu-pos-badge');
+  const body=qs('#mu-pos-body');
+  if(d.position){
+    card.classList.add('mu-pos-open');
+    badge.style.background='rgba(99,102,241,.2)';
+    badge.style.color='#818cf8';
+    badge.textContent='LONG';
+    const upnl=d.unrealized_pnl||0;
+    const pnlColor=upnl>=0?'var(--green)':'var(--red)';
+    const since=d.opened_at?new Date(d.opened_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'—';
+    body.innerHTML=`
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:6px">
+        <div><div style="font-size:9px;color:var(--muted);font-weight:700;text-transform:uppercase;margin-bottom:2px">Entry</div><div style="font-size:13px;font-weight:700">$${(d.entry_price||0).toFixed(2)}</div></div>
+        <div><div style="font-size:9px;color:var(--muted);font-weight:700;text-transform:uppercase;margin-bottom:2px">SL</div><div style="font-size:13px;font-weight:700;color:var(--red)">$${(d.sl_price||0).toFixed(2)}</div></div>
+        <div><div style="font-size:9px;color:var(--muted);font-weight:700;text-transform:uppercase;margin-bottom:2px">Unr. P&L</div><div style="font-size:13px;font-weight:700;color:${pnlColor}">${fmt(upnl)}</div></div>
+      </div>
+      <div style="font-size:10px;color:var(--muted);margin-top:8px">Opened ${since} · Exit at 9:30 AM ET</div>`;
+  } else {
+    card.classList.remove('mu-pos-open');
+    badge.style.background='rgba(255,255,255,.06)';
+    badge.style.color='var(--muted)';
+    badge.textContent='FLAT';
+    body.innerHTML='<div style="color:var(--muted);font-size:12px">No active overnight position · Next entry Mon–Thu at market close</div>';
+  }
+
+  // Trade rows
+  const tbody=qs('#mu-trade-rows');
+  const rows=d.trades||[];
+  if(!rows.length){
+    tbody.innerHTML='<tr><td colspan="6" style="color:var(--muted);text-align:center;padding:20px 0">No trades yet</td></tr>';
+    return;
+  }
+  tbody.innerHTML=rows.map(t=>{
+    const isWin=t.net>0;
+    const cls=isWin?'mu-win':'mu-loss';
+    const date=t.closed_at?new Date(t.closed_at).toLocaleDateString([],{month:'short',day:'numeric'}):'—';
+    return `<tr>
+      <td>${date}</td>
+      <td>$${(t.entry_price||0).toFixed(2)}</td>
+      <td>$${(t.exit_price||0).toFixed(2)}</td>
+      <td style="color:var(--muted)">-$${(t.fee||0).toFixed(2)}</td>
+      <td class="${cls}">${fmt(t.net)}</td>
+      <td style="color:var(--muted);font-size:10px">${t.reason||''}</td>
+    </tr>`;
+  }).join('');
+}
+
 function openSettings(){
-  const isFut = activeSym==='eth'||activeSym==='sol'||activeSym==='aave';
+  const isFut = activeSym==='nvda'||activeSym==='amd'||activeSym==='eth'||activeSym==='sol'||activeSym==='aave'||activeSym==='btcf'||activeSym==='tsla'||activeSym==='nbis'||activeSym==='pltr'||activeSym==='asts'||activeSym==='spcx';
   const levSel = qs('#cfg-lev');
   levSel.innerHTML = '';
   const opts = isFut
@@ -973,7 +1320,7 @@ function closeSettings(){qs('#settings-overlay').classList.remove('open');}
 async function saveSettings(){
   const lev=parseFloat(qs('#cfg-lev').value);
   const paused=qs('#cfg-pause').value==='true';
-  const isFut = activeSym==='eth'||activeSym==='sol'||activeSym==='aave';
+  const isFut = activeSym==='nvda'||activeSym==='amd'||activeSym==='eth'||activeSym==='sol'||activeSym==='aave'||activeSym==='btcf'||activeSym==='tsla'||activeSym==='nbis'||activeSym==='pltr'||activeSym==='asts'||activeSym==='spcx';
   const validLevs = isFut ? [5,7,10,12,15,20] : [3,4,5];
   if(!validLevs.includes(lev)){alert('Invalid leverage for this mode');return;}
   try{
@@ -994,87 +1341,89 @@ function hideLoader(){
 }
 
 async function autoSelectActiveSymbol(){
+  // Step 1: fetch default (btcf) immediately — show dashboard ASAP
+  try {
+    const r = await fetch(SOURCES['btcf'].api+'?t='+Date.now(),{cache:'no-store'});
+    if(r.ok){ botData = await r.json(); render(botData); }
+  } catch(e){}
+  hideLoader();
+
+  // Step 2: check all symbols in parallel for active position, switch if found
   const syms = Object.keys(SOURCES);
   const results = await Promise.all(syms.map(sym=>
     fetch(SOURCES[sym].api+'?t='+Date.now(),{cache:'no-store'})
       .then(r=>r.ok?r.json():null).catch(()=>null)
   ));
-
-  // Pick first symbol with an active position
   for(let i=0;i<syms.length;i++){
     const d=results[i];
     if(d && (d.position==='LONG'||d.position==='SHORT')){
       activeSym = syms[i];
-      // Update tab styling
       Object.keys(SOURCES).forEach(k=>{
         const el=qs('#sym-'+k);
         if(el) el.className='sym-tab'+(k===activeSym?' active-'+k:'');
       });
       botData = d;
       render(d);
-      hideLoader();
-      // Pre-fetch calendar in background
-      buildCalendar(results, syms);
       return;
     }
   }
-
-  // No active position — use btc, reuse already-fetched data
-  const btcIdx = syms.indexOf('btc');
-  if(btcIdx>=0 && results[btcIdx]){
-    botData = results[btcIdx];
-    render(results[btcIdx]);
-  } else {
-    await fetchData();
-  }
-  hideLoader();
-  // Pre-fetch calendar in background
-  buildCalendar(results, syms);
+  // No active position found — fetch active sym once more to ensure fresh data
+  fetchData();
 }
 autoSelectActiveSymbol();
+fetchManual();
+fetchMU();
 setInterval(fetchData,REFRESH_MS);
+setInterval(fetchMU,30000);
 
 // ── Calendar ──────────────────────────────────────────────────────────────────
 let calAllTrades = [];
 let calYear    = new Date().getFullYear();
 let calMonth   = new Date().getMonth();
-let calLoaded  = false;
-let calLoading = false;
+let calFetching = false;
 
 const CAL_MONTHS = ['January','February','March','April','May','June',
                     'July','August','September','October','November','December'];
-const CAL_SYMLABEL = {btc:'BTC',gold:'GOLD',eth:'ETH',sol:'SOL',aave:'AAVE'};
-const CAL_SYMCOLOR = {btc:'var(--accent)',gold:'#ffd700',eth:'#627eea',sol:'#9945ff',aave:'#b6509e'};
+const CAL_SYMLABEL = {nvda:'NVDA',amd:'AMD',tsla:'TSLA',nbis:'NBIS',pltr:'PLTR',asts:'ASTS',spcx:'SPCX',btc:'BTC',btcf:'BTC',gold:'GOLD',eth:'ETH',sol:'SOL',aave:'AAVE'};
+const CAL_SYMCOLOR = {nvda:'#76b900',amd:'#ed1b2f',tsla:'#cc0000',nbis:'#00bcd4',pltr:'#5a00ff',asts:'#00b4ff',spcx:'#e2e8f0',btc:'#f7931a',btcf:'#f7931a',gold:'#ffd700',eth:'#627eea',sol:'#9945ff',aave:'#b6509e'};
 
-async function buildCalendar(prefetchedResults, prefetchedKeys){
-  if(calLoading) return;  // already in progress — don't double-fetch
-  calLoading = true;
+const CAL_SYM_MAP = {
+  'NVDAUSDT':'nvda','AMDUSDT':'amd','TSLAUSDT':'tsla','NBISUSDT':'nbis','PLTRUSDT':'pltr','ASTSUSDT':'asts','SPCXUSDT':'spcx',
+  'ETHUSDT':'eth','SOLUSDT':'sol','AAVEUSDT':'aave','BTCUSDT':'btcf','PAXGUSDT':'gold'
+};
+
+async function buildCalendar(force){
+  if(calFetching && !force) return;
+  calFetching = true;
+  const refreshBtn = qs('#cal-refresh-btn');
+  if(refreshBtn) refreshBtn.textContent='⏳';
   qs('#cal-loading').style.display='flex';
   qs('#cal-body').style.display='none';
-  const keys = prefetchedKeys || Object.keys(SOURCES);
-  const results = prefetchedResults || await Promise.all(keys.map(k=>
-    fetch(SOURCES[k].api+'?t='+Date.now(),{cache:'no-store'})
-      .then(r=>r.ok?r.json():null).catch(()=>null)
-  ));
-  calAllTrades = [];
-  results.forEach((d,i)=>{
-    if(!d) return;
-    const symKey = keys[i];
-    (d.closed_trades||[]).forEach(t=>{
-      calAllTrades.push({...t, _sym: symKey});
+  try {
+    const data = await fetch('/trades_log.json?t='+Date.now(),{cache:'no-store'})
+      .then(r=>r.ok?r.json():null).catch(()=>null);
+    calAllTrades = [];
+    (data||[]).forEach(t=>{
+      const symKey = CAL_SYM_MAP[t.symbol] || t.symbol;
+      calAllTrades.push({...t, _sym: symKey, _dust: t.dust || (Number(t.qty||0) < 0.1)});
     });
-  });
-  calLoaded  = true;
-  calLoading = false;
-  qs('#cal-loading').style.display='none';
-  qs('#cal-body').style.display='block';
-  renderCalOverall();
-  renderCalGrid(calYear, calMonth);
+    qs('#cal-loading').style.display='none';
+    qs('#cal-body').style.display='block';
+    renderCalOverall();
+    renderCalGrid(calYear, calMonth);
+  } catch(e) {
+    qs('#cal-loading').style.display='none';
+    qs('#cal-body').style.display='block';
+  } finally {
+    calFetching = false;
+    if(refreshBtn) refreshBtn.textContent='↻';
+  }
 }
 
 function renderCalOverall(){
-  const total = calAllTrades.length;
-  const wins  = calAllTrades.filter(t=>t.win||t.pnl>0).length;
+  const real  = calAllTrades.filter(t=>!t._dust);
+  const total = real.length;
+  const wins  = real.filter(t=>t.win||t.pnl>0).length;
   const net   = calAllTrades.reduce((s,t)=>s+Number(t.pnl||0),0);
   qs('#cal-total').textContent = total;
   qs('#cal-wr').textContent    = total ? (wins/total*100).toFixed(0)+'%' : '—';
@@ -1112,7 +1461,8 @@ function renderCalGrid(year, month){
     const trades = byDay[key]||[];
     const hasTrades = trades.length>0;
     const net = trades.reduce((s,t)=>s+Number(t.pnl||0),0);
-    const wins = trades.filter(t=>t.win||t.pnl>0).length;
+    const realTrades = trades.filter(t=>!t._dust);
+    const wins = realTrades.filter(t=>t.win||t.pnl>0).length;
     const isToday = key===todayKey;
 
     let cls = 'cal-day';
@@ -1124,7 +1474,7 @@ function renderCalGrid(year, month){
     if(hasTrades){
       const pnlStr = (net>=0?'+':'')+net.toFixed(2);
       const pnlColor = net>=0?'var(--green)':'var(--red)';
-      const wr = wins/trades.length*100;
+      const wr = realTrades.length>0 ? wins/realTrades.length*100 : 0;
       inner += `<div class="cal-day-pnl" style="color:${pnlColor}">${pnlStr}</div>`;
       inner += `<div class="cal-day-cnt">${trades.length} trade${trades.length>1?'s':''} · ${wr.toFixed(0)}%W</div>`;
       const barColor = net>=0?'var(--green)':'var(--red)';
@@ -1136,6 +1486,32 @@ function renderCalGrid(year, month){
   }
   // Replace inner cells (DOW headers stay, only cells change)
   qs('#cal-cells').innerHTML = html;
+
+  // Monthly summary bar
+  const monthPrefix = year+'-'+String(month+1).padStart(2,'0')+'-';
+  const monthTrades = calAllTrades.filter(t=>{
+    const raw = t.closed_at||t.opened_at;
+    if(!raw) return false;
+    const d = new Date(raw);
+    const key = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+    return key.startsWith(monthPrefix);
+  });
+  const mRealTrades = monthTrades.filter(t=>!t._dust);
+  const mTotal = mRealTrades.length;
+  const mNet   = monthTrades.reduce((s,t)=>s+Number(t.pnl||0),0);
+  const mWins  = mRealTrades.filter(t=>t.win||t.pnl>0).length;
+  const mWR    = mTotal>0 ? (mWins/mTotal*100).toFixed(0)+'%' : '—';
+  const mSummary = qs('#cal-month-summary');
+  if(mRealTrades.length>0||monthTrades.length>0){
+    qs('#cal-m-trades').textContent = mTotal;
+    qs('#cal-m-wr').textContent = mWR;
+    const pnlEl = qs('#cal-m-pnl');
+    pnlEl.textContent = (mNet>=0?'+':'')+mNet.toFixed(2);
+    pnlEl.style.color = mNet>=0?'var(--green)':'var(--red)';
+    mSummary.style.display='grid';
+  } else {
+    mSummary.style.display='none';
+  }
 }
 
 function calPrevMonth(){
@@ -1165,12 +1541,13 @@ function showDayDetail(dateKey){
 
   // Day stats
   const net  = trades.reduce((s,t)=>s+Number(t.pnl||0),0);
-  const wins = trades.filter(t=>t.win||t.pnl>0).length;
-  const wr   = (wins/trades.length*100).toFixed(0);
+  const realDay = trades.filter(t=>!t._dust);
+  const wins = realDay.filter(t=>t.win||t.pnl>0).length;
+  const wr   = realDay.length>0 ? (wins/realDay.length*100).toFixed(0) : '0';
   const netStr = (net>=0?'+':'')+net.toFixed(4);
   const netColor = net>=0?'var(--green)':'var(--red)';
   qs('#cal-day-stats').innerHTML = `
-    <div class="cal-ss-item"><div class="cal-ss-val">${trades.length}</div>Trades</div>
+    <div class="cal-ss-item"><div class="cal-ss-val">${realDay.length}</div>Trades</div>
     <div class="cal-ss-item"><div class="cal-ss-val">${wr}%</div>Win Rate</div>
     <div class="cal-ss-item"><div class="cal-ss-val" style="color:${netColor}">${netStr}</div>Net P&amp;L</div>`;
 
