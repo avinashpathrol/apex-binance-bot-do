@@ -96,6 +96,15 @@ def save_signal(sig: dict):
     except Exception as e:
         logger.warning(f'save_signal: {e}')
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+def _safe_float(v, default: float = 0.0) -> float:
+    """float() that converts NaN and None to default. NaN is truthy so 'x or 0' doesn't catch it."""
+    try:
+        f = float(v) if v is not None else default
+        return default if f != f else f  # f != f is True only for NaN
+    except (TypeError, ValueError):
+        return default
+
 # ── Black-Scholes gamma ───────────────────────────────────────────────────────
 def _norm_pdf(x: float) -> float:
     return exp(-0.5 * x * x) / sqrt(2 * pi)
@@ -139,14 +148,6 @@ def fetch_spy_chain() -> Optional[dict]:
         gex: dict      = {}
         call_map: dict = {}
         put_map: dict  = {}
-
-        def _safe_float(v, default=0.0):
-            # float(NaN or 0) stays NaN because NaN is truthy — detect it explicitly
-            try:
-                f = float(v) if v is not None else default
-                return default if f != f else f  # f != f is True only for NaN
-            except (TypeError, ValueError):
-                return default
 
         for _, r in calls.iterrows():
             s   = _safe_float(r['strike'])
@@ -331,36 +332,62 @@ def fetch_spx_spreads(direction: str, spy_spot: float, spy_lower: float, spy_upp
             variants  = [(-10, 'Conservative'), (0, 'Suggested'), (+10, 'Aggressive')]
             cm        = {float(r['strike']): r for _, r in chain.calls.iterrows()}
 
+        def _spx_spread(short_s: float) -> Optional[dict]:
+            long_s = float(short_s - w) if direction == 'BULL_PUT' else float(short_s + w)
+            row_s  = pm.get(short_s, {}) if direction == 'BULL_PUT' else cm.get(short_s, {})
+            row_l  = pm.get(long_s,  {}) if direction == 'BULL_PUT' else cm.get(long_s,  {})
+            short_bid = _safe_float(row_s.get('bid'))
+            long_ask  = _safe_float(row_l.get('ask'))
+            credit    = round(short_bid - long_ask, 2)
+            if credit <= 0.10:
+                return None
+            be = round(short_s - credit, 2) if direction == 'BULL_PUT' else round(short_s + credit, 2)
+            return {
+                'direction':    direction,
+                'short_strike': short_s,
+                'long_strike':  long_s,
+                'short_bid':    round(short_bid, 2),
+                'long_ask':     round(long_ask, 2),
+                'net_credit':   credit,
+                'max_profit':   round(credit * 100, 2),
+                'max_loss':     round((w - credit) * 100, 2),
+                'breakeven':    be,
+                'width':        w,
+            }
+
         spreads = []
         for (delta, lbl) in variants:
-            short_s = float(base_s + delta)
-            long_s  = float(short_s - w) if direction == 'BULL_PUT' else float(short_s + w)
-            try:
-                if direction == 'BULL_PUT':
-                    short_bid = float(pm.get(short_s, {}).get('bid', 0) or 0)
-                    long_ask  = float(pm.get(long_s,  {}).get('ask', 0) or 0)
-                else:
-                    short_bid = float(cm.get(short_s, {}).get('bid', 0) or 0)
-                    long_ask  = float(cm.get(long_s,  {}).get('ask', 0) or 0)
-                credit = round(short_bid - long_ask, 2)
-                if credit <= 0.10:
-                    continue
-                be = round(short_s - credit, 2) if direction == 'BULL_PUT' else round(short_s + credit, 2)
-                spreads.append({
-                    'label':        lbl,
-                    'direction':    direction,
-                    'short_strike': short_s,
-                    'long_strike':  long_s,
-                    'short_bid':    round(short_bid, 2),
-                    'long_ask':     round(long_ask, 2),
-                    'net_credit':   credit,
-                    'max_profit':   round(credit * 100, 2),
-                    'max_loss':     round((w - credit) * 100, 2),
-                    'breakeven':    be,
-                    'width':        w,
-                })
-            except Exception:
-                continue
+            sp = _spx_spread(float(base_s + delta))
+            if sp:
+                sp['label'] = lbl
+                spreads.append(sp)
+
+        # Fallback: walk from spot toward wall in $5 steps
+        if not spreads:
+            candidates = []
+            step = 5
+            if direction == 'BULL_PUT':
+                spx_floor = round(spot * (1 - (spy_spot - spy_lower) / spy_spot) / step) * step
+                for s in range(int(spot) - step, int(spx_floor) - step, -step):
+                    sp = _spx_spread(float(s))
+                    if sp:
+                        candidates.append(sp)
+                        if len(candidates) >= 3:
+                            break
+                candidates.reverse()
+            else:
+                spx_ceil = round(spot * (1 + (spy_upper - spy_spot) / spy_spot) / step) * step
+                for s in range(int(spot) + step, int(spx_ceil) + step * 2, step):
+                    sp = _spx_spread(float(s))
+                    if sp:
+                        candidates.append(sp)
+                        if len(candidates) >= 3:
+                            break
+                candidates.reverse()
+            lbls = ['Conservative', 'Suggested', 'Aggressive']
+            for i, sp in enumerate(candidates):
+                sp['label'] = lbls[min(i, len(lbls) - 1)]
+            spreads = candidates
 
         if not spreads:
             return None
@@ -429,27 +456,27 @@ def build_signal(data: dict, label: str) -> Optional[dict]:
             spreads.append(sp)
 
     # Fallback: GEX wall may be far from spot (low premium there).
-    # Scan between the wall and spot for liquid strikes.
+    # Scan between wall and spot, starting at least $2 OTM to avoid near-ATM strikes.
     if not spreads:
         candidates = []
         if direction == 'BULL_PUT':
-            # Walk from just below spot downward to the GEX wall
-            for s in range(int(spot), int(lower_wall) - 1, -1):
+            # Start $2 below spot (floor), walk down to GEX wall — ensures min ~$2 OTM
+            for s in range(int(spot) - 2, int(lower_wall) - 1, -1):
                 sp = make_spread(data, direction, float(s))
                 if sp:
                     candidates.append(sp)
                     if len(candidates) >= 3:
                         break
-            candidates.reverse()  # lowest premium first → Conservative
+            candidates.reverse()  # lowest premium (furthest) first → Conservative
         else:
-            # Walk from just above spot upward to the GEX wall
-            for s in range(int(spot) + 1, int(upper_wall) + 2):
+            # Start $2 above spot (ceil), walk up to GEX wall — ensures min ~$2 OTM
+            for s in range(int(spot) + 2, int(upper_wall) + 2):
                 sp = make_spread(data, direction, float(s))
                 if sp:
                     candidates.append(sp)
                     if len(candidates) >= 3:
                         break
-            candidates.reverse()  # lowest premium first → Conservative
+            candidates.reverse()  # lowest premium (furthest) first → Conservative
         lbls = ['Conservative', 'Suggested', 'Aggressive']
         for i, sp in enumerate(candidates):
             sp['label'] = lbls[min(i, len(lbls) - 1)]
