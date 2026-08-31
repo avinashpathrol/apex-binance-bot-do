@@ -38,6 +38,13 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .nav-btn svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .nav-btn.active{color:var(--accent)}
 
+/* ── Positions badge ── */
+#pos-badge{display:none;align-items:center;gap:4px;background:rgba(34,197,94,0.15);border:1px solid rgba(34,197,94,0.3);color:#22c55e;padding:4px 9px;border-radius:14px;font-size:11px;font-weight:700;text-decoration:none;white-space:nowrap;cursor:pointer;margin-right:4px;transition:background .2s}
+#pos-badge.multi{background:rgba(99,102,241,0.2);border-color:rgba(99,102,241,0.4);color:#818cf8;animation:pos-pulse 2s ease-in-out infinite}
+@keyframes pos-pulse{0%,100%{box-shadow:0 0 0 0 rgba(99,102,241,.4)}50%{box-shadow:0 0 0 6px rgba(99,102,241,0)}}
+#pos-badge .pos-dot{width:6px;height:6px;border-radius:50%;background:currentColor;animation:blink 1.5s ease-in-out infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+
 /* ── Header ── */
 .hdr-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
 .sym-groups{display:flex;gap:8px;align-items:center;flex:1;min-width:0;overflow:hidden}
@@ -301,6 +308,10 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
       </div>
     </div>
     <div class="hdr-actions">
+      <a id="pos-badge" href="/positions.html">
+        <span class="pos-dot"></span>
+        <span id="pos-badge-label">1 Open</span>
+      </a>
       <div class="live-dot" id="live-dot"></div>
       <button class="icon-btn" onclick="fetchData()" title="Refresh">↻</button>
       <button class="icon-btn" onclick="openSettings()">⚙</button>
@@ -1375,6 +1386,29 @@ fetchManual();
 fetchMU();
 setInterval(fetchData,REFRESH_MS);
 setInterval(fetchMU,30000);
+
+// ── Active positions badge ────────────────────────────────────────────────────
+const POS_TICKERS = ['nvda','amd','tsla','nbis','pltr','asts','spcx','eth','btc','sol','aave','coin','doge','mstr','pepe','rklb','mu'];
+async function pollPositionsBadge(){
+  try {
+    const results = await Promise.all(POS_TICKERS.map(t =>
+      fetch(`/data_futures_${t}.json`,{cache:'no-store'})
+        .then(r=>r.ok?r.json():null).catch(()=>null)
+    ));
+    const active = results.filter(d=>d&&d.position);
+    const badge = document.getElementById('pos-badge');
+    const label = document.getElementById('pos-badge-label');
+    if(active.length===0){
+      badge.style.display='none';
+    } else {
+      badge.style.display='flex';
+      label.textContent = active.length===1 ? '1 Open' : `${active.length} Open`;
+      badge.classList.toggle('multi', active.length>1);
+    }
+  } catch(e){}
+}
+pollPositionsBadge();
+setInterval(pollPositionsBadge, 60000);
 
 // ── Calendar ──────────────────────────────────────────────────────────────────
 let calAllTrades = [];
