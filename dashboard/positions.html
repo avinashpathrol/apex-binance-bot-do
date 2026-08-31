@@ -255,7 +255,7 @@ body {
 </div>
 
 <div class="refresh-row" id="refreshRow" style="display:none">
-  <span><span class="price-badge">LIVE</span> Price every 3s · Data every 5s</span>
+  <span><span class="price-badge">LIVE</span> Price &amp; data every 3s</span>
   <span id="lastUpdated">—</span>
 </div>
 
@@ -699,7 +699,7 @@ async function loadAll() {
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 loadAll();
-setInterval(loadAll, 5000);         // data files: every 5s
+setInterval(loadAll, 3000);         // data files: every 3s
 setInterval(fetchLivePrices, 3000); // live price: every 3s
 </script>
 </body>
