@@ -359,11 +359,8 @@ body {
         </div>
       </div>
 
-      <!-- Market conditions row -->
-      <div id="market-conditions" style="display:none;margin-bottom:12px;display:flex;gap:6px;flex-wrap:wrap;"></div>
-
-      <!-- CBOE confidence banner -->
-      <div id="cboe-confidence" style="margin-bottom:12px;display:none;padding:10px 13px;border-radius:10px;font-size:12px;"></div>
+      <!-- Confidence card — one place for VIX/PC/CBOE/volume/trend agreement + sizing + win% -->
+      <div id="confidence-card" style="margin-bottom:12px;display:none;padding:12px 14px;border-radius:12px;"></div>
 
       <!-- Strike selector -->
       <div class="card-title">Choose Strike Risk Level</div>
@@ -549,6 +546,7 @@ body {
       <button class="tt-btn active" id="tt-btc" onclick="switchCryptoTicker('BTC')">BTC</button>
       <button class="tt-btn" id="tt-eth" onclick="switchCryptoTicker('ETH')">ETH</button>
     </div>
+    <div id="crypto-trend-line" style="font-size:12px;color:var(--muted);margin-top:8px;text-align:center;">—</div>
   </div>
 
   <div class="card">
@@ -828,47 +826,71 @@ function renderSpread(sig, sp) {
     </div>
   `).join('');
 
-  // VIX + P/C row
-  const mcEl = document.getElementById('market-conditions');
-  if (mcEl) {
-    const vix = sig.vix, pc = sig.pc_ratio;
-    const chips = [];
-    if (vix != null) {
-      const vixColor = vix < 12 ? '#ef4444' : vix < 15 ? '#f59e0b' : vix < 20 ? '#22c55e' : vix < 25 ? '#f59e0b' : '#ef4444';
-      const vixLabel = vix < 12 ? '⛔ too low' : vix < 15 ? '😴 low' : vix < 20 ? '✅ ideal' : vix < 25 ? '🟡 elevated' : '🔴 high';
-      chips.push(`<span style="background:rgba(99,102,241,.12);border:1px solid rgba(99,102,241,.25);border-radius:20px;padding:3px 10px;font-size:11px;font-weight:600;color:${vixColor}">VIX ${vix.toFixed(1)} — ${vixLabel}</span>`);
-    }
-    if (pc != null) {
-      const pcBias = pc < 0.7 ? '🐂 bullish' : pc > 1.2 ? '🐻 bearish' : '➡️ neutral';
-      const pcColor = pc < 0.7 ? 'var(--green)' : pc > 1.2 ? 'var(--red)' : 'var(--muted)';
-      chips.push(`<span style="background:rgba(99,102,241,.12);border:1px solid rgba(99,102,241,.25);border-radius:20px;padding:3px 10px;font-size:11px;font-weight:600;color:${pcColor}">P/C ${pc.toFixed(2)} — ${pcBias}</span>`);
-    }
-    mcEl.style.display = chips.length ? 'flex' : 'none';
-    mcEl.innerHTML = chips.join('');
+  renderConfidenceCard(sig, sp);
+}
+
+// One consolidated card: confidence headline + plain-language checklist +
+// sizing tier + win probability. Mirrors format_discord()'s SIZE_TIERS logic
+// exactly so the dashboard and Discord/Telegram messages always agree.
+function renderConfidenceCard(sig, sp) {
+  const el = document.getElementById('confidence-card');
+  if (!el) return;
+  if (!sig.confidence_label) {
+    // Signal predates the confidence system (old cached state) — nothing to show yet.
+    el.style.display = 'none';
+    return;
+  }
+  const conf  = sig.confidence ?? 0;
+  const max   = sig.confidence_max ?? 7;
+  const label = sig.confidence_label || '';
+  const colors = { Strong: '#22c55e', Moderate: '#f59e0b', Weak: '#f97316', Skip: '#ef4444' };
+  const emojis = { Strong: '🟢', Moderate: '🟡', Weak: '🟠', Skip: '🔴' };
+  const color  = colors[label] || 'var(--muted)';
+  const emoji  = emojis[label] || '';
+
+  el.style.display = 'block';
+  el.style.background = `${color}1f`;
+  el.style.border = `1px solid ${color}55`;
+
+  const dots = Array.from({length: max}, (_, i) =>
+    `<span style="color:${i < conf ? color : 'var(--border)'}">${i < conf ? '●' : '○'}</span>`
+  ).join('');
+
+  const checklist = (sig.confidence_checklist || []).filter(it => it.known).map(it => `
+    <div style="display:flex;gap:6px;align-items:flex-start;font-size:12px;padding:2px 0;color:${it.pass ? 'var(--text)' : 'var(--muted)'}">
+      <span>${it.pass ? '✅' : '❌'}</span><span>${it.label}</span>
+    </div>
+  `).join('');
+
+  const SIZE_TIERS = [[0,'🚫 Skip — no factors align'],[1,'⚠️ 1 contract max'],[3,'1 contract'],[5,'1–2 contracts'],[6,'🔥 Full size (2–3 contracts)']];
+  let sizing = SIZE_TIERS[0][1];
+  for (const [minScore, lbl] of SIZE_TIERS) if (conf >= minScore) sizing = lbl;
+  const nextTier = SIZE_TIERS.find(([minScore]) => minScore > conf);
+  let sizeNote = nextTier ? `need ${nextTier[0] - conf} more ✅ to size up` : '';
+  if (sig.label === 'last-call' && conf < Math.floor(max / 2) + 1) {
+    sizing = '⏰ Late signal — 1 contract max (gamma risk near noon)'; sizeNote = '';
+  }
+  if (sig.market_event) {
+    sizing = '⚠️ Event day — 1 contract max'; sizeNote = '';
   }
 
-  // CBOE confidence banner
-  const cmp = sig.gex_compare;
-  const confEl = document.getElementById('cboe-confidence');
-  if (cmp && confEl) {
-    confEl.style.display = 'block';
-    const agree = cmp.direction_agree;
-    const cboeDir = cmp.av_direction === 'BULL_PUT' ? '🐂 Bull Put' : '🐻 Bear Call';
-    const ourDir  = sig.direction === 'BULL_PUT' ? '🐂 Bull Put' : '🐻 Bear Call';
-    if (agree) {
-      confEl.style.background = 'rgba(34,197,94,0.12)';
-      confEl.style.border = '1px solid rgba(34,197,94,0.25)';
-      confEl.style.color = '#22c55e';
-      confEl.innerHTML = `✅ <b>CBOE agrees</b> — both sources say ${ourDir} · CBOE pin $${cmp.av_pin_strike} · higher confidence`;
-    } else {
-      confEl.style.background = 'rgba(245,158,11,0.12)';
-      confEl.style.border = '1px solid rgba(245,158,11,0.3)';
-      confEl.style.color = '#f59e0b';
-      confEl.innerHTML = `⚠️ <b>CBOE disagrees</b> — we say ${ourDir}, CBOE says ${cboeDir} · CBOE pin $${cmp.av_pin_strike} · <b>trade 1 contract max or skip</b>`;
-    }
-  } else if (confEl) {
-    confEl.style.display = 'none';
+  const wp = sp?.win_probability;
+  let wpRow = '';
+  if (wp != null) {
+    const wpColor = wp >= 70 ? 'var(--green)' : wp >= 55 ? '#f59e0b' : 'var(--red)';
+    const wpEmoji = wp >= 70 ? '🟢' : wp >= 55 ? '🟡' : '🔴';
+    wpRow = `<div style="margin-top:8px;font-size:12px;font-weight:700;color:${wpColor}">${wpEmoji} Win probability: ${wp.toFixed(0)}% <span style="color:var(--muted);font-weight:400;">(market-implied, via delta)</span></div>`;
   }
+
+  el.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px;">
+      <div style="font-size:14px;font-weight:800;color:${color}">${emoji} Confidence: ${label}</div>
+      <div style="font-size:13px;letter-spacing:2px;">${dots} <span style="color:var(--muted);font-size:11px;letter-spacing:0;">(${conf}/${max})</span></div>
+    </div>
+    <div style="margin-top:8px;">${checklist}</div>
+    <div style="margin-top:8px;font-size:12px;font-weight:700;">👉 Size: ${sizing}${sizeNote ? `<span style="color:var(--muted);font-weight:400;font-size:11px;"> — ${sizeNote}</span>` : ''}</div>
+    ${wpRow}
+  `;
 }
 
 function updateSignalAge() {
@@ -1148,17 +1170,76 @@ function renderCrypto() {
   const fmtMoney = v => v == null ? '—' : '$' + Number(v).toFixed(2);
   const fmtPnl   = v => v == null ? '—' : (v >= 0 ? '+' : '') + '$' + Number(v).toFixed(2);
 
+  const trendColors = {BULLISH:'var(--green)', BEARISH:'var(--red)', CHOPPY:'var(--yellow)'};
+  const trendEl = document.getElementById('crypto-trend-line');
+  if (trendEl) {
+    const tc = trendColors[d.current_trend] || 'var(--muted)';
+    trendEl.innerHTML = `Spot: <b style="color:var(--text)">${fmtMoney(d.spot_price)}</b> &nbsp;|&nbsp; Trend: <b style="color:${tc}">${d.current_trend || '—'}</b>`;
+  }
+
+  function timeLeftStr(expiryMs) {
+    if (expiryMs == null) return null;
+    const ms = expiryMs - Date.now();
+    if (ms <= 0) return 'expired';
+    const h = Math.floor(ms/3600000), m = Math.floor((ms%3600000)/60000);
+    return `${h}h ${m}m`;
+  }
+
   const positions = d.open_positions || [];
   const posEl = document.getElementById('crypto-positions');
   if (positions.length === 0) {
     posEl.innerHTML = `<div style="font-size:12px;color:var(--muted);">No open spread — waiting for next option-day rollover (~08:00 UTC)</div>`;
   } else {
-    posEl.innerHTML = positions.map(p => {
+    const knownPnls = positions.map(p => p.unrealized_pnl).filter(v => v != null);
+    const netPnl = knownPnls.length ? knownPnls.reduce((a,b) => a+b, 0) : null;
+    const netColor = netPnl == null ? 'var(--muted)' : (netPnl >= 0 ? 'var(--green)' : 'var(--red)');
+    const netLabel = netPnl == null ? '—' :
+      (knownPnls.length < positions.length ? fmtPnl(netPnl) + ' (partial)' : fmtPnl(netPnl));
+    const knownProbs = positions.map(p => p.prob_max_profit).filter(v => v != null);
+    const avgProb = knownProbs.length ? knownProbs.reduce((a,b) => a+b, 0) / knownProbs.length : null;
+    const avgProbColor = avgProb == null ? 'var(--muted)' : (avgProb >= 65 ? 'var(--green)' : avgProb >= 45 ? 'var(--yellow)' : 'var(--red)');
+    let html = `
+      <div style="background:var(--card2);border:1px solid ${netColor};border-radius:10px;padding:10px 12px;margin-bottom:10px;text-align:center;">
+        <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;">If closed right now (all spreads combined)</div>
+        <div style="font-size:22px;font-weight:800;color:${netColor};margin-top:2px;">${netLabel}</div>
+        <div style="font-size:11px;color:${avgProbColor};margin-top:4px;">Blended win probability: <b>${avgProb != null ? avgProb.toFixed(1)+'%' : '—'}</b>${positions.length>1 ? ' (avg across '+positions.length+' spreads)' : ''}</div>
+      </div>`;
+    html += positions.map(p => {
       const isBullPut = p.direction === 'BULL_PUT';
+      const uPnl = p.unrealized_pnl;
+      const uPnlColor = uPnl == null ? 'var(--muted)' : (uPnl >= 0 ? 'var(--green)' : 'var(--red)');
+      const spot = d.spot_price;
+      let beLine = '';
+      if (p.breakeven != null) {
+        let cushionTxt = '';
+        if (spot != null) {
+          const cushionPct = isBullPut ? (spot - p.breakeven)/spot*100 : (p.breakeven - spot)/spot*100;
+          const cushionColor = cushionPct >= 0 ? 'var(--muted)' : 'var(--red)';
+          cushionTxt = ` <span style="color:${cushionColor}">(${cushionPct>=0?'':'BREACHED, '}${Math.abs(cushionPct).toFixed(2)}% ${cushionPct>=0?'cushion':'past breakeven'})</span>`;
+        }
+        beLine = `<div style="font-size:11px;color:var(--muted);margin-top:4px;">Breakeven: <b style="color:var(--text)">${fmtMoney(p.breakeven)}</b>${cushionTxt} — needs to stay ${isBullPut?'above':'below'} this</div>`;
+      }
+      const timeLeft = timeLeftStr(p.expiry_ms);
+      const prob = p.prob_max_profit;
+      const probColor = prob == null ? 'var(--muted)' : (prob >= 65 ? 'var(--green)' : prob >= 45 ? 'var(--yellow)' : 'var(--red)');
+      // Symbol format is UNDERLYING-YYMMDD-STRIKE-C/P — pull the date out as
+      // its own label instead of leaving it embedded in the strike string.
+      const dateCode = p.short_symbol.split('-')[1];
+      const expiryDate = dateCode ? `20${dateCode.slice(0,2)}-${dateCode.slice(2,4)}-${dateCode.slice(4,6)}` : null;
+      const legLabel = (sym) => { const parts = sym.split('-'); return `${parts[0]} $${parts[2]} ${parts[3]}`; };
       return `
         <div style="background:var(--card2);border-radius:10px;padding:10px 12px;margin-top:8px;">
-          <span class="pill ${isBullPut?'pill-green':'pill-red'}" style="font-size:10px;">${p.direction.replace('_',' ')}</span>
-          <div style="font-size:11px;color:var(--muted);margin-top:4px;">Short ${p.short_symbol} / Long ${p.long_symbol}</div>
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <span class="pill ${isBullPut?'pill-green':'pill-red'}" style="font-size:10px;">${p.direction.replace('_',' ')}</span>
+            <span style="font-size:15px;font-weight:800;color:${uPnlColor}">${uPnl == null ? 'Unrealized: —' : 'Unrealized: ' + fmtPnl(uPnl)}</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;margin-top:6px;">
+            <span style="color:var(--muted)">⏱ Time left: <b style="color:var(--text)">${timeLeft ?? '—'}</b></span>
+            <span style="color:${probColor}">Win prob (live, via delta): <b>${prob != null ? prob+'%' : '—'}</b></span>
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px;">Expiry: <b style="color:var(--text)">${expiryDate ?? '—'}</b></div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px;">Short ${legLabel(p.short_symbol)} / Long ${legLabel(p.long_symbol)}</div>
+          ${beLine}
           <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:6px;">
             <span>Credit: ${fmtMoney(p.credit)}</span>
             <span>Width: ${fmtMoney(p.width)}</span>
@@ -1171,6 +1252,7 @@ function renderCrypto() {
         </div>
       `;
     }).join('');
+    posEl.innerHTML = html;
   }
 
   const perf = d.performance || {};

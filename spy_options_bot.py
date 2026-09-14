@@ -3,7 +3,7 @@
 
 import os, json, math, logging, time, threading
 from datetime import datetime, date, timezone, timedelta
-from math import log, sqrt, exp, pi
+from math import log, sqrt, exp, pi, erf
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Optional
 
@@ -248,6 +248,21 @@ def bs_gamma(S: float, K: float, T: float, iv: float, r: float = 0.05) -> float:
     except Exception:
         return 0.0
 
+def _norm_cdf(x: float) -> float:
+    return 0.5 * (1 + erf(x / sqrt(2)))
+
+def bs_delta(S: float, K: float, T: float, iv: float, is_call: bool, r: float = 0.05) -> float:
+    """Black-Scholes delta. Also the standard options-trading approximation
+    for the option's own risk-neutral probability of finishing ITM at expiry
+    (i.e. win probability for a short position = 1 - |delta|)."""
+    if T <= 0 or iv <= 0 or S <= 0 or K <= 0:
+        return 1.0 if (is_call and S > K) else (-1.0 if (not is_call and S < K) else 0.0)
+    try:
+        d1 = (log(S / K) + (r + 0.5 * iv * iv) * T) / (iv * sqrt(T))
+        return _norm_cdf(d1) if is_call else _norm_cdf(d1) - 1
+    except Exception:
+        return 0.0
+
 # ── GEX + options chain ───────────────────────────────────────────────────────
 def fetch_spy_chain() -> Optional[dict]:
     try:
@@ -275,6 +290,8 @@ def fetch_spy_chain() -> Optional[dict]:
         puts     = chain.puts
 
         gex: dict      = {}
+        vol_gex: dict  = {}   # same formula, weighted by VOLUME not OI — genuinely
+                              # intraday-live, unlike OI which is frozen until tomorrow
         call_map: dict = {}
         put_map: dict  = {}
 
@@ -283,11 +300,15 @@ def fetch_spy_chain() -> Optional[dict]:
             iv  = _safe_float(r.get('impliedVolatility'))
             g   = bs_gamma(float(spot), s, T_years, iv)
             oi  = _safe_float(r.get('openInterest'))
-            gex[s] = gex.get(s, 0) + g * oi * 100 * float(spot)
+            vol = _safe_float(r.get('volume'))
+            gex[s]     = gex.get(s, 0) + g * oi * 100 * float(spot)
+            vol_gex[s] = vol_gex.get(s, 0) + g * vol * 100 * float(spot)
             call_map[s] = {
                 'bid': _safe_float(r.get('bid')),
                 'ask': _safe_float(r.get('ask')),
                 'oi':  int(oi),
+                'iv':  iv,
+                'volume': int(vol),
             }
 
         for _, r in puts.iterrows():
@@ -295,25 +316,54 @@ def fetch_spy_chain() -> Optional[dict]:
             iv  = _safe_float(r.get('impliedVolatility'))
             g   = bs_gamma(float(spot), s, T_years, iv)
             oi  = _safe_float(r.get('openInterest'))
-            gex[s] = gex.get(s, 0) - g * oi * 100 * float(spot)
+            vol = _safe_float(r.get('volume'))
+            gex[s]     = gex.get(s, 0) - g * oi * 100 * float(spot)
+            vol_gex[s] = vol_gex.get(s, 0) - g * vol * 100 * float(spot)
             put_map[s] = {
                 'bid': _safe_float(r.get('bid')),
                 'ask': _safe_float(r.get('ask')),
                 'oi':  int(oi),
+                'iv':  iv,
+                'volume': int(vol),
             }
 
         total_call_oi = sum(v['oi'] for v in call_map.values())
         total_put_oi  = sum(v['oi'] for v in put_map.values())
         pc_ratio = round(total_put_oi / total_call_oi, 2) if total_call_oi else None
 
+        total_call_vol = sum(v['volume'] for v in call_map.values())
+        total_put_vol  = sum(v['volume'] for v in put_map.values())
+        pc_ratio_vol = round(total_put_vol / total_call_vol, 2) if total_call_vol else None
+
+        # Max pain — the strike where option WRITERS (net) owe the least if
+        # price settled there today. Simple, well-known formula using OI.
+        all_strikes = sorted(set(call_map) | set(put_map))
+        max_pain = None
+        if all_strikes:
+            best_strike, best_payout = None, None
+            for k in all_strikes:
+                payout = 0.0
+                for s2, v2 in call_map.items():
+                    if k > s2: payout += (k - s2) * v2['oi']
+                for s2, v2 in put_map.items():
+                    if k < s2: payout += (s2 - k) * v2['oi']
+                if best_payout is None or payout < best_payout:
+                    best_payout, best_strike = payout, k
+            max_pain = best_strike
+
         return {
             'spot':      round(float(spot), 2),
             'expiry':    target,
             'gex':       gex,
+            'vol_gex':   vol_gex,
             'call_map':  call_map,
             'put_map':   put_map,
             'total_gex': sum(gex.values()),
+            'total_vol_gex': sum(vol_gex.values()),
             'pc_ratio':  pc_ratio,
+            'pc_ratio_vol': pc_ratio_vol,
+            'max_pain':  max_pain,
+            'T_years':   T_years,
         }
     except Exception as e:
         logger.error(f'fetch_spy_chain: {e}')
@@ -407,11 +457,13 @@ def make_spread(data: dict, direction: str, short_s: float) -> Optional[dict]:
 
     if direction == 'BULL_PUT':
         long_s    = short_s - w
-        short_bid = pm.get(short_s, {}).get('bid', 0)
+        short_leg = pm.get(short_s, {})
+        short_bid = short_leg.get('bid', 0)
         long_ask  = pm.get(long_s,  {}).get('ask', 0)
     else:
         long_s    = short_s + w
-        short_bid = cm.get(short_s, {}).get('bid', 0)
+        short_leg = cm.get(short_s, {})
+        short_bid = short_leg.get('bid', 0)
         long_ask  = cm.get(long_s,  {}).get('ask', 0)
 
     credit = round(float(short_bid) - float(long_ask), 2)
@@ -419,6 +471,16 @@ def make_spread(data: dict, direction: str, short_s: float) -> Optional[dict]:
         return None
 
     be = round(short_s - credit, 2) if direction == 'BULL_PUT' else round(short_s + credit, 2)
+
+    # Win probability: the short leg's own delta approximates its risk-neutral
+    # probability of finishing ITM at expiry (standard options heuristic), so
+    # 1-|delta| is the probability this spread expires at max profit.
+    win_probability = None
+    short_iv = short_leg.get('iv')
+    if short_iv:
+        delta = bs_delta(data['spot'], short_s, data['T_years'], short_iv, is_call=(direction=='BEAR_CALL'))
+        win_probability = round((1 - abs(delta)) * 100, 1)
+
     return {
         'direction':    direction,
         'short_strike': short_s,
@@ -430,6 +492,7 @@ def make_spread(data: dict, direction: str, short_s: float) -> Optional[dict]:
         'max_loss':     round((w - credit) * 100, 2),
         'breakeven':    be,
         'width':        w,
+        'win_probability': win_probability,
     }
 
 # ── SPX parallel spread ───────────────────────────────────────────────────────
@@ -551,9 +614,19 @@ def fetch_spx_spreads(direction: str, spy_spot: float, spy_lower: float, spy_upp
         logger.warning(f'fetch_spx_spreads: {e}')
         return None
 
+CONFIDENCE_MAX = 7
+
 def compute_confidence(direction: str, vix: Optional[float], pc_ratio: Optional[float],
-                       gex_compare: Optional[dict], gex_regime: str) -> int:
-    """Score 0–4: VIX ideal zone, P/C confirms direction, CBOE agrees, positive GEX regime."""
+                       gex_compare: Optional[dict], gex_regime: str,
+                       volume_gex_direction: Optional[str] = None,
+                       pc_ratio_vol: Optional[float] = None,
+                       spy_trend: Optional[str] = None) -> int:
+    """Score 0–7: original 4 (VIX zone, OI P/C confirms, CBOE agrees, positive
+    GEX regime) plus 3 genuinely-live confirmations — volume-weighted GEX
+    agreeing with the OI-based direction, live (volume) P/C ratio confirming,
+    and SPY's own daily trend not conflicting. More agreement across
+    independent, differently-stale signals = a real confluence, not just a
+    bigger number for its own sake."""
     score = 0
     if vix is not None and 15 <= vix <= 20:
         score += 1
@@ -566,10 +639,23 @@ def compute_confidence(direction: str, vix: Optional[float], pc_ratio: Optional[
         score += 1
     if gex_regime == 'positive':
         score += 1
+    # Genuinely-live confirmations (not built on stale OI):
+    if volume_gex_direction is not None and volume_gex_direction == direction:
+        score += 1
+    if pc_ratio_vol is not None:
+        if direction == 'BULL_PUT' and pc_ratio_vol < 0.9:
+            score += 1
+        elif direction == 'BEAR_CALL' and pc_ratio_vol > 1.0:
+            score += 1
+    if spy_trend is not None:
+        trend_agrees = (spy_trend == 'BULLISH' and direction == 'BULL_PUT') or \
+                       (spy_trend == 'BEARISH' and direction == 'BEAR_CALL')
+        if trend_agrees:
+            score += 1
     return score
 
 
-def build_signal(data: dict, label: str, vix: Optional[float] = None) -> Optional[dict]:
+def build_signal(data: dict, label: str, vix: Optional[float] = None, spy_trend: Optional[str] = None) -> Optional[dict]:
     spot      = data['spot']
     gex       = data['gex']
     total_gex = data['total_gex']
@@ -590,6 +676,21 @@ def build_signal(data: dict, label: str, vix: Optional[float] = None) -> Optiona
     lower_dist = spot - lower_wall
     upper_dist = upper_wall - spot
     direction  = 'BULL_PUT' if lower_dist <= upper_dist else 'BEAR_CALL'
+
+    # Volume-weighted GEX — same wall logic, but weighted by today's live
+    # trading volume instead of yesterday's frozen open interest. This is
+    # the genuinely fresh cross-check: when it disagrees with the OI-based
+    # direction above, that's a real signal something has shifted today
+    # that the primary (stale) signal can't see.
+    vol_gex = data.get('vol_gex', {})
+    vg_nearby = {s: g for s, g in vol_gex.items() if abs(s - spot) <= 20}
+    vg_below_pos = {s: g for s, g in vg_nearby.items() if s < spot and g > 0}
+    vg_above_pos = {s: g for s, g in vg_nearby.items() if s > spot and g > 0}
+    vg_lower_wall = max(vg_below_pos, key=lambda s: vg_below_pos[s]) if vg_below_pos else None
+    vg_upper_wall = max(vg_above_pos, key=lambda s: vg_above_pos[s]) if vg_above_pos else None
+    volume_gex_direction = None
+    if vg_lower_wall is not None and vg_upper_wall is not None:
+        volume_gex_direction = 'BULL_PUT' if (spot - vg_lower_wall) <= (vg_upper_wall - spot) else 'BEAR_CALL'
 
     # 3 strike variants
     spreads = []
@@ -681,7 +782,31 @@ def build_signal(data: dict, label: str, vix: Optional[float] = None) -> Optiona
     else:
         gex_compare = None
 
-    confidence = compute_confidence(direction, vix, data.get('pc_ratio'), gex_compare, gex_regime)
+    confidence = compute_confidence(direction, vix, data.get('pc_ratio'), gex_compare, gex_regime,
+                                     volume_gex_direction=volume_gex_direction,
+                                     pc_ratio_vol=data.get('pc_ratio_vol'),
+                                     spy_trend=spy_trend)
+
+    # Plain-language checklist — one row per factor, computed once here so
+    # the dashboard/Discord never have to re-derive agreement logic themselves.
+    pc_ratio = data.get('pc_ratio')
+    pc_ratio_vol = data.get('pc_ratio_vol')
+    pc_confirms = (direction == 'BULL_PUT' and pc_ratio is not None and pc_ratio < 0.9) or \
+                  (direction == 'BEAR_CALL' and pc_ratio is not None and pc_ratio > 1.0)
+    pc_vol_confirms = (direction == 'BULL_PUT' and pc_ratio_vol is not None and pc_ratio_vol < 0.9) or \
+                      (direction == 'BEAR_CALL' and pc_ratio_vol is not None and pc_ratio_vol > 1.0)
+    trend_confirms = spy_trend is not None and (
+        (spy_trend == 'BULLISH' and direction == 'BULL_PUT') or
+        (spy_trend == 'BEARISH' and direction == 'BEAR_CALL'))
+    confidence_checklist = [
+        {'label': 'VIX in ideal selling zone (15-20)', 'pass': vix is not None and 15 <= vix <= 20, 'known': vix is not None},
+        {'label': 'Open-interest P/C ratio confirms', 'pass': pc_confirms, 'known': pc_ratio is not None},
+        {'label': 'CBOE cross-check agrees', 'pass': bool(gex_compare and gex_compare.get('direction_agree')), 'known': gex_compare is not None},
+        {'label': 'GEX regime is positive (pinning)', 'pass': gex_regime == 'positive', 'known': True},
+        {'label': "Today's live volume agrees (fresh)", 'pass': volume_gex_direction == direction, 'known': volume_gex_direction is not None},
+        {'label': 'Live volume P/C ratio confirms', 'pass': pc_vol_confirms, 'known': pc_ratio_vol is not None},
+        {'label': "SPY's own daily trend doesn't conflict", 'pass': trend_confirms, 'known': spy_trend is not None},
+    ]
 
     return {
         'label':        label,
@@ -702,9 +827,26 @@ def build_signal(data: dict, label: str, vix: Optional[float] = None) -> Optiona
         'spx':          spx,
         'vix':          vix,
         'pc_ratio':     data.get('pc_ratio'),
+        'pc_ratio_vol': data.get('pc_ratio_vol'),
+        'volume_gex_direction': volume_gex_direction,
+        'max_pain':     data.get('max_pain'),
+        'spy_trend':    spy_trend,
         'confidence':   confidence,
+        'confidence_max': CONFIDENCE_MAX,
+        'confidence_label': confidence_label(confidence),
+        'confidence_checklist': confidence_checklist,
         'open_trade':   None,
     }
+
+def confidence_label(conf: int) -> str:
+    """One plain-language word for the confidence score — this is the ONE
+    thing to glance at; the checklist is the detail behind it, not the
+    headline."""
+    frac = conf / CONFIDENCE_MAX
+    if frac >= 0.7:  return 'Strong'
+    if frac >= 0.45: return 'Moderate'
+    if frac > 0:     return 'Weak'
+    return 'Skip'
 
 # ── Discord ───────────────────────────────────────────────────────────────────
 def _discord_fmt(msg: str) -> str:
@@ -777,32 +919,6 @@ def format_discord(sig: dict) -> str:
     dir_name   = 'Bull Put Spread' if sig['direction'] == 'BULL_PUT' else 'Bear Call Spread'
     close_at   = round(s['net_credit'] * 0.20, 2)
 
-    # ── VIX line ────────────────────────────────────────────────────────────
-    vix = sig.get('vix')
-    if vix is not None:
-        if vix < 15:
-            vix_txt = f'VIX **{vix:.1f}** 😴 low vol — tight spreads'
-        elif vix < 20:
-            vix_txt = f'VIX **{vix:.1f}** ✅ ideal selling zone'
-        elif vix < 25:
-            vix_txt = f'VIX **{vix:.1f}** 🟡 elevated — wider ok'
-        else:
-            vix_txt = f'VIX **{vix:.1f}** 🔴 high vol — 1 contract max'
-    else:
-        vix_txt = None
-
-    # ── P/C ratio line ──────────────────────────────────────────────────────
-    pc = sig.get('pc_ratio')
-    if pc is not None:
-        if pc < 0.7:
-            pc_txt = f'SPY P/C **{pc:.2f}** 🐂 (bullish — confirms puts OTM)'
-        elif pc > 1.2:
-            pc_txt = f'SPY P/C **{pc:.2f}** 🐻 (bearish — confirms calls OTM)'
-        else:
-            pc_txt = f'SPY P/C **{pc:.2f}** ➡️ (neutral)'
-    else:
-        pc_txt = None
-
     open_note = '\n_⏳ Signal at 9:35 — open rotation settles first. Confirm 9:30 candle direction before entering._' \
         if sig['label'] == 'market-open' else ''
     event = sig.get('market_event')
@@ -815,47 +931,40 @@ def format_discord(sig: dict) -> str:
         f"GEX: {regime_txt} | Net GEX: **${sig['total_gex_b']:.1f}B**",
         f"📌 Pin **${sig['pin_strike']:.0f}** | Support **${sig['lower_wall']:.0f}** | Resist **${sig['upper_wall']:.0f}**",
     ]
-    if vix_txt:
-        lines.append(vix_txt)
-    if pc_txt:
-        lines.append(pc_txt)
-
-    # SPY daily trend vs signal direction
-    spy_trend = sig.get('spy_trend')
-    if spy_trend:
-        trend_emoji  = '📈' if spy_trend == 'BULLISH' else '📉'
-        trend_agrees = (spy_trend == 'BULLISH' and sig['direction'] == 'BULL_PUT') or \
-                       (spy_trend == 'BEARISH' and sig['direction'] == 'BEAR_CALL')
-        if trend_agrees:
-            lines.append(f"{trend_emoji} SPY daily trend **{spy_trend}** ✅ aligns with {dir_emoji} {dir_name}")
-        else:
-            lines.append(f"⚠️ SPY daily trend **{spy_trend}** — conflicts with {dir_emoji} {dir_name} · consider 1 contract or skip")
-
-    cmp = sig.get('gex_compare')
-    if cmp:
-        agree_icon = '✅' if cmp['direction_agree'] else '⚠️'
-        lines.append(
-            f"{agree_icon} CBOE cross-check: GEX **${cmp['av_total_gex_b']:.1f}B** "
-            f"| diff **${cmp['diff_b']:+.2f}B** "
-            f"| dir {'agrees' if cmp['direction_agree'] else '**DISAGREES**'}"
-        )
-
     conf = sig.get('confidence', 0)
-    stars = '⭐' * conf + '☆' * (4 - conf)
-    sizing = {
-        0: '🚫 Skip — no factors align',
-        1: '⚠️ 1 contract max',
-        2: '1 contract',
-        3: '1–2 contracts',
-        4: '🔥 Full size (2–3 contracts)',
-    }.get(conf, '1 contract')
-    # Late signal: cap at 1 contract when confidence is below 3 — gamma risk spikes near noon
-    if sig['label'] == 'last-call' and conf < 3:
+    conf_label = sig.get('confidence_label', '')
+    label_emoji = {'Strong': '🟢', 'Moderate': '🟡', 'Weak': '🟠', 'Skip': '🔴'}.get(conf_label, '')
+    stars = '⭐' * conf + '☆' * (CONFIDENCE_MAX - conf)
+    lines.append(f"")
+    lines.append(f"{label_emoji} **Confidence: {conf_label}** {stars} ({conf}/{CONFIDENCE_MAX})")
+    for item in sig.get('confidence_checklist', []):
+        if not item['known']:
+            continue  # don't show checks we have no data for — nothing to read into
+        icon = '✅' if item['pass'] else '❌'
+        lines.append(f"  {icon} {item['label']}")
+
+    # Tiers as (min score to reach this tier, label) — ordered low to high.
+    SIZE_TIERS = [(0, '🚫 Skip — no factors align'), (1, '⚠️ 1 contract max'),
+                  (3, '1 contract'), (5, '1–2 contracts'), (6, '🔥 Full size (2–3 contracts)')]
+    sizing = SIZE_TIERS[0][1]
+    for min_score, label in SIZE_TIERS:
+        if conf >= min_score:
+            sizing = label
+    next_higher = next((min_score for min_score, _ in SIZE_TIERS if min_score > conf), None)
+    size_note = f" _(need {next_higher - conf} more ✅ to size up)_" if next_higher is not None else ''
+    # Late signal: cap at 1 contract when confidence is in the lower half — gamma risk spikes near noon
+    if sig['label'] == 'last-call' and conf < CONFIDENCE_MAX // 2 + 1:
         sizing = '⏰ Late signal — 1 contract max (gamma risk near noon)'
+        size_note = ''
     # High-impact event always caps at 1 contract
     if event:
         sizing = '⚠️ Event day — 1 contract max'
-    lines.append(f"{stars} Confidence **{conf}/4** — {sizing}")
+        size_note = ''
+    lines.append(f"👉 Size: **{sizing}**{size_note}")
+    win_prob = s.get('win_probability')
+    if win_prob is not None:
+        wp_emoji = '🟢' if win_prob >= 70 else '🟡' if win_prob >= 55 else '🔴'
+        lines.append(f"{wp_emoji} **Win probability: {win_prob:.0f}%** (market-implied, via option delta)")
 
     lines += [
         f"",
@@ -1109,13 +1218,13 @@ def run_signal(label: str, state: dict) -> dict:
         logger.error(f'[{label}] No data available')
         return state
 
-    sig = build_signal(data, label, vix=vix)
+    spy_trend = fetch_spy_daily_trend()
+    sig = build_signal(data, label, vix=vix, spy_trend=spy_trend)
     if not sig:
         logger.warning(f'[{label}] Could not build signal (no liquid spreads)')
         return state
 
     sig['market_event'] = today_market_event()
-    sig['spy_trend']    = fetch_spy_daily_trend()
 
     open_trade = next((t for t in state.get('trades', []) if t.get('status') == 'open'), None)
     sig['open_trade'] = open_trade
@@ -1373,7 +1482,8 @@ def crypto_get_quotes(symbols: list) -> dict:
         t, m = tmap.get(sym), mmap.get(sym)
         if not t: continue
         out[sym] = {'bid': float(t['bidPrice']), 'ask': float(t['askPrice']),
-                     'mark_iv': float(m['markIV']) if m else None}
+                     'mark_iv': float(m['markIV']) if m else None,
+                     'delta': float(m['delta']) if m and m.get('delta') is not None else None}
     return out
 
 def _crypto_nearest_strike(strikes: list, target: float) -> float:
@@ -1413,8 +1523,9 @@ def crypto_build_spread(opt_prefix, date_code, chain, direction, spot, sigma_mov
     if max_loss_per_unit <= 0: return None
     contracts = round(CRYPTO_TRADE_RISK_USD / max_loss_per_unit, 2)
     if contracts < 0.01: return None
+    breakeven = round(short_strike - credit, 4) if direction == 'BULL_PUT' else round(short_strike + credit, 4)
     return {'direction': direction, 'short_symbol': short_sym, 'long_symbol': long_sym,
-            'short_strike': short_strike, 'long_strike': long_strike,
+            'short_strike': short_strike, 'long_strike': long_strike, 'breakeven': breakeven,
             'credit': credit, 'width': width, 'contracts': contracts,
             'max_loss': round(max_loss_per_unit*contracts, 2), 'max_profit': round(credit*contracts, 2)}
 
@@ -1485,6 +1596,7 @@ def crypto_open_new_positions(symbol, cfg, sym_state, chain):
                 f'🎯 **Crypto 0DTE Paper [{base}] — {direction} OPENED**\n\n'
                 f'Short {spread["short_symbol"]} / Long {spread["long_symbol"]}\n'
                 f'Credit: ${spread["credit"]:.2f} | Width: ${spread["width"]:.2f} | Contracts: {spread["contracts"]}\n'
+                f'Breakeven: ${spread["breakeven"]:,.2f}\n'
                 f'Max profit: ${spread["max_profit"]:.2f} | Max loss: ${spread["max_loss"]:.2f} (paper, capped)\n'
                 f'📊 Trend: {trend} | Spot: ${spot:,.2f} | IV: {iv*100:.1f}% | DTE: {hours_to_expiry/24:.1f}d'
             )
@@ -1537,8 +1649,45 @@ def crypto_check_rollover(symbol, cfg, crypto_state):
     sym_state['current_option_date'] = crypto_current_option_date()
     save_crypto_state(crypto_state)
 
+def crypto_positions_with_live_pnl(all_positions):
+    """Fetch current bid/ask for every open position's legs in one batch call
+    and attach unrealized_pnl (and the live cost-to-close) to each. Credit was
+    received selling the spread; closing now means buying back the short leg
+    (pay ask) and selling the long leg (receive bid)."""
+    legs = set()
+    for pos in all_positions:
+        legs.add(pos['short_symbol']); legs.add(pos['long_symbol'])
+    if not legs:
+        return
+    try:
+        quotes = crypto_get_quotes(list(legs))
+    except Exception as e:
+        logger.warning(f'crypto_positions_with_live_pnl: quote fetch failed: {e}')
+        quotes = {}
+    for pos in all_positions:
+        if pos.get('breakeven') is None:  # backfill for positions opened before this field existed
+            pos['breakeven'] = round(pos['short_strike'] - pos['credit'], 4) if pos['direction'] == 'BULL_PUT' \
+                else round(pos['short_strike'] + pos['credit'], 4)
+        sq, lq = quotes.get(pos['short_symbol']), quotes.get(pos['long_symbol'])
+        if not sq or not lq:
+            pos['unrealized_pnl'] = None
+            continue
+        cost_to_close = sq['ask'] - lq['bid']
+        pos['cost_to_close'] = round(cost_to_close, 4)
+        pos['unrealized_pnl'] = round((pos['credit'] - cost_to_close) * pos['contracts'], 2)
+        # Short leg's delta approximates its live risk-neutral probability of
+        # finishing in-the-money (the standard options-trading heuristic) - so
+        # 1-|delta| is a real, market-implied probability the spread expires
+        # at max profit, updating every cycle as price/time/IV move.
+        if sq.get('delta') is not None:
+            pos['prob_max_profit'] = round((1 - abs(sq['delta'])) * 100, 1)
+        else:
+            pos['prob_max_profit'] = None
+
 def crypto_write_dashboard(crypto_state):
     symbols_payload = {}
+    all_open = [p for s in crypto_state['symbols'].values() for p in s.get('open_positions', [])]
+    crypto_positions_with_live_pnl(all_open)
     for symbol, cfg in CRYPTO_SYMBOLS_CONFIG.items():
         base = cfg['base']
         sym_state = crypto_state['symbols'][symbol]
@@ -1549,8 +1698,20 @@ def crypto_write_dashboard(crypto_state):
         for t in trades:
             d = t.get('date') or (t.get('closed_at') or '')[:10]
             if d: daily_pnl[d] = round(daily_pnl.get(d,0) + t['pnl'], 2)
+        try:
+            spot_price = crypto_get_index_price(symbol)
+        except Exception as e:
+            logger.warning(f'crypto_write_dashboard: spot fetch failed for {symbol}: {e}')
+            spot_price = None
+        try:
+            current_trend = crypto_get_trend(symbol)
+        except Exception as e:
+            logger.warning(f'crypto_write_dashboard: trend fetch failed for {symbol}: {e}')
+            current_trend = None
         symbols_payload[base] = {
             'symbol': symbol,
+            'spot_price': spot_price,
+            'current_trend': current_trend,
             'open_positions': sym_state.get('open_positions', []),
             'trade_risk_usd': CRYPTO_TRADE_RISK_USD,
             'performance': {
