@@ -46,13 +46,17 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
 
 /* ── Header ── */
-.hdr-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
-.sym-groups{display:flex;gap:8px;align-items:center;flex:1;min-width:0;overflow:hidden}
+.hdr-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.hdr-left{display:flex;align-items:center;gap:6px}
+.sym-groups{display:flex;gap:8px;align-items:center;width:100%;margin-bottom:6px}
 .sym-group{display:flex;flex-direction:column;gap:3px;min-width:0;width:100%}
 .sym-group-label{font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding-left:2px}
 .sym-group-btns{display:flex;gap:4px;background:var(--card2);border:1px solid var(--border);border-radius:20px;padding:3px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;flex-wrap:nowrap;width:100%}
 .sym-group-btns::-webkit-scrollbar{display:none}
 .sym-tab{padding:4px 10px;border-radius:16px;border:none;background:transparent;color:var(--muted);font-size:11px;font-weight:700;cursor:pointer;transition:all .18s;font-family:inherit;white-space:nowrap}
+.atr-badge{display:inline-block;width:6px;height:6px;border-radius:50%;margin-left:4px;vertical-align:middle}
+.atr-badge.warning{background:#ef4444;box-shadow:0 0 4px #ef4444}
+.atr-badge.watch{background:#f59e0b}
 .sym-tab.active-btc{background:rgba(247,147,26,.18);color:var(--accent)}
 .sym-tab.active-btcf{background:rgba(247,147,26,.18);color:var(--accent)}
 .sym-tab.active-gold{background:rgba(255,215,0,.13);color:#ffd700}
@@ -61,11 +65,12 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .sym-tab.active-aave{background:rgba(182,80,158,.18);color:#b6509e}
 .sym-tab.active-nvda{background:rgba(118,185,0,.18);color:#76b900}
 .sym-tab.active-amd{background:rgba(237,27,47,.18);color:var(--accent)}
-.sym-tab.active-pltr{background:rgba(90,0,255,.18);color:var(--accent)}
 .sym-tab.active-tsla{background:rgba(204,0,0,.18);color:#cc0000}
 .sym-tab.active-nbis{background:rgba(0,188,212,.18);color:#00bcd4}
 .sym-tab.active-asts{background:rgba(0,180,255,.18);color:#00b4ff}
-.sym-tab.active-spcx{background:rgba(255,255,255,.12);color:#e2e8f0}
+.sym-tab.active-app{background:rgba(255,255,255,.12);color:#e2e8f0}
+.sym-tab.active-soxl{background:rgba(34,197,94,.18);color:#22c55e}
+.sym-tab.active-crcl{background:rgba(59,130,246,.18);color:#3b82f6}
 .sym-tab.active-mu{background:rgba(99,102,241,.18);color:#818cf8}
 /* ── MU Overnight Tab ── */
 .mu-pos-card{background:var(--card2);border:1px solid var(--border);border-radius:14px;padding:14px;margin-bottom:12px}
@@ -98,6 +103,8 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .mt-btns .btn{flex:1;font-size:12px;padding:9px 0}
 .hdr-actions{display:flex;gap:8px;align-items:center}
 .icon-btn{background:none;border:1px solid var(--border);color:var(--muted);border-radius:8px;width:34px;height:34px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:16px}
+.icon-btn.spinning{animation:icon-spin .6s linear}
+@keyframes icon-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 .hdr-price{display:flex;align-items:baseline;gap:10px}
 #hdr-price{font-size:28px;font-weight:700;letter-spacing:-.02em}
 #hdr-change{font-size:13px;font-weight:600}
@@ -284,37 +291,40 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 <!-- ── Header ── -->
 <div id="header">
   <div class="hdr-top">
-    <div class="sym-groups">
-      <div class="sym-group">
-        <div class="sym-group-label">Futures</div>
-        <div class="sym-group-btns">
-          <button class="sym-tab" id="sym-nbis" onclick="switchSym('nbis')">🔵 NBIS</button>
-          <button class="sym-tab" id="sym-amd" onclick="switchSym('amd')">🔴 AMD</button>
-          <button class="sym-tab" id="sym-spcx" onclick="switchSym('spcx')">🚀 SPCX</button>
-          <button class="sym-tab" id="sym-asts" onclick="switchSym('asts')">🛰️ ASTS</button>
-          <button class="sym-tab" id="sym-tsla" onclick="switchSym('tsla')">🔴 TSLA</button>
-          <button class="sym-tab" id="sym-pltr" onclick="switchSym('pltr')">🟣 PLTR</button>
-          <button class="sym-tab" id="sym-mu" onclick="switchSym('mu')">🌙 MU</button>
-          <button class="sym-tab" id="sym-nvda" onclick="switchSym('nvda')">🟢 NVDA</button>
-        </div>
-      </div>
-      <!-- Margin group hidden temporarily during futures testing -->
-      <div class="sym-group" style="display:none">
-        <div class="sym-group-label">Margin</div>
-        <div class="sym-group-btns">
-          <button class="sym-tab" id="sym-btc"  onclick="switchSym('btc')">₿ BTC</button>
-          <button class="sym-tab" id="sym-gold" onclick="switchSym('gold')">🥇 Gold</button>
-        </div>
-      </div>
-    </div>
-    <div class="hdr-actions">
+    <div class="hdr-left">
       <a id="pos-badge" href="/positions.html">
         <span class="pos-dot"></span>
         <span id="pos-badge-label">1 Open</span>
       </a>
       <div class="live-dot" id="live-dot"></div>
-      <button class="icon-btn" onclick="fetchData()" title="Refresh">↻</button>
+    </div>
+    <div class="hdr-actions">
+      <button class="icon-btn" id="refresh-icon-btn" onclick="manualRefresh()" title="Refresh">↻</button>
       <button class="icon-btn" onclick="openSettings()">⚙</button>
+    </div>
+  </div>
+  <div class="sym-groups">
+    <div class="sym-group">
+      <div class="sym-group-label">Futures</div>
+      <div class="sym-group-btns">
+        <button class="sym-tab" id="sym-nbis" onclick="switchSym('nbis')">🔵 NBIS<span class="atr-badge" id="atr-badge-nbis"></span></button>
+        <button class="sym-tab" id="sym-amd" onclick="switchSym('amd')">🔴 AMD<span class="atr-badge" id="atr-badge-amd"></span></button>
+        <button class="sym-tab" id="sym-app" onclick="switchSym('app')">📱 APP<span class="atr-badge" id="atr-badge-app"></span></button>
+        <button class="sym-tab" id="sym-soxl" onclick="switchSym('soxl')">⚡ SOXL<span class="atr-badge" id="atr-badge-soxl"></span></button>
+        <button class="sym-tab" id="sym-crcl" onclick="switchSym('crcl')">🔵 CRCL<span class="atr-badge" id="atr-badge-crcl"></span></button>
+        <button class="sym-tab" id="sym-asts" onclick="switchSym('asts')">🛰️ ASTS<span class="atr-badge" id="atr-badge-asts"></span></button>
+        <button class="sym-tab" id="sym-tsla" onclick="switchSym('tsla')">🔴 TSLA<span class="atr-badge" id="atr-badge-tsla"></span></button>
+        <button class="sym-tab" id="sym-mu" onclick="switchSym('mu')">🌙 MU</button>
+        <button class="sym-tab" id="sym-nvda" onclick="switchSym('nvda')">🟢 NVDA</button>
+      </div>
+    </div>
+    <!-- Margin group hidden temporarily during futures testing -->
+    <div class="sym-group" style="display:none">
+      <div class="sym-group-label">Margin</div>
+      <div class="sym-group-btns">
+        <button class="sym-tab" id="sym-btc"  onclick="switchSym('btc')">₿ BTC</button>
+        <button class="sym-tab" id="sym-gold" onclick="switchSym('gold')">🥇 Gold</button>
+      </div>
     </div>
   </div>
   <div class="hdr-price">
@@ -696,10 +706,11 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 
 const SOURCES = {
   asts: {api:'/data_futures_asts.json',  sym:'ASTSUSDT',  tv:'BINANCE:ASTSUSDT.P',  label:'ASTS Futures'},
-  spcx: {api:'/data_futures_spcx.json',  sym:'SPCXUSDT',  tv:'BINANCE:SPCXUSDT.P',  label:'SpaceX Futures'},
+  app: {api:'/data_futures_app.json',  sym:'APPUSDT',  tv:'BINANCE:APPUSDT.P',  label:'AppLovin Futures'},
+  soxl: {api:'/data_futures_soxl.json',  sym:'SOXLUSDT',  tv:'BINANCE:SOXLUSDT.P',  label:'SOXL 3x Semis Futures'},
+  crcl: {api:'/data_futures_crcl.json',  sym:'CRCLUSDT',  tv:'BINANCE:CRCLUSDT.P',  label:'Circle Futures'},
   nvda: {api:'/data_futures_nvda.json', sym:'NVDAUSDT', tv:'BINANCE:NVDAUSDT.P', label:'NVDA Futures'},
   amd: {api:'/data_futures_amd.json', sym:'AMDUSDT', tv:'BINANCE:AMDUSDT.P', label:'AMD Futures'},
-  pltr: {api:'/data_futures_pltr.json', sym:'PLTRUSDT', tv:'BINANCE:PLTRUSDT.P', label:'PLTR Futures'},
   tsla: {api:'/data_futures_tsla.json', sym:'TSLAUSDT', tv:'BINANCE:TSLAUSDT.P', label:'TSLA Futures'},
   nbis: {api:'/data_futures_nbis.json', sym:'NBISUSDT', tv:'BINANCE:NBISUSDT.P', label:'NBIS Futures'},
   eth:  {api:'/data_futures_eth.json',  sym:'ETHUSDT',  tv:'BINANCE:ETHUSDT.P',  label:'ETH Futures'},
@@ -766,7 +777,7 @@ function switchSym(sym){
   activeSym=sym;
   prevPrice=null;botData=null;
   if(heldTimer){clearInterval(heldTimer);heldTimer=null;entryTs=null;}
-  ['nvda','amd','tsla','nbis','pltr','asts','spcx','mu','eth','sol','btcf','aave','btc','gold'].forEach(s=>{
+  ['nvda','amd','tsla','nbis','asts','app','soxl','crcl','mu','eth','sol','btcf','aave','btc','gold'].forEach(s=>{
     const el=qs('#sym-'+s); if(el) el.className='sym-tab'+(sym===s?' active-'+s:'');
   });
   if(sym==='mu'){
@@ -822,6 +833,14 @@ function buildChart() {
 }
 
 // ── Fetch data ────────────────────────────────────────────────────────────────
+function manualRefresh(){
+  const btn=qs('#refresh-icon-btn');
+  btn.classList.remove('spinning');
+  void btn.offsetWidth; // restart animation
+  btn.classList.add('spinning');
+  fetchData().then(()=>toast('🔄 Refreshed'));
+}
+
 async function fetchData(){
   try{
     const r=await fetch(SOURCES[activeSym].api+'?t='+Date.now(),{cache:'no-store'});
@@ -1144,7 +1163,7 @@ async function doClose(){
   if(!botData?.position)return;
   if(!confirm('Close '+botData.position+' '+SOURCES[activeSym].label+' at market?'))return;
   try{
-    const isFut = activeSym==='nvda'||activeSym==='amd'||activeSym==='eth'||activeSym==='sol'||activeSym==='aave'||activeSym==='btcf'||activeSym==='tsla'||activeSym==='nbis'||activeSym==='pltr'||activeSym==='asts'||activeSym==='spcx';
+    const isFut = activeSym==='nvda'||activeSym==='amd'||activeSym==='eth'||activeSym==='sol'||activeSym==='aave'||activeSym==='btcf'||activeSym==='tsla'||activeSym==='nbis'||activeSym==='asts'||activeSym==='app'||activeSym==='soxl'||activeSym==='crcl';
     const patch = isFut
       ? {futures_close_requested:true,futures_close_requested_at:new Date().toISOString(),futures_close_symbol:SOURCES[activeSym].sym}
       : {close_requested:true,close_requested_at:new Date().toISOString(),close_symbol:SOURCES[activeSym].sym};
@@ -1156,7 +1175,7 @@ async function doClose(){
 async function doForceTrail(){
   if(!botData?.position)return;
   try{
-    const isFut = activeSym==='nvda'||activeSym==='amd'||activeSym==='eth'||activeSym==='sol'||activeSym==='aave'||activeSym==='btcf'||activeSym==='tsla'||activeSym==='nbis'||activeSym==='pltr'||activeSym==='asts'||activeSym==='spcx';
+    const isFut = activeSym==='nvda'||activeSym==='amd'||activeSym==='eth'||activeSym==='sol'||activeSym==='aave'||activeSym==='btcf'||activeSym==='tsla'||activeSym==='nbis'||activeSym==='asts'||activeSym==='app'||activeSym==='soxl'||activeSym==='crcl';
     const patch = isFut
       ? {futures_force_trail:true,futures_force_trail_at:new Date().toISOString(),futures_force_trail_symbol:SOURCES[activeSym].sym}
       : {force_trail:true,force_trail_at:new Date().toISOString(),force_trail_symbol:SOURCES[activeSym].sym};
@@ -1310,7 +1329,7 @@ function renderMU(d){
 }
 
 function openSettings(){
-  const isFut = activeSym==='nvda'||activeSym==='amd'||activeSym==='eth'||activeSym==='sol'||activeSym==='aave'||activeSym==='btcf'||activeSym==='tsla'||activeSym==='nbis'||activeSym==='pltr'||activeSym==='asts'||activeSym==='spcx';
+  const isFut = activeSym==='nvda'||activeSym==='amd'||activeSym==='eth'||activeSym==='sol'||activeSym==='aave'||activeSym==='btcf'||activeSym==='tsla'||activeSym==='nbis'||activeSym==='asts'||activeSym==='app'||activeSym==='soxl'||activeSym==='crcl';
   const levSel = qs('#cfg-lev');
   levSel.innerHTML = '';
   const opts = isFut
@@ -1331,7 +1350,7 @@ function closeSettings(){qs('#settings-overlay').classList.remove('open');}
 async function saveSettings(){
   const lev=parseFloat(qs('#cfg-lev').value);
   const paused=qs('#cfg-pause').value==='true';
-  const isFut = activeSym==='nvda'||activeSym==='amd'||activeSym==='eth'||activeSym==='sol'||activeSym==='aave'||activeSym==='btcf'||activeSym==='tsla'||activeSym==='nbis'||activeSym==='pltr'||activeSym==='asts'||activeSym==='spcx';
+  const isFut = activeSym==='nvda'||activeSym==='amd'||activeSym==='eth'||activeSym==='sol'||activeSym==='aave'||activeSym==='btcf'||activeSym==='tsla'||activeSym==='nbis'||activeSym==='asts'||activeSym==='app'||activeSym==='soxl'||activeSym==='crcl';
   const validLevs = isFut ? [5,7,10,12,15,20] : [3,4,5];
   if(!validLevs.includes(lev)){alert('Invalid leverage for this mode');return;}
   try{
@@ -1385,10 +1404,29 @@ autoSelectActiveSymbol();
 fetchManual();
 fetchMU();
 setInterval(fetchData,REFRESH_MS);
+
+// ── ATR health badges (weekly-refreshed backend data, cheap to poll) ──────────
+const ATR_BADGE_SYMS = ['nbis','amd','app','soxl','crcl','asts','tsla'];
+async function fetchAtrBadges(){
+  await Promise.all(ATR_BADGE_SYMS.map(async k=>{
+    try{
+      const r = await fetch(SOURCES[k].api+'?t='+Date.now(),{cache:'no-store'});
+      if(!r.ok) return;
+      const d = await r.json();
+      const h = d.atr_health;
+      const el = qs('#atr-badge-'+k);
+      if(!el) return;
+      el.className = 'atr-badge' + (h && h.status==='warning' ? ' warning' : h && h.status==='watch' ? ' watch' : '');
+      el.title = h && h.status!=='ok' ? `ATR pass rate ${h.pass_rate}% (configured ${h.configured_min_atr}, weekly avg ${h.baseline_atr}) — worth reviewing` : '';
+    }catch(e){}
+  }));
+}
+fetchAtrBadges();
+setInterval(fetchAtrBadges, 5*60*1000);  // every 5 min — the underlying data only changes weekly
 setInterval(fetchMU,30000);
 
 // ── Active positions badge ────────────────────────────────────────────────────
-const POS_TICKERS = ['nvda','amd','tsla','nbis','pltr','asts','spcx','eth','btc','sol','aave','coin','doge','mstr','pepe','rklb','mu'];
+const POS_TICKERS = ['nvda','amd','tsla','nbis','asts','app','soxl','crcl','eth','btc','sol','aave','coin','doge','mstr','pepe','rklb','mu'];
 async function pollPositionsBadge(){
   try {
     const results = await Promise.all(POS_TICKERS.map(t =>
@@ -1418,11 +1456,11 @@ let calFetching = false;
 
 const CAL_MONTHS = ['January','February','March','April','May','June',
                     'July','August','September','October','November','December'];
-const CAL_SYMLABEL = {nvda:'NVDA',amd:'AMD',tsla:'TSLA',nbis:'NBIS',pltr:'PLTR',asts:'ASTS',spcx:'SPCX',btc:'BTC',btcf:'BTC',gold:'GOLD',eth:'ETH',sol:'SOL',aave:'AAVE'};
-const CAL_SYMCOLOR = {nvda:'#76b900',amd:'#ed1b2f',tsla:'#cc0000',nbis:'#00bcd4',pltr:'#5a00ff',asts:'#00b4ff',spcx:'#e2e8f0',btc:'#f7931a',btcf:'#f7931a',gold:'#ffd700',eth:'#627eea',sol:'#9945ff',aave:'#b6509e'};
+const CAL_SYMLABEL = {nvda:'NVDA',amd:'AMD',tsla:'TSLA',nbis:'NBIS',asts:'ASTS',app:'APP',soxl:'SOXL',crcl:'CRCL',btc:'BTC',btcf:'BTC',gold:'GOLD',eth:'ETH',sol:'SOL',aave:'AAVE'};
+const CAL_SYMCOLOR = {nvda:'#76b900',amd:'#ed1b2f',tsla:'#cc0000',nbis:'#00bcd4',asts:'#00b4ff',app:'#e2e8f0',soxl:'#22c55e',crcl:'#3b82f6',btc:'#f7931a',btcf:'#f7931a',gold:'#ffd700',eth:'#627eea',sol:'#9945ff',aave:'#b6509e'};
 
 const CAL_SYM_MAP = {
-  'NVDAUSDT':'nvda','AMDUSDT':'amd','TSLAUSDT':'tsla','NBISUSDT':'nbis','PLTRUSDT':'pltr','ASTSUSDT':'asts','SPCXUSDT':'spcx',
+  'NVDAUSDT':'nvda','AMDUSDT':'amd','TSLAUSDT':'tsla','NBISUSDT':'nbis','ASTSUSDT':'asts','APPUSDT':'app','SOXLUSDT':'soxl','CRCLUSDT':'crcl',
   'ETHUSDT':'eth','SOLUSDT':'sol','AAVEUSDT':'aave','BTCUSDT':'btcf','PAXGUSDT':'gold'
 };
 

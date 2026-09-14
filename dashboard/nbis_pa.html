@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="NBIS PA">
+<title>Sentinel</title>
+<style>
+:root{
+  --bg:#0b0e14; --card:#141822; --card2:#1b202c; --border:#262c3a;
+  --text:#e8eaf0; --muted:#8a90a3; --accent:#6366f1;
+  --green:#22c55e; --red:#ef4444; --yellow:#f59e0b;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;padding-bottom:40px}
+#header{padding:16px 16px 12px;padding-top:max(16px,env(safe-area-inset-top));border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg);z-index:10}
+.hdr-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.hdr-title{font-size:16px;font-weight:800;display:flex;align-items:center;gap:6px}
+.live-dot{width:7px;height:7px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.hdr-price{font-size:26px;font-weight:800}
+.card{background:var(--card);border:1px solid var(--border);border-radius:14px;margin:12px 16px;padding:16px}
+.card-title{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:10px}
+.pos-badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:800}
+.pos-badge.long{background:rgba(34,197,94,.15);color:var(--green)}
+.pos-badge.short{background:rgba(239,68,68,.15);color:var(--red)}
+.pos-badge.flat{background:rgba(138,144,163,.15);color:var(--muted)}
+.metrics{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+.metric{background:var(--card2);border-radius:10px;padding:10px}
+.metric .label{font-size:10px;color:var(--muted);text-transform:uppercase;margin-bottom:3px}
+.metric .val{font-size:16px;font-weight:700}
+.stats-row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.stat{background:var(--card2);border-radius:10px;padding:12px 8px;text-align:center}
+.stat .num{font-size:20px;font-weight:800}
+.stat .lbl{font-size:10px;color:var(--muted);margin-top:2px}
+.pos{color:var(--green)} .neg{color:var(--red)}
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
+.cal-dow{font-size:9px;color:var(--muted);text-align:center;padding-bottom:4px;font-weight:700}
+.cal-day{background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:6px 4px;min-height:52px;position:relative}
+.cal-day.profit{border-color:rgba(34,197,94,.4);background:rgba(34,197,94,.08)}
+.cal-day.loss{border-color:rgba(239,68,68,.4);background:rgba(239,68,68,.08)}
+.cal-day.empty{background:transparent;border-color:transparent}
+.cal-day-num{font-size:9px;font-weight:700;color:var(--muted)}
+.cal-day-pnl{font-size:10px;font-weight:800;margin-top:4px}
+.cal-nav{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.cal-nav-btn{background:var(--card2);border:1px solid var(--border);color:var(--text);border-radius:8px;width:28px;height:28px;font-size:14px}
+.cal-month-label{font-size:13px;font-weight:700}
+.trade-row{display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid var(--border)}
+.trade-row:last-child{border-bottom:none}
+.loading{text-align:center;padding:40px 16px;color:var(--muted);font-size:13px}
+.empty-msg{text-align:center;padding:20px;color:var(--muted);font-size:13px}
+.ticker-tabs{display:flex;gap:8px;margin-top:10px}
+.ticker-tab{flex:1;background:var(--card2);border:1px solid var(--border);color:var(--muted);border-radius:10px;padding:8px 0;text-align:center;font-size:12px;font-weight:700}
+.ticker-tab.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.strategy-note{font-size:11px;color:var(--muted);margin-top:8px}
+</style>
+</head>
+<body>
+
+<div id="header">
+  <div class="hdr-top">
+    <div class="hdr-title">📊 Sentinel <div class="live-dot" id="live-dot"></div></div>
+    <button class="cal-nav-btn" onclick="loadAll()" style="width:auto;padding:0 10px;">🔄</button>
+  </div>
+  <div class="hdr-price" id="hdr-price">—</div>
+  <div class="ticker-tabs" id="ticker-tabs"></div>
+</div>
+
+<div id="content">
+  <div class="loading" id="loading">Loading…</div>
+
+  <div id="main-content" style="display:none">
+    <div class="card">
+      <div class="card-title">Current Position</div>
+      <div id="position-display"></div>
+      <div class="strategy-note" id="strategy-note"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Performance (All-Time)</div>
+      <div class="stats-row">
+        <div class="stat"><div class="num" id="stat-total">—</div><div class="lbl">Trades</div></div>
+        <div class="stat"><div class="num" id="stat-wr">—</div><div class="lbl">Win Rate</div></div>
+        <div class="stat"><div class="num" id="stat-pnl">—</div><div class="lbl">Net P&amp;L</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Daily P&amp;L Calendar</div>
+      <div class="cal-nav">
+        <button class="cal-nav-btn" onclick="calShift(-1)">‹</button>
+        <div class="cal-month-label" id="cal-month-label">—</div>
+        <button class="cal-nav-btn" onclick="calShift(1)">›</button>
+      </div>
+      <div class="cal-grid" id="cal-dow-row"></div>
+      <div class="cal-grid" id="cal-grid" style="margin-top:4px"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Recent Trades</div>
+      <div id="trade-history"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '/data_nbis_pa.json';
+let _raw = null;
+let _data = null;
+let _activeTicker = null;
+let _calYear, _calMonth;
+
+function fmtPrice(p){ return p!=null ? '$'+Number(p).toFixed(2) : '—'; }
+function fmtPnl(p){ if(p==null) return '—'; const s = p>=0?'+':''; return s+'$'+Number(p).toFixed(2); }
+
+async function loadAll(){
+  try{
+    const r = await fetch(API + '?t=' + Date.now(), {cache:'no-store'});
+    const d = await r.json();
+    _raw = d;
+    document.getElementById('live-dot').style.background = 'var(--green)';
+    const tickers = Object.keys(d.symbols || {});
+    if (!_activeTicker || !tickers.includes(_activeTicker)) {
+      _activeTicker = tickers[0];
+    }
+    renderTabs(tickers);
+    render(d.symbols[_activeTicker]);
+  }catch(e){
+    document.getElementById('live-dot').style.background = 'var(--red)';
+  }
+}
+
+function renderTabs(tickers){
+  const el = document.getElementById('ticker-tabs');
+  el.innerHTML = tickers.map(t => `<div class="ticker-tab ${t===_activeTicker?'active':''}" onclick="selectTicker('${t}')">${t}</div>`).join('');
+}
+
+function selectTicker(t){
+  _activeTicker = t;
+  if (_raw) {
+    renderTabs(Object.keys(_raw.symbols || {}));
+    render(_raw.symbols[t]);
+  }
+}
+
+function render(d){
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('main-content').style.display = 'block';
+  _data = d;
+
+  document.getElementById('hdr-price').textContent = fmtPrice(d.price);
+
+  const pos = d.position;
+  const posEl = document.getElementById('position-display');
+  if (pos) {
+    const cls = pos.toLowerCase();
+    const pnlCls = (d.unrealized_pnl||0) >= 0 ? 'pos' : 'neg';
+    posEl.innerHTML = `
+      <span class="pos-badge ${cls}">${pos}</span>
+      <div class="metrics">
+        <div class="metric"><div class="label">Entry</div><div class="val">${fmtPrice(d.entry_price)}</div></div>
+        <div class="metric"><div class="label">Unrealized P&amp;L</div><div class="val ${pnlCls}">${fmtPnl(d.unrealized_pnl)}</div></div>
+        <div class="metric"><div class="label">Stop</div><div class="val" style="color:var(--red)">${fmtPrice(d.stop)}</div></div>
+        <div class="metric"><div class="label">Target</div><div class="val" style="color:var(--green)">${fmtPrice(d.target)}</div></div>
+      </div>
+      <div style="margin-top:10px;font-size:11px;color:var(--muted)">Size: $${d.trade_amount} @ ${d.leverage}x</div>
+    `;
+  } else {
+    posEl.innerHTML = `<span class="pos-badge flat">FLAT</span><div style="margin-top:10px;font-size:12px;color:var(--muted)">No open position — waiting for a valid setup</div>`;
+  }
+  const noteEl = document.getElementById('strategy-note');
+  if (noteEl) noteEl.textContent = d.strategy_label ? `Strategy: ${d.strategy_label}` : '';
+
+  const perf = d.performance || {};
+  document.getElementById('stat-total').textContent = perf.total || 0;
+  document.getElementById('stat-wr').textContent = (perf.win_rate!=null ? perf.win_rate.toFixed(1) : '0.0') + '%';
+  const netEl = document.getElementById('stat-pnl');
+  netEl.textContent = fmtPnl(perf.net_pnl);
+  netEl.className = 'num ' + ((perf.net_pnl||0)>=0 ? 'pos' : 'neg');
+
+  if (_calYear === undefined) {
+    const now = new Date();
+    _calYear = now.getFullYear();
+    _calMonth = now.getMonth();
+  }
+  buildCalendar();
+
+  const trades = d.trades || [];
+  const histEl = document.getElementById('trade-history');
+  if (trades.length === 0) {
+    histEl.innerHTML = '<div class="empty-msg">No trades yet</div>';
+  } else {
+    histEl.innerHTML = trades.map(t => `
+      <div class="trade-row">
+        <div>
+          <span class="pos-badge ${t.side.toLowerCase()}" style="font-size:10px;">${t.side}</span>
+          <span style="font-size:12px;color:var(--muted);margin-left:6px">${(t.closed_at||'').slice(0,10)}</span>
+        </div>
+        <div style="font-weight:700" class="${t.pnl>=0?'pos':'neg'}">${fmtPnl(t.pnl)}</div>
+      </div>
+    `).join('');
+  }
+}
+
+function calShift(delta){
+  _calMonth += delta;
+  if (_calMonth < 0) { _calMonth = 11; _calYear--; }
+  if (_calMonth > 11) { _calMonth = 0; _calYear++; }
+  buildCalendar();
+}
+
+function buildCalendar(){
+  if (!_data) return;
+  const dailyPnl = _data.daily_pnl || {};
+  const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  document.getElementById('cal-month-label').textContent = `${monthNames[_calMonth]} ${_calYear}`;
+
+  const dowRow = document.getElementById('cal-dow-row');
+  dowRow.innerHTML = ['S','M','T','W','T','F','S'].map(d => `<div class="cal-dow">${d}</div>`).join('');
+
+  const firstDay = new Date(_calYear, _calMonth, 1).getDay();
+  const daysInMonth = new Date(_calYear, _calMonth+1, 0).getDate();
+  const todayStr = new Date().toISOString().slice(0,10);
+
+  let html = '';
+  for (let i=0; i<firstDay; i++) html += '<div class="cal-day empty"></div>';
+  for (let day=1; day<=daysInMonth; day++){
+    const dateStr = `${_calYear}-${String(_calMonth+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+    const pnl = dailyPnl[dateStr];
+    let cls = 'cal-day';
+    if (pnl !== undefined) cls += pnl >= 0 ? ' profit' : ' loss';
+    html += `<div class="${cls}">
+      <div class="cal-day-num">${day}</div>
+      ${pnl !== undefined ? `<div class="cal-day-pnl ${pnl>=0?'pos':'neg'}">${fmtPnl(pnl)}</div>` : ''}
+    </div>`;
+  }
+  document.getElementById('cal-grid').innerHTML = html;
+}
+
+loadAll();
+setInterval(loadAll, 15000);
+</script>
+</body>
+</html>

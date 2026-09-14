@@ -57,10 +57,17 @@ ALLOWED_LEVERAGES         = {3.0, 4.0, 5.0, 10.0, 15.0, 20.0, 30.0, 50.0}
 # ── Overnight Strategy Config (MU) ────────────────────────────────────────────
 OVERNIGHT_CFG = {
     'symbol':   'MUUSDT',
-    'amount':   15.0,
-    'leverage': 20,
-    'sl_pct':   0.035,   # 3.5% hard stop — ~1 ATR buffer at 20x
+    'amount':   40.0,
+    'leverage': 40,
+    'sl_pct':   0.035,   # 3.5% hard stop — at 40x this is ~143% of collateral per
+                         # stop-out (backtested), not capped at the $40 nominal size
 }
+
+# Major US market holidays (month, day) — 2026 dates. Shared by is_us_market_open()
+# and the MU overnight entry check — MUUSDT keeps trading on Binance 24/7 even when
+# NASDAQ is shut, so without this check the overnight strategy would enter/exit
+# against a synthetic price with no real underlying market behind it.
+US_MARKET_HOLIDAYS = {(1,1),(1,19),(2,16),(4,3),(5,25),(7,4),(9,7),(11,26),(12,25)}
 
 try:
     from zoneinfo import ZoneInfo as _ZI
@@ -97,13 +104,72 @@ SYMBOLS_CONFIG = {
     'AMDUSDT': {
         'base': 'AMD',
         'dashboard_file': 'data_futures_amd.json',
-        'min_atr': 2.0,
+        'min_atr': 1.80,
         'trade_amount': 40.0,
+        'max_loss_pct': 0.35,
+        'market_hours_only': True,
+        'one_way': True,
+        'leverage': 25,
+        'skip_margin_type': True,
+        'daily_profit_lock': 6.0,
+        'short_only': True,
+        'rsi_long_min': 30,
+        'rsi_long_max': 60,
+        'rsi_short_min': 35,
+        'rsi_short_max': 75,
+        'pullback_zone_pct': 0.030,
+        'trail_dist_atr': 0.20,
+    },
+    'APPUSDT': {
+        'base': 'APP',
+        'dashboard_file': 'data_futures_app.json',
+        'min_atr': 1.0,
+        'trade_amount': 30.0,
         'max_loss_pct': 0.50,
         'market_hours_only': True,
         'one_way': True,
         'leverage': 25,
         'skip_margin_type': True,
+        'daily_profit_lock': 5.0,
+        'trend_continuation_enabled': True,
+        'rsi_long_min': 25,
+        'rsi_long_max': 65,
+        'rsi_short_min': 35,
+        'rsi_short_max': 75,
+        'pullback_zone_pct': 0.030,
+        'trail_dist_atr': 0.20,
+    },
+    'CRCLUSDT': {
+        'base': 'CRCL',
+        'dashboard_file': 'data_futures_crcl.json',
+        'min_atr': 0.75,
+        'trade_amount': 50.0,
+        'max_loss_pct': 0.35,
+        'market_hours_only': True,
+        'one_way': True,
+        'leverage': 40,
+        'skip_margin_type': True,
+        'daily_profit_lock': 6.0,
+        'trend_continuation_enabled': True,
+        'rsi_long_min': 25,
+        'rsi_long_max': 65,
+        'rsi_short_min': 35,
+        'rsi_short_max': 75,
+        'pullback_zone_pct': 0.030,
+        'trail_dist_atr': 0.20,
+    },
+    'SOXLUSDT': {
+        'base': 'SOXL',
+        'dashboard_file': 'data_futures_soxl.json',
+        'min_atr': 0.8,
+        'trade_amount': 20.0,
+        'max_loss_pct': 0.35,
+        'market_hours_only': True,
+        'one_way': True,
+        'leverage': 15,
+        'skip_margin_type': True,
+        'daily_profit_lock': 5.0,
+        'trend_continuation_enabled': True,
         'rsi_long_min': 25,
         'rsi_long_max': 65,
         'rsi_short_min': 35,
@@ -114,87 +180,61 @@ SYMBOLS_CONFIG = {
     'TSLAUSDT': {
         'base': 'TSLA',
         'dashboard_file': 'data_futures_tsla.json',
-        'min_atr': 1.5,
+        'min_atr': 0.95,
         'trade_amount': 40.0,
         'max_loss_pct': 0.35,
         'market_hours_only': True,
         'one_way': True,
         'leverage': 25,
         'skip_margin_type': True,
-        'rsi_long_min': 25,
-        'rsi_long_max': 68,
-        'rsi_short_min': 20,
-        'rsi_short_max': 70,
+        'daily_profit_lock': 2.5,
+        'trend_continuation_enabled': True,
+        'breakout_enabled': True,
+        'rsi_long_min': 27,
+        'rsi_long_max': 66,
+        'rsi_short_min': 22,
+        'rsi_short_max': 68,
         'pullback_zone_pct': 0.030,
         'trail_dist_atr': 0.20,
     },
     'NBISUSDT': {
         'base': 'NBIS',
         'dashboard_file': 'data_futures_nbis.json',
-        'min_atr': 2.5,
-        'trade_amount': 40.0,
+        'min_atr': 1.40,
+        'trade_amount': 70.0,
         'max_loss_pct': 0.50,
         'market_hours_only': True,
         'one_way': True,
         'leverage': 25,
         'skip_margin_type': True,
+        'daily_profit_lock': 7.0,
+        'trend_continuation_enabled': True,
         'rsi_long_min': 25,
         'rsi_long_max': 65,
         'rsi_short_min': 20,
         'rsi_short_max': 70,
         'pullback_zone_pct': 0.042,
         'trail_dist_atr': 0.20,
-        'long_only': True,
-    },
-    'PLTRUSDT': {
-        'base': 'PLTR',
-        'dashboard_file': 'data_futures_pltr.json',
-        'min_atr': 0.8,
-        'trade_amount': 40.0,
-        'max_loss_pct': 0.50,
-        'market_hours_only': True,
-        'one_way': True,
-        'leverage': 20,
-        'skip_margin_type': True,
-        'rsi_long_min': 25,
-        'rsi_long_max': 65,
-        'rsi_short_min': 20,
-        'rsi_short_max': 70,
-        'pullback_zone_pct': 0.030,
-        'trail_dist_atr': 0.20,
     },
     'ASTSUSDT': {
         'base': 'ASTS',
         'dashboard_file': 'data_futures_asts.json',
-        'min_atr': 0.5,
+        'min_atr': 0.30,
         'trade_amount': 40.0,
-        'max_loss_pct': 0.50,
+        'max_loss_pct': 0.35,
         'market_hours_only': True,
+        'entry_window_et': (9, 45, 11, 0),
         'one_way': True,
         'leverage': 20,
         'skip_margin_type': True,
+        'daily_profit_lock': 5.0,
+        'trend_continuation_enabled': True,
+        'breakout_enabled': True,
         'rsi_long_min': 25,
         'rsi_long_max': 65,
         'rsi_short_min': 25,
         'rsi_short_max': 75,
         'pullback_zone_pct': 0.040,
-        'trail_dist_atr': 0.20,
-    },
-    'SPCXUSDT': {
-        'base': 'SPCX',
-        'dashboard_file': 'data_futures_spcx.json',
-        'min_atr': 1.0,
-        'trade_amount': 40.0,
-        'max_loss_pct': 0.50,
-        'market_hours_only': True,
-        'one_way': True,
-        'leverage': 25,
-        'skip_margin_type': True,
-        'rsi_long_min': 25,
-        'rsi_long_max': 65,
-        'rsi_short_min': 25,
-        'rsi_short_max': 75,
-        'pullback_zone_pct': 0.035,
         'trail_dist_atr': 0.20,
     },
     'ETHUSDT': {
@@ -227,7 +267,12 @@ SYMBOLS_CONFIG = {
         'skip_margin_type': True,
     },
 }
-TRADING_SYMBOLS = ['NBISUSDT', 'AMDUSDT', 'SPCXUSDT', 'ASTSUSDT', 'TSLAUSDT', 'PLTRUSDT']
+TRADING_SYMBOLS = ['NBISUSDT', 'AMDUSDT', 'APPUSDT', 'SOXLUSDT', 'CRCLUSDT', 'ASTSUSDT', 'TSLAUSDT']
+
+# Correlated pairs — skip entry in symbol B if symbol A already has an open trade.
+# Add pairs here when you observe two symbols that move lockstep and you want to cap
+# sector concentration. Empty by default — all symbols trade independently.
+CORR_GROUPS: list[set] = []
 
 # ── Strategy Parameters ───────────────────────────────────────────────────────
 ADX_MIN           = 25.0
@@ -237,6 +282,24 @@ RSI_LONG_MIN      = 30
 RSI_LONG_MAX      = 62
 RSI_SHORT_MIN     = 38
 RSI_SHORT_MAX     = 70
+
+# Donchian breakout entry — opt-in per symbol via SYMBOLS_CONFIG[symbol]['breakout_enabled'].
+# Runs alongside (not instead of) the pullback-to-EMA21 entry above: whichever
+# condition is met first opens the trade. Validated by backtest on ASTS/TSLA
+# full history (Sep 2026) — similar win rate to pullback with far fewer trades,
+# and specifically profitable on TSLA where pullback-only was a net loser.
+DC_PERIOD = 20
+
+# ── Daily profit lock ─────────────────────────────────────────────────────────
+# Once a symbol has already banked this much realized P&L today, further
+# entries that same day require a much stronger signal (confidence >= this
+# threshold, which needs every confirmation — volume, RSI sweet spot, and
+# EMA position — to align, vs. the ~70 baseline for a plain valid setup).
+# Protects a day's gain from being given back on a marginal follow-up trade
+# rather than stopping the ticker outright. Per-symbol override via
+# SYMBOLS_CONFIG[symbol]['daily_profit_lock'].
+DAILY_PROFIT_LOCK_DEFAULT    = 5.0
+DAILY_PROFIT_LOCK_CONFIDENCE = 85
 
 # ── Trail Parameters ──────────────────────────────────────────────────────────
 TRAIL_ACTIVATE_ATR = 0.75
@@ -362,6 +425,28 @@ def load_trade_log() -> list:
     except Exception as e:
         logger.warning(f'load_trade_log: {e}')
         return []
+
+def get_daily_realized_pnl(symbol: str) -> float:
+    """Sum of this symbol's closed-trade P&L for the current ET calendar day.
+    Used to gate further entries once a ticker has already banked a solid
+    profit today — protects the day's gain from being given back on a
+    marginal follow-up trade instead of stopping the ticker outright."""
+    today_et = _et_now().date()
+    total = 0.0
+    for t in load_trade_log():
+        if t.get('symbol') != symbol or t.get('dust'):
+            continue
+        closed_at = t.get('closed_at')
+        if not closed_at:
+            continue
+        try:
+            dt = datetime.fromisoformat(closed_at.replace('Z', '+00:00'))
+            dt_et = dt.astimezone(_ET_TZ) if _ET_TZ else dt
+            if dt_et.date() == today_et:
+                total += float(t.get('pnl', 0))
+        except Exception:
+            continue
+    return round(total, 2)
 
 def mask(v: str, s: int = 6, e: int = 4) -> str:
     if not v: return 'MISSING'
@@ -607,7 +692,189 @@ def get_market_data(symbol: str) -> pd.DataFrame:
     df['rsi']     = ta.momentum.RSIIndicator(df['close'], window=14).rsi()
     df['atr']     = ta.volatility.AverageTrueRange(df['high'], df['low'], df['close'], window=14).average_true_range()
     df['vol_ma']  = df['volume'].rolling(20).mean()
+    # Donchian channel (prior DC_PERIOD bars, excluding the current one) — backs
+    # the opt-in breakout entry. shift(1) so today's bar can't see its own high/low.
+    df['dc_upper'] = df['high'].rolling(DC_PERIOD).max().shift(1)
+    df['dc_lower'] = df['low'].rolling(DC_PERIOD).min().shift(1)
     return df
+
+ATR_HEALTH_INTERVAL_DAYS = 7   # re-check once a week — daily is too noisy/short-window to trust
+
+def _atr_pass_rate_for_symbol(symbol: str) -> dict:
+    """One-off diagnostic fetch (7 days of 1H bars) — read-only, never used
+    for trading decisions. Reports what fraction of the last week's hourly
+    windows would have cleared this symbol's configured min_atr, so a stale
+    threshold (the NBIS problem — 2.5 configured while real ATR settled near
+    1.5, blocking most hours) shows up as a flag instead of silently
+    starving the ticker of trades until someone happens to dig in manually."""
+    try:
+        klines = binance_futures_public('/fapi/v1/klines',
+                                        {'symbol': symbol, 'interval': '1h', 'limit': 24 * 7 + 14})
+        df = pd.DataFrame(klines, columns=[
+            'time','open','high','low','close','volume',
+            'close_time','quote_volume','trades','taker_base','taker_quote','ignore',
+        ])
+        for col in ('high','low','close'):
+            df[col] = df[col].astype(float)
+        atr_series = ta.volatility.AverageTrueRange(
+            df['high'], df['low'], df['close'], window=14).average_true_range().dropna()
+        if len(atr_series) < 20:
+            return {'pass_rate': None, 'baseline_atr': None, 'status': 'unknown'}
+
+        static_value = SYMBOLS_CONFIG[symbol]['min_atr']
+        baseline  = round(float(atr_series.mean()), 4)
+        pass_rate = round(float((atr_series >= static_value).mean() * 100), 1)
+        status    = 'warning' if pass_rate < 50 else 'watch' if pass_rate < 65 else 'ok'
+        return {'pass_rate': pass_rate, 'baseline_atr': baseline,
+                'configured_min_atr': static_value, 'status': status,
+                'checked_at': now_utc_iso()}
+    except Exception as e:
+        logger.warning(f'atr_health [{symbol}]: {e}')
+        return {'pass_rate': None, 'baseline_atr': None, 'status': 'unknown'}
+
+def run_weekly_atr_health_check() -> None:
+    """Gate: only actually runs once every ATR_HEALTH_INTERVAL_DAYS. Safe to
+    call every main-loop cycle. Never touches trading logic — just refreshes
+    state['runtime']['atr_health'][symbol] and pings Discord with a summary
+    when any ticker needs a manual min_atr review."""
+    last = state['runtime'].get('last_atr_health_check')
+    if last:
+        try:
+            age_days = (datetime.now(timezone.utc) -
+                        datetime.fromisoformat(last.replace('Z', '+00:00'))).days
+        except Exception:
+            age_days = ATR_HEALTH_INTERVAL_DAYS
+        if age_days < ATR_HEALTH_INTERVAL_DAYS:
+            return
+
+    results = {}
+    flagged = []
+    for symbol in TRADING_SYMBOLS:
+        health = _atr_pass_rate_for_symbol(symbol)
+        results[symbol] = health
+        if health['status'] in ('warning', 'watch'):
+            base = SYMBOLS_CONFIG[symbol]['base']
+            flagged.append(f"{'🔴' if health['status']=='warning' else '🟡'} {base}: "
+                            f"{health['pass_rate']:.0f}% pass rate "
+                            f"(configured {health['configured_min_atr']:.2f}, "
+                            f"weekly avg ATR {health['baseline_atr']:.2f})")
+
+    state['runtime']['atr_health'] = results
+    state['runtime']['last_atr_health_check'] = now_utc_iso()
+    save_state()
+
+    if flagged:
+        send_telegram(
+            '📊 <b>Weekly ATR Review</b>\n' + '\n'.join(flagged) +
+            '\n\nThese tickers\' min_atr may be stale — worth a manual look.'
+        )
+    else:
+        logger.info('📊 Weekly ATR review: all tickers healthy, no flags')
+
+
+# ── Weekly trade review — read-only self-analysis, no auto-tuning ──────────
+# Same idea as the ATR health check above and the equivalent review already
+# running on Sentinel: bucket every closed trade (now carrying rich entry
+# context since record_closed_trade was enriched) by symbol/entry-type/
+# side/exit-reason/hour/weekday/hold-time and flag whichever conditions are
+# dragging down that symbol's win rate or losing money outright. Purely
+# informational — a human decides what, if anything, to change.
+TRADE_REVIEW_INTERVAL_DAYS = 7
+TRADE_REVIEW_MIN_TRADES    = 10
+TRADE_REVIEW_MIN_BUCKET_N  = 5
+
+def _apex_bucket_stats(records: list, key_fn, min_n: int = TRADE_REVIEW_MIN_BUCKET_N) -> dict:
+    buckets = {}
+    for r in records:
+        k = key_fn(r)
+        if k is None:
+            continue
+        buckets.setdefault(k, []).append(r)
+    stats = {}
+    for k, rs in buckets.items():
+        if len(rs) < min_n:
+            continue
+        n = len(rs)
+        wins = len([r for r in rs if r.get('win')])
+        net = sum(float(r.get('pnl', 0)) for r in rs)
+        r_mults = [r['r_multiple'] for r in rs if r.get('r_multiple') is not None]
+        avg_r = sum(r_mults) / len(r_mults) if r_mults else None
+        stats[k] = {'n': n, 'win_rate': round(wins / n * 100, 1), 'net_pnl': round(net, 2),
+                    'avg_r': round(avg_r, 2) if avg_r is not None else None}
+    return stats
+
+def _apex_hour_bucket(r):
+    h = r.get('entry_hour_utc')
+    if h is None: return None
+    if 0 <= h < 6:   return 'night (00-06 UTC)'
+    if 6 <= h < 12:  return 'morning (06-12 UTC)'
+    if 12 <= h < 18: return 'afternoon (12-18 UTC)'
+    return 'evening (18-24 UTC)'
+
+def _apex_hold_bucket(r):
+    hm = r.get('hold_minutes')
+    if hm is None: return None
+    if hm < 60:   return 'quick (<1h)'
+    if hm < 240:  return 'medium (1-4h)'
+    return 'long (4h+)'
+
+def run_weekly_trade_review() -> None:
+    last = state['runtime'].get('last_trade_review')
+    if last:
+        try:
+            age_days = (datetime.now(timezone.utc) -
+                        datetime.fromisoformat(last.replace('Z', '+00:00'))).days
+        except Exception:
+            age_days = TRADE_REVIEW_INTERVAL_DAYS
+        if age_days < TRADE_REVIEW_INTERVAL_DAYS:
+            return
+
+    state['runtime']['last_trade_review'] = now_utc_iso()
+    save_state()
+
+    records = [t for t in load_trade_log() if not t.get('dust')]
+    if not records:
+        logger.info('📋 Weekly trade review: no trades logged yet')
+        return
+
+    for symbol in sorted(set(TRADING_SYMBOLS) & {r['symbol'] for r in records if r.get('symbol')}):
+        sym_records = [r for r in records if r['symbol'] == symbol]
+        n = len(sym_records)
+        base = SYMBOLS_CONFIG.get(symbol, {}).get('base', symbol)
+        if n < TRADE_REVIEW_MIN_TRADES:
+            logger.info(f'📋 [{base}] Weekly trade review skipped — only {n} trades logged so far')
+            continue
+
+        overall_wr  = len([r for r in sym_records if r.get('win')]) / n * 100
+        overall_net = sum(float(r.get('pnl', 0)) for r in sym_records)
+
+        bucket_groups = {
+            'Entry type':  _apex_bucket_stats(sym_records, lambda r: r.get('entry_type')),
+            'Hour of day': _apex_bucket_stats(sym_records, _apex_hour_bucket),
+            'Day of week': _apex_bucket_stats(sym_records, lambda r: r.get('entry_weekday')),
+            'Side':        _apex_bucket_stats(sym_records, lambda r: r.get('side')),
+            'Exit reason': _apex_bucket_stats(sym_records, lambda r: (r.get('exit_reason') or r.get('note') or '')[:20] or None),
+            'Hold time':   _apex_bucket_stats(sym_records, _apex_hold_bucket),
+        }
+
+        flags = []
+        for group_name, stats in bucket_groups.items():
+            for bucket_name, s in stats.items():
+                if s['win_rate'] < overall_wr - 15 or s['net_pnl'] < 0:
+                    r_note = f", avgR={s['avg_r']:+.2f}" if s['avg_r'] is not None else ''
+                    flags.append(f"  • {group_name} = {bucket_name}: {s['n']} trades, "
+                                 f"{s['win_rate']}%W, net ${s['net_pnl']:+.2f}{r_note}")
+
+        if flags:
+            msg = (f'📊 <b>Weekly Trade Review — {base}</b>\n\n'
+                   f'Overall: {n} trades, {overall_wr:.1f}% win rate, net ${overall_net:+.2f}\n\n'
+                   f'Underperforming conditions worth a manual look:\n' + '\n'.join(flags))
+        else:
+            msg = (f'📊 <b>Weekly Trade Review — {base}</b>\n\n'
+                   f'Overall: {n} trades, {overall_wr:.1f}% win rate, net ${overall_net:+.2f}\n'
+                   f'No condition stands out as a consistent drag — looks healthy.')
+        send_telegram(msg)
+        logger.info(f'📋 [{base}] Weekly trade review sent ({len(flags)} flags)')
 
 def get_decision(symbol: str, df: pd.DataFrame) -> dict:
     c = df.iloc[-1]
@@ -624,6 +891,8 @@ def get_decision(symbol: str, df: pd.DataFrame) -> dict:
     lo      = float(c['low'])
     vol     = float(c['volume'])
     vol_ma  = float(c['vol_ma']) if not pd.isna(c['vol_ma']) else vol
+    dc_upper = float(c['dc_upper']) if not pd.isna(c['dc_upper']) else None
+    dc_lower = float(c['dc_lower']) if not pd.isna(c['dc_lower']) else None
     min_atr = SYMBOLS_CONFIG[symbol]['min_atr']
     cfg = SYMBOLS_CONFIG[symbol]
     rsi_long_min      = cfg.get('rsi_long_min',      RSI_LONG_MIN)
@@ -672,28 +941,70 @@ def get_decision(symbol: str, df: pd.DataFrame) -> dict:
     if trend == 'BEARISH' and trend4h == '4H BULLISH':
         return hold(f'BEARISH on 1H but 4H is BULLISH — counter-trend, skipping', trend)
 
+    vol_ok = vol >= vol_ma * 0.9   # require ≥90% of 20-bar average to enter
+
     if trend == 'BULLISH':
         dist_pct      = (price - ema21) / ema21
         in_zone       = 0 <= dist_pct <= pullback_zone_pct
         candle_dipped = lo <= ema21 * (1 + pullback_zone_pct)
         rsi_ok        = rsi_long_min <= rsi <= rsi_long_max
-        if in_zone and candle_dipped and rsi_ok:
+        if in_zone and candle_dipped and rsi_ok and vol_ok:
             conf = 70
             if adx > ADX_STRONG:             conf += 7
-            if vol > vol_ma * 0.8:           conf += 5
+            if vol >= vol_ma:                conf += 5   # above-average volume = stronger signal
             if 40 <= rsi <= 55:              conf += 5
             if float(p['close']) < ema21:    conf += 5
             return {
                 'action': 'LONG', 'confidence': min(conf, 90),
                 'regime': 'TRENDING', 'trend_direction': trend,
                 'reason': (f'Pullback to EMA21 in uptrend | ADX {adx:.1f} | RSI {rsi:.1f} | '
-                           f'dist {dist_pct*100:.2f}% above EMA21'),
+                           f'dist {dist_pct*100:.2f}% above EMA21 | vol {vol:.0f}/{vol_ma:.0f}'),
                 'indicators': snap,
             }
+        # ── Trend-continuation entry — opt-in per symbol ──────────────────────
+        # For stocks that run hard without ever pulling back to EMA21 (e.g. NBIS
+        # in a parabolic move), the pullback entry above can sit out an entire
+        # trending leg. This buys strength instead of dips: only fires when the
+        # clean pullback failed, but the trend is genuinely strong (ADX well
+        # above minimum, RSI showing real momentum, real volume behind it).
+        # Higher risk than a pullback entry (buying into strength, not a dip),
+        # so it's capped short of the most extreme overbought readings and
+        # tagged distinctly in the reason string for visibility.
+        if cfg.get('trend_continuation_enabled') and adx >= ADX_STRONG and vol_ok \
+                and 65 <= rsi <= 88 and dist_pct > pullback_zone_pct:
+            conf = 65
+            if adx > ADX_STRONG + 10:  conf += 10
+            if vol >= vol_ma * 1.2:    conf += 10
+            return {
+                'action': 'LONG', 'confidence': min(conf, 90),
+                'regime': 'TRENDING', 'trend_direction': trend,
+                'reason': (f'TREND CONTINUATION — no pullback, buying strength | ADX {adx:.1f} | '
+                           f'RSI {rsi:.1f} | dist {dist_pct*100:.2f}% above EMA21 | vol {vol:.0f}/{vol_ma:.0f}'),
+                'indicators': snap,
+            }
+
+        # ── Donchian breakout entry — opt-in per symbol, runs alongside the
+        # pullback entry above (see DC_PERIOD comment). Independent trigger:
+        # doesn't require a pullback at all, just a genuine close beyond the
+        # prior DC_PERIOD-bar range while the trend/ADX/4H filters already
+        # passed above.
+        if cfg.get('breakout_enabled') and dc_upper is not None and price > dc_upper and vol_ok:
+            conf = 68
+            if adx > ADX_STRONG:      conf += 10
+            if vol >= vol_ma * 1.2:   conf += 10
+            return {
+                'action': 'LONG', 'confidence': min(conf, 88),
+                'regime': 'TRENDING', 'trend_direction': trend,
+                'reason': (f'Donchian breakout above {DC_PERIOD}h high ${dc_upper:.4f} | ADX {adx:.1f} | '
+                           f'RSI {rsi:.1f} | vol {vol:.0f}/{vol_ma:.0f}'),
+                'indicators': snap,
+            }
+
         parts = []
         if not in_zone:       parts.append(f'price {dist_pct*100:.2f}% from EMA21 (need 0–1.8%)')
         if not candle_dipped: parts.append('candle low not near EMA21')
         if not rsi_ok:        parts.append(f'RSI {rsi:.1f} outside [{rsi_long_min}–{rsi_long_max}]')
+        if not vol_ok:        parts.append(f'vol {vol:.0f} < 90% of avg {vol_ma:.0f} — low-volume move')
         return hold(f'BULLISH — waiting: {", ".join(parts)}', trend)
 
     if trend == 'BEARISH':
@@ -701,29 +1012,52 @@ def get_decision(symbol: str, df: pd.DataFrame) -> dict:
         in_zone       = 0 <= dist_pct <= pullback_zone_pct
         candle_tapped = hi >= ema21 * (1 - pullback_zone_pct)
         rsi_ok        = rsi_short_min <= rsi <= rsi_short_max
-        if in_zone and candle_tapped and rsi_ok:
+        if in_zone and candle_tapped and rsi_ok and vol_ok:
             conf = 70
             if adx > ADX_STRONG:             conf += 7
-            if vol > vol_ma * 0.8:           conf += 5
+            if vol >= vol_ma:                conf += 5   # above-average volume = stronger signal
             if 45 <= rsi <= 60:              conf += 5
             if float(p['close']) > ema21:    conf += 5
             return {
                 'action': 'SHORT', 'confidence': min(conf, 90),
                 'regime': 'TRENDING', 'trend_direction': trend,
                 'reason': (f'Bounce to EMA21 in downtrend | ADX {adx:.1f} | RSI {rsi:.1f} | '
-                           f'dist {dist_pct*100:.2f}% below EMA21'),
+                           f'dist {dist_pct*100:.2f}% below EMA21 | vol {vol:.0f}/{vol_ma:.0f}'),
                 'indicators': snap,
             }
+
+        # ── Donchian breakout entry — opt-in per symbol, same as the BULLISH
+        # side above: independent trigger, no pullback required.
+        if cfg.get('breakout_enabled') and dc_lower is not None and price < dc_lower and vol_ok:
+            conf = 68
+            if adx > ADX_STRONG:      conf += 10
+            if vol >= vol_ma * 1.2:   conf += 10
+            return {
+                'action': 'SHORT', 'confidence': min(conf, 88),
+                'regime': 'TRENDING', 'trend_direction': trend,
+                'reason': (f'Donchian breakout below {DC_PERIOD}h low ${dc_lower:.4f} | ADX {adx:.1f} | '
+                           f'RSI {rsi:.1f} | vol {vol:.0f}/{vol_ma:.0f}'),
+                'indicators': snap,
+            }
+
         parts = []
         if not in_zone:       parts.append(f'price {dist_pct*100:.2f}% from EMA21 (need 0–1.8%)')
         if not candle_tapped: parts.append('candle high not near EMA21')
         if not rsi_ok:        parts.append(f'RSI {rsi:.1f} outside [{rsi_short_min}–{rsi_short_max}]')
+        if not vol_ok:        parts.append(f'vol {vol:.0f} < 90% of avg {vol_ma:.0f} — low-volume move')
         return hold(f'BEARISH — waiting: {", ".join(parts)}', trend)
 
     return hold('No actionable setup')
 
 
 # ── Trade Recording ───────────────────────────────────────────────────────────
+def _classify_entry_type(entry_reason: str) -> str:
+    r = (entry_reason or '').lower()
+    if 'donchian breakout' in r:    return 'breakout'
+    if 'trend continuation' in r:   return 'trend_continuation'
+    if 'pullback to ema21' in r or 'bounce to ema21' in r: return 'pullback'
+    return 'other'
+
 def record_closed_trade(symbol: str, side: str, entry_price: float, exit_price: float,
                         qty: float, reason: str, actual_fee: float = None) -> None:
     ss  = sym_state(symbol)
@@ -731,6 +1065,27 @@ def record_closed_trade(symbol: str, side: str, entry_price: float, exit_price: 
     pnl = round((exit_price - entry_price) * qty - fee, 6) if side == 'LONG' \
         else round((entry_price - exit_price) * qty - fee, 6)
     is_dust = qty < 0.1
+
+    opened_at = ss.get('trade_opened_at')
+    closed_at = now_utc_iso()
+    hold_minutes = None
+    try:
+        if opened_at:
+            od = datetime.fromisoformat(opened_at.replace('Z', '+00:00'))
+            cd = datetime.fromisoformat(closed_at.replace('Z', '+00:00'))
+            hold_minutes = round((cd - od).total_seconds() / 60, 1)
+    except Exception:
+        pass
+
+    collateral = safe_float(ss.get('active_trade_amount'), None)
+    max_loss_pct = SYMBOLS_CONFIG.get(symbol, {}).get('max_loss_pct')
+    r_multiple = None
+    if collateral and max_loss_pct:
+        max_loss_dollar = collateral * max_loss_pct
+        if max_loss_dollar > 0:
+            r_multiple = round(pnl / max_loss_dollar, 3)
+
+    entry_reason = ss.get('entry_reason', '')
     record = {
         'source':      'bot',
         'symbol':      symbol,
@@ -742,9 +1097,20 @@ def record_closed_trade(symbol: str, side: str, entry_price: float, exit_price: 
         'pnl':         pnl,
         'win':         pnl > 0,
         'dust':        is_dust,
-        'opened_at':   ss.get('trade_opened_at'),
-        'closed_at':   now_utc_iso(),
+        'opened_at':   opened_at,
+        'closed_at':   closed_at,
         'note':        reason[:120],
+        # entry context — carried from open_long/open_short, lets losing
+        # patterns be analyzed later (which entry type, indicators, time)
+        'entry_type':       _classify_entry_type(entry_reason),
+        'entry_reason':      entry_reason[:160],
+        'entry_confidence':  ss.get('entry_confidence'),
+        'entry_indicators':  ss.get('entry_indicators') or {},
+        'entry_hour_utc':    ss.get('entry_hour_utc'),
+        'entry_weekday':     ss.get('entry_weekday'),
+        'exit_reason':       reason[:120],
+        'hold_minutes':      hold_minutes,
+        'r_multiple':        r_multiple,
     }
     log = ss.get('closed_trades_log') or []
     log.append(record)
@@ -862,6 +1228,11 @@ def check_sl_trail(symbol: str, position: str, price: float) -> Tuple[bool, str]
     trail_atr_mult = SYMBOLS_CONFIG.get(symbol, {}).get('trail_dist_atr', 0.25)
     dyn_dist   = max(atr * trail_atr_mult, profit_dist * 0.18)
     trail_stop = best - dyn_dist if is_long else best + dyn_dist
+    # Breakeven floor: once trail activates never stop out at a loss
+    if is_long:
+        trail_stop = max(trail_stop, entry)
+    else:
+        trail_stop = min(trail_stop, entry)
     locked_pct = round((profit_dist - dyn_dist) / profit_dist * 100) if profit_dist > 0 else 0
     if (is_long and price <= trail_stop) or (not is_long and price >= trail_stop):
         return True, (f'📐 Trail stop hit | best={best:.4f} stop={trail_stop:.4f} '
@@ -897,7 +1268,7 @@ def build_trail_info(symbol: str, position: Optional[str]) -> dict:
 # ── Trade Execution ───────────────────────────────────────────────────────────
 SAME_DIR_COOLDOWN = 600  # 10 minutes
 
-def open_long(symbol: str, price: float, confidence: int, reason: str) -> bool:
+def open_long(symbol: str, price: float, confidence: int, reason: str, indicators: dict = None) -> bool:
     ss   = sym_state(symbol)
     base = SYMBOLS_CONFIG[symbol]['base']
     cfg  = SYMBOLS_CONFIG[symbol]
@@ -938,6 +1309,16 @@ def open_long(symbol: str, price: float, confidence: int, reason: str) -> bool:
         ss['active_qty']          = qty_filled
         init_trail(symbol, actual_price)
         atr = safe_float(ss.get('trail_atr'), 0)
+
+        # Entry context — carried through to the trade journal on close, so
+        # losing patterns can be analyzed later (which entry type, what the
+        # indicators looked like, what time it was).
+        now_ = datetime.now(timezone.utc)
+        ss['entry_reason']     = reason
+        ss['entry_confidence'] = confidence
+        ss['entry_indicators'] = indicators or {}
+        ss['entry_hour_utc']   = now_.hour
+        ss['entry_weekday']    = now_.strftime('%A')
 
         logger.info(f'✅ [{symbol}] LONG OPEN {qty_filled:.4f} {base} @ ${actual_price:.4f} fee=${fee_usdt:.4f}')
         send_telegram(
@@ -1000,7 +1381,7 @@ def close_long(symbol: str, price: float, reason: str) -> bool:
         alert_error(f'close_long {symbol}: {e}')
         return False
 
-def open_short(symbol: str, price: float, confidence: int, reason: str) -> bool:
+def open_short(symbol: str, price: float, confidence: int, reason: str, indicators: dict = None) -> bool:
     ss   = sym_state(symbol)
     base = SYMBOLS_CONFIG[symbol]['base']
     cfg  = SYMBOLS_CONFIG[symbol]
@@ -1041,6 +1422,13 @@ def open_short(symbol: str, price: float, confidence: int, reason: str) -> bool:
         ss['active_qty']          = qty_filled
         init_trail(symbol, actual_price)
         atr = safe_float(ss.get('trail_atr'), 0)
+
+        now_ = datetime.now(timezone.utc)
+        ss['entry_reason']     = reason
+        ss['entry_confidence'] = confidence
+        ss['entry_indicators'] = indicators or {}
+        ss['entry_hour_utc']   = now_.hour
+        ss['entry_weekday']    = now_.strftime('%A')
 
         logger.info(f'✅ [{symbol}] SHORT OPEN {qty_filled:.4f} {base} @ ${actual_price:.4f} fee=${fee_usdt:.4f}')
         send_telegram(
@@ -1343,14 +1731,34 @@ def is_us_market_open() -> bool:
     now_et = __import__('datetime').datetime.now(tz)
     if now_et.weekday() >= 5:
         return False
-    # Major US market holidays (month, day) — 2026 dates
-    holidays = {(1,1),(1,19),(2,16),(4,3),(5,25),(7,4),(9,7),(11,26),(12,25)}
-    if (now_et.month, now_et.day) in holidays:
+    if (now_et.month, now_et.day) in US_MARKET_HOLIDAYS:
         return False
     # Skip first 15 min after open (whipsaw period)
     open_time  = now_et.replace(hour=9,  minute=45, second=0, microsecond=0)
     close_time = now_et.replace(hour=16, minute=0,  second=0, microsecond=0)
     return open_time <= now_et < close_time
+
+
+def in_entry_window(cfg: dict) -> bool:
+    """True if now (ET) falls inside the symbol's optional entry_window_et,
+    a (start_h, start_m, end_h, end_m) tuple restricting new entries to a
+    sub-range of market hours. Symbols without this key trade all session."""
+    window = cfg.get('entry_window_et')
+    if not window:
+        return True
+    try:
+        import zoneinfo
+        tz = zoneinfo.ZoneInfo('America/New_York')
+    except Exception:
+        from datetime import timezone, timedelta
+        month = __import__('datetime').datetime.utcnow().month
+        offset = -4 if 3 <= month <= 11 else -5
+        tz = timezone(timedelta(hours=offset))
+    now_et = __import__('datetime').datetime.now(tz)
+    sh, sm, eh, em = window
+    start = now_et.replace(hour=sh, minute=sm, second=0, microsecond=0)
+    end   = now_et.replace(hour=eh, minute=em, second=0, microsecond=0)
+    return start <= now_et < end
 
 
 # ── Monthly PnL Calendar ──────────────────────────────────────────────────────
@@ -1464,6 +1872,8 @@ def run_symbol(symbol: str, cfg: dict, allow_new_entry: bool = True) -> dict:
 
         logger.info(f'💰 [{symbol}] ${price:.4f} | signal={action}({confidence}%) | pos={position} | {regime}/{trend}')
 
+        run_paper_offhours(symbol, price, action, confidence, reason)
+
         # ── Dashboard close request ───────────────────────────────────────────
         dashboard_close_executed = False
         close_sym = cfg.get('close_symbol')
@@ -1544,15 +1954,42 @@ def run_symbol(symbol: str, cfg: dict, allow_new_entry: bool = True) -> dict:
                     SYMBOLS_CONFIG[symbol].get('market_hours_only') and not is_us_market_open():
                 logger.info(f'⏰ [{symbol}] Market closed — skipping entry')
                 status = 'HOLD — market closed'
+            elif position is None and action in ('LONG', 'SHORT') and not in_entry_window(SYMBOLS_CONFIG[symbol]):
+                logger.info(f'⏰ [{symbol}] Outside entry window — skipping entry')
+                status = 'HOLD — outside entry window'
+            elif position is None and action in ('LONG', 'SHORT') and \
+                    get_daily_realized_pnl(symbol) >= SYMBOLS_CONFIG[symbol].get('daily_profit_lock', DAILY_PROFIT_LOCK_DEFAULT) and \
+                    confidence < DAILY_PROFIT_LOCK_CONFIDENCE:
+                _daily_pnl  = get_daily_realized_pnl(symbol)
+                _lock_level = SYMBOLS_CONFIG[symbol].get('daily_profit_lock', DAILY_PROFIT_LOCK_DEFAULT)
+                logger.info(f'🔒 [{symbol}] Daily profit lock — ${_daily_pnl:.2f} banked today '
+                            f'(≥${_lock_level:.2f}), need confidence≥{DAILY_PROFIT_LOCK_CONFIDENCE} got {confidence}%')
+                status = f'HOLD — daily profit lock (${_daily_pnl:.2f} today, need confidence≥{DAILY_PROFIT_LOCK_CONFIDENCE}%)'
             elif position is None and action in ('LONG', 'SHORT'):
-                if action == 'SHORT' and cfg.get('long_only'):
+                # Correlation guard — skip entry if a highly correlated symbol is already in trade
+                _corr_blocked = False
+                for _grp in CORR_GROUPS:
+                    if symbol in _grp:
+                        _busy = [s for s in _grp if s != symbol and sym_state(s).get('position')]
+                        if _busy:
+                            _busy_names = ', '.join(s.replace('USDT', '') for s in _busy)
+                            status = f'HOLD — correlated with {_busy_names} (same-sector guard)'
+                            logger.info(f'[{symbol}] Correlation block: {_busy_names} already in trade')
+                            _corr_blocked = True
+                            break
+
+                if _corr_blocked:
+                    pass  # status already set above
+                elif action == 'SHORT' and SYMBOLS_CONFIG[symbol].get('long_only'):
                     status = 'HOLD — long only mode'
+                elif action == 'LONG' and SYMBOLS_CONFIG[symbol].get('short_only'):
+                    status = 'HOLD — short only mode'
                 elif action == 'LONG':
-                    ok = open_long(symbol, price, confidence, reason)
+                    ok = open_long(symbol, price, confidence, reason, indicators)
                     status = 'LONG OPENED ✅' if ok else 'LONG FAILED ❌'
                     if ok: position = 'LONG'
                 else:
-                    ok = open_short(symbol, price, confidence, reason)
+                    ok = open_short(symbol, price, confidence, reason, indicators)
                     status = 'SHORT OPENED ✅' if ok else 'SHORT FAILED ❌'
                     if ok: position = 'SHORT'
             elif position == 'LONG':
@@ -1617,8 +2054,9 @@ def run_symbol(symbol: str, cfg: dict, allow_new_entry: bool = True) -> dict:
             'exchange':        'Binance Futures',
             'price':           price,
             'usdt_balance':    balance['free'],
-            'leverage':        state['runtime']['leverage'],
-            'trade_amount':    state['runtime']['trade_amount_usdt'],
+            'leverage':        SYMBOLS_CONFIG[symbol].get('leverage') or state['runtime']['leverage'],
+            'trade_amount':    SYMBOLS_CONFIG[symbol].get('trade_amount') or state['runtime']['trade_amount_usdt'],
+            'atr_health':      state['runtime'].get('atr_health', {}).get(symbol),
             'position':        latest_pos,
             'active_qty':      ss.get('active_qty') or final_pos_details['qty'] or None,
             'unrealized_pnl':  final_pos_details['unrealized_pnl'],
@@ -1768,6 +2206,7 @@ def close_overnight_mu(reason: str) -> bool:
             'reason':      reason,
         })
         state['overnight_mu'] = {}
+        clear_trail(sym)
         save_state()
         write_overnight_dashboard()
         return True
@@ -1812,6 +2251,161 @@ def write_overnight_dashboard() -> None:
     }
     write_json(os.path.join(WEB_ROOT, 'data_overnight_mu.json'), payload)
 
+
+# ── Off-hours/weekend PAPER trading (test ticker only) ────────────────────────
+# NBIS backtested as the single best candidate for allowing off-hours/weekend
+# entries (see session notes: weekend-inclusive backtest showed +$968 delta
+# over market-hours-only, the largest of all 7 tickers) — but real weekend
+# liquidity on these tokens is only ~8% of market-hours volume, so real
+# execution risk is unverified. This runs the SAME live strategy signal
+# during off-hours as a PAPER position (no real order, fully separate state
+# from the real position) so we can validate against real live quotes before
+# ever considering real money here. During real market hours NBIS trades
+# exactly as before, unaffected by any of this.
+PAPER_OFFHOURS_SYMBOLS = {'NBISUSDT'}
+
+def paper_state(symbol: str) -> dict:
+    state.setdefault('paper', {})
+    state['paper'].setdefault(symbol, {'position': None, 'trades': []})
+    return state['paper'][symbol]
+
+def open_paper_position(symbol: str, side: str, price: float, confidence: int, reason: str) -> bool:
+    cfg = SYMBOLS_CONFIG[symbol]
+    ps  = paper_state(symbol)
+    if ps.get('position'):
+        return False
+    amount   = float(cfg.get('trade_amount') or state['runtime']['trade_amount_usdt'])
+    leverage = int(cfg.get('leverage') or state['runtime']['leverage'])
+    qty      = (amount * leverage * 0.995) / price
+    atr      = get_atr_1h(symbol)
+    ps['position'] = {
+        'side': side, 'entry_price': price, 'qty': qty, 'amount': amount, 'leverage': leverage,
+        'trail_best_price': price, 'trail_atr': atr,
+        'opened_at': now_utc_iso(), 'confidence': confidence, 'reason': reason,
+    }
+    save_state()
+    base = cfg['base']
+    logger.info(f'📝 [PAPER:{base}] {side} opened @ ${price:.4f} (off-hours/weekend, simulated)')
+    send_telegram(
+        f'📝 <b>PAPER — {side} {base}/USDT (off-hours test)</b>\n\n'
+        f'💰 Entry: ${price:,.4f}\n'
+        f'💵 ${amount:.0f} @ {leverage}x (simulated — no real order placed)\n'
+        f'🎯 Confidence: {confidence}%\n📊 {reason}'
+    )
+    write_paper_dashboard(symbol)
+    return True
+
+def check_paper_trail(symbol: str, price: float) -> Tuple[bool, str]:
+    """Standalone reimplementation of check_sl_trail's math, reading/writing
+    the paper position's own stored fields instead of sym_state() — kept
+    fully separate so nothing here can ever touch real trading state."""
+    cfg = SYMBOLS_CONFIG[symbol]
+    ps  = paper_state(symbol)
+    pos = ps.get('position')
+    if not pos:
+        return False, ''
+    is_long = pos['side'] == 'LONG'
+    entry   = pos['entry_price']
+    atr     = pos.get('trail_atr')
+    best    = pos.get('trail_best_price', entry)
+    if not atr or atr <= 0:
+        return False, ''
+    hard_sl_dist  = atr * cfg.get('hard_sl_atr', HARD_SL_ATR)
+    activate_dist = atr * TRAIL_ACTIVATE_ATR
+    profit_so_far = (best - entry) if is_long else (entry - best)
+    trail_active  = profit_so_far >= activate_dist
+
+    if not trail_active:
+        max_loss_dollar = pos['amount'] * cfg.get('max_loss_pct', 0.30)
+        max_loss_dist   = (max_loss_dollar / pos['qty']) if pos['qty'] else hard_sl_dist
+        sl_dist = min(hard_sl_dist, max_loss_dist)
+        sl = entry - sl_dist if is_long else entry + sl_dist
+        if (is_long and price <= sl) or (not is_long and price >= sl):
+            return True, f'Paper Hard SL | entry={entry:.4f} sl={sl:.4f} price={price:.4f}'
+
+    if is_long and price > best:
+        pos['trail_best_price'] = price; best = price
+    elif not is_long and price < best:
+        pos['trail_best_price'] = price; best = price
+
+    profit_dist = (best - entry) if is_long else (entry - best)
+    if profit_dist < activate_dist:
+        return False, ''
+
+    dyn_dist   = max(atr * cfg.get('trail_dist_atr', 0.25), profit_dist * 0.18)
+    trail_stop = best - dyn_dist if is_long else best + dyn_dist
+    trail_stop = max(trail_stop, entry) if is_long else min(trail_stop, entry)
+    if (is_long and price <= trail_stop) or (not is_long and price >= trail_stop):
+        return True, f'Paper Trail Stop | best={best:.4f} stop={trail_stop:.4f} price={price:.4f}'
+    return False, ''
+
+def close_paper_position(symbol: str, price: float, reason: str) -> bool:
+    cfg = SYMBOLS_CONFIG[symbol]
+    ps  = paper_state(symbol)
+    pos = ps.get('position')
+    if not pos:
+        return False
+    entry, qty = pos['entry_price'], pos['qty']
+    gross = (price - entry) * qty if pos['side'] == 'LONG' else (entry - price) * qty
+    fee   = qty * (entry + price) * FEE_RATE
+    net   = gross - fee
+    trade = {
+        'side': pos['side'], 'entry_price': entry, 'exit_price': price, 'qty': qty,
+        'pnl': round(net, 4), 'win': net > 0, 'reason': reason,
+        'opened_at': pos['opened_at'], 'closed_at': now_utc_iso(),
+    }
+    ps.setdefault('trades', []).append(trade)
+    ps['position'] = None
+    save_state()
+    base  = cfg['base']
+    emoji = '🟢' if net >= 0 else '🔴'
+    logger.info(f'📝 [PAPER:{base}] Closed {pos["side"]} @ {price:.4f} net={net:+.4f} reason={reason}')
+    send_telegram(
+        f'{emoji} <b>PAPER — {pos["side"]} {base}/USDT CLOSED ({reason})</b>\n\n'
+        f'Exit: ${price:,.4f} | Entry: ${entry:,.4f}\n'
+        f'Net P&L: {net:+.2f} USDT (simulated — no real funds)'
+    )
+    write_paper_dashboard(symbol)
+    return True
+
+def write_paper_dashboard(symbol: str) -> None:
+    cfg    = SYMBOLS_CONFIG[symbol]
+    ps     = paper_state(symbol)
+    trades = ps.get('trades', [])
+    wins   = [t for t in trades if t['win']]
+    total  = len(trades)
+    daily_pnl = {}
+    for t in trades:
+        d = (t.get('closed_at') or '')[:10]
+        if d:
+            daily_pnl[d] = round(daily_pnl.get(d, 0) + t['pnl'], 2)
+    payload = {
+        'generated_at': now_utc_iso(), 'symbol': symbol, 'paper_trading': True,
+        'position': ps.get('position'),
+        'performance': {
+            'total': total, 'wins': len(wins), 'losses': total - len(wins),
+            'win_rate': round(len(wins) / total * 100, 1) if total else 0,
+            'net_pnl': round(sum(t['pnl'] for t in trades), 2),
+        },
+        'daily_pnl': daily_pnl,
+        'trades': list(reversed(trades[-30:])),
+    }
+    write_json(os.path.join(WEB_ROOT, f'data_paper_offhours_{cfg["base"].lower()}.json'), payload)
+
+def run_paper_offhours(symbol: str, price: float, action: str, confidence: int, reason: str) -> None:
+    if symbol not in PAPER_OFFHOURS_SYMBOLS:
+        return
+    ps = paper_state(symbol)
+    if ps.get('position'):
+        hit, hit_reason = check_paper_trail(symbol, price)
+        if hit:
+            close_paper_position(symbol, price, hit_reason)
+        return
+    cfg = SYMBOLS_CONFIG[symbol]
+    market_closed = cfg.get('market_hours_only') and not is_us_market_open()
+    if market_closed and action in ('LONG', 'SHORT'):
+        open_paper_position(symbol, action, price, confidence, reason)
+
 def run_overnight_strategy() -> None:
     et      = _et_now()
     weekday = et.weekday()   # 0=Mon … 4=Fri
@@ -1819,30 +2413,110 @@ def run_overnight_strategy() -> None:
     minute  = et.minute
     on      = state.get('overnight_mu', {})
     has_pos = bool(on.get('position'))
+    sym     = OVERNIGHT_CFG['symbol']
 
     # SL check — runs any time there's an open overnight position
     if has_pos:
-        price    = get_current_price(OVERNIGHT_CFG['symbol'])
+        price    = get_current_price(sym)
         sl_price = on.get('sl_price', 0)
         if sl_price and price <= sl_price:
             logger.info(f'[OVERNIGHT] SL hit @ ${price:.4f} (sl={sl_price:.4f})')
             close_overnight_mu('Stop Loss')
             return
 
-    # Entry: 3:55–4:05 PM ET, Mon–Thu only (skip Friday to avoid weekend hold)
-    if not has_pos and weekday < 4:
+    # Entry: 3:55–4:05 PM ET, Mon–Fri (Friday included — backtested holding
+    # through the weekend to Monday's real market open: 22 trades, 63.6% WR,
+    # +$463.70, meaningfully better per-trade than the weekday-only average.
+    # Never on a US market holiday — MUUSDT keeps printing on Binance even
+    # when NASDAQ is closed, so entering then means trading a synthetic price
+    # with no real market behind it.
+    is_holiday = (et.month, et.day) in US_MARKET_HOLIDAYS
+    if not has_pos and weekday < 5 and not is_holiday:
         if hour == 15 and minute >= 55:
             logger.info('[OVERNIGHT] Entry window — opening MU')
             open_overnight_mu()
         elif hour == 16 and minute <= 5:
             logger.info('[OVERNIGHT] Entry window (just after close) — opening MU')
             open_overnight_mu()
+    elif not has_pos and weekday < 5 and is_holiday and hour == 15 and minute == 55:
+        logger.info('[OVERNIGHT] Skipping MU entry — US market holiday today')
 
-    # Exit: 9:28–9:40 AM ET any weekday
-    if has_pos and weekday < 5:
+    # Exit: 9:28–9:40 AM ET any weekday — always close flat at market open.
+    # (Backtested the extend+trail variant against always-closing-flat over 5
+    # months / 89 trades: the trail added ~$7 total across 21 trades that would
+    # have extended — statistically noise, never once saved a trade that would
+    # have lost, never once meaningfully added. Removed for simplicity.)
+    if has_pos and weekday < 5 and not on.get('exit_decided'):
         if hour == 9 and 28 <= minute <= 40:
+            on['exit_decided'] = True
+            state['overnight_mu'] = on
+            save_state()
             logger.info('[OVERNIGHT] Exit window — closing MU at market open')
             close_overnight_mu('Market Open')
+
+
+# ── Weekly Summary ────────────────────────────────────────────────────────────
+def send_weekly_summary() -> None:
+    """Every Friday ~4 PM ET — per-symbol win rate and P&L for the past 7 days."""
+    try:
+        try:
+            import zoneinfo
+            tz = zoneinfo.ZoneInfo('America/New_York')
+        except Exception:
+            tz = timezone(timedelta(hours=-4 if 3 <= datetime.now(timezone.utc).month <= 11 else -5))
+
+        cutoff_ts = time.time() - 7 * 86400
+        path = os.path.join(os.path.dirname(BOT_STATE_FILE), TRADES_LOG_FILE) \
+               if os.path.dirname(BOT_STATE_FILE) else TRADES_LOG_FILE
+        all_trades = json.load(open(path)) if os.path.exists(path) else []
+
+        def dot(v): return '🟢' if v >= 0 else '🔴'
+
+        total_pnl   = 0.0
+        total_wins  = 0
+        total_count = 0
+        sym_lines   = []
+
+        for sym in TRADING_SYMBOLS:
+            base = SYMBOLS_CONFIG.get(sym, {}).get('base', sym.replace('USDT', ''))
+            week_trades = []
+            for t in all_trades:
+                if t.get('symbol') != sym: continue
+                raw = t.get('closed_at') or t.get('opened_at')
+                if not raw: continue
+                try:
+                    ts = datetime.fromisoformat(raw).timestamp()
+                except Exception:
+                    continue
+                if ts >= cutoff_ts:
+                    week_trades.append(t)
+
+            if not week_trades:
+                sym_lines.append(f'  {base}: no trades')
+                continue
+
+            wins = sum(1 for t in week_trades if t.get('win') or float(t.get('pnl', 0)) > 0)
+            losses = len(week_trades) - wins
+            net    = sum(float(t.get('pnl', 0)) for t in week_trades)
+            wr     = wins / len(week_trades) * 100 if week_trades else 0
+            sym_lines.append(
+                f'{dot(net)} <b>{base}</b>: {wins}W/{losses}L ({wr:.0f}%W) · {net:+.2f} USDT'
+            )
+            total_pnl   += net
+            total_wins  += wins
+            total_count += len(week_trades)
+
+        overall_wr = total_wins / total_count * 100 if total_count else 0
+        header = (
+            f'📊 <b>Weekly Summary — '
+            f'{datetime.now(tz).strftime("%b %d, %Y")}</b>\n'
+            f'{dot(total_pnl)} {total_count} trades · {overall_wr:.0f}%W · '
+            f'<b>{total_pnl:+.2f} USDT</b>\n'
+        )
+        send_telegram(header + '\n'.join(sym_lines))
+        logger.info('📊 Weekly summary sent')
+    except Exception as e:
+        logger.warning(f'send_weekly_summary: {e}')
 
 
 # ── Main Loop ─────────────────────────────────────────────────────────────────
@@ -1857,6 +2531,8 @@ def run_once():
         apply_runtime_settings(cfg)
         process_manual_trade(cfg)
         run_overnight_strategy()
+        run_weekly_atr_health_check()
+        run_weekly_trade_review()
 
         # ── Find which symbols already have open positions ────────────────────
         open_syms = set()
@@ -1894,6 +2570,13 @@ def run_once():
             save_state()
             send_monthly_summary()
 
+        # Weekly summary every Friday at ~4:05 PM ET
+        if (_et.weekday() == 4 and _et.hour == 16 and 5 <= _et.minute < 15
+                and state.get('last_weekly_date') != _today):
+            state['last_weekly_date'] = _today
+            save_state()
+            send_weekly_summary()
+
         if cfg.get('force_trail'):
             clear_flag('futures_force_trail')
     except Exception as e:
@@ -1910,18 +2593,19 @@ def main():
     startup_cfg = fetch_dashboard_config()
     apply_runtime_settings(startup_cfg)
 
-    nvda_amt = SYMBOLS_CONFIG['NVDAUSDT']['trade_amount']
-    amd_amt  = SYMBOLS_CONFIG['AMDUSDT']['trade_amount']
-    tsla_amt = SYMBOLS_CONFIG['TSLAUSDT']['trade_amount']
-    nbis_amt = SYMBOLS_CONFIG['NBISUSDT']['trade_amount']
-    pltr_amt = SYMBOLS_CONFIG['PLTRUSDT']['trade_amount']
+    roster_line = ' | '.join(
+        f"{SYMBOLS_CONFIG[sym]['base']}=${SYMBOLS_CONFIG[sym].get('trade_amount', DEFAULT_TRADE_AMOUNT_USDT)}"
+        f"@{SYMBOLS_CONFIG[sym].get('leverage', DEFAULT_LEVERAGE):.0f}x"
+        for sym in TRADING_SYMBOLS
+    )
+    roster_names = ' + '.join(SYMBOLS_CONFIG[sym]['base'] for sym in TRADING_SYMBOLS)
 
-    logger.info(f'🚀 APEX Futures v1 — NVDA + AMD + TSLA + NBIS + PLTR Perpetuals')
-    logger.info(f'   NVDA=${nvda_amt} | AMD=${amd_amt} | TSLA=${tsla_amt} | NBIS=${nbis_amt} | PLTR=${pltr_amt} @ 20x | API: {mask(BINANCE_API_KEY)}')
+    logger.info(f'🚀 APEX Futures v1 — {roster_names} Perpetuals')
+    logger.info(f'   {roster_line} | API: {mask(BINANCE_API_KEY)}')
 
     send_telegram(
-        f'🚀 <b>APEX Futures Started — NVDA + AMD + TSLA + NBIS + PLTR Perps</b>\n\n'
-        f'📌 NVDA: ${nvda_amt} | AMD: ${amd_amt} | TSLA: ${tsla_amt} | NBIS: ${nbis_amt} | PLTR: ${pltr_amt} @ 20x\n'
+        f'🚀 <b>APEX Futures Started — {roster_names} Perps</b>\n\n'
+        f'📌 {roster_line}\n'
         f'🎯 ADX Regime + EMA21 Pullback (1H) + 4H Trend Filter\n'
         f'↕️ Long + Short | Fee: 0.05% taker\n'
         f'⏱ Cycle: every {CHECK_INTERVAL}s'

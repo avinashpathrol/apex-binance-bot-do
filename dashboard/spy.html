@@ -132,7 +132,7 @@ body {
 
 /* CTA */
 .btn {
-  width: 100%; padding: 14px; border-radius: 12px; border: none;
+  width: 100%; padding: 14px; border-radius: 12px; border: none; box-sizing: border-box;
   font-size: 15px; font-weight: 600; cursor: pointer; transition: all .2s;
 }
 .btn-primary { background: var(--accent); color: #fff; }
@@ -246,6 +246,18 @@ body {
 .page { display: none; }
 .page.active { display: block; }
 
+/* SPY / SPX toggle */
+.ticker-toggle {
+  display: flex; background: var(--card2); border: 1px solid var(--border);
+  border-radius: 20px; padding: 3px; gap: 2px;
+}
+.tt-btn {
+  padding: 4px 13px; border-radius: 16px; border: none; background: none;
+  color: var(--muted); font-size: 12px; font-weight: 700; cursor: pointer;
+  transition: all .2s; letter-spacing: 0.3px;
+}
+.tt-btn.active { background: var(--accent); color: #fff; }
+
 /* Toast */
 .toast {
   position: fixed; bottom: calc(var(--safe-bot) + 20px); left: 50%; transform: translateX(-50%);
@@ -261,12 +273,18 @@ body {
 
 <div class="header">
   <div>
-    <h1>📈 SPY Options</h1>
+    <h1 id="header-title">📈 SPY Options</h1>
     <div class="sub" id="sub-time">Loading...</div>
   </div>
-  <div class="spy-price">
-    <div class="val" id="header-price">—</div>
-    <div class="label">SPY</div>
+  <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">
+    <div class="ticker-toggle">
+      <button class="tt-btn active" id="tt-spy" onclick="switchMode('SPY')">SPY</button>
+      <button class="tt-btn" id="tt-spx" onclick="switchMode('SPX')">SPX</button>
+    </div>
+    <div class="spy-price">
+      <div class="val" id="header-price">—</div>
+      <div class="label" id="header-ticker">SPY</div>
+    </div>
   </div>
 </div>
 
@@ -275,6 +293,7 @@ body {
   <button class="tab" onclick="showPage('trade')">My Trade</button>
   <button class="tab" onclick="showPage('pnl')">P&amp;L</button>
   <button class="tab" onclick="showPage('gex')">GEX</button>
+  <button class="tab" onclick="showPage('crypto')">🪙 Crypto 0DTE</button>
 </div>
 
 <div class="next-banner" id="next-banner">
@@ -299,7 +318,7 @@ body {
   </div>
 
   <div id="signal-content" style="display:none">
-    <div class="card">
+    <div class="card" id="spy-main-card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
         <div class="card-title" style="margin-bottom:0" id="sig-generated">Signal</div>
         <div id="sig-age" style="font-size:11px;font-weight:600;padding:3px 8px;border-radius:10px;"></div>
@@ -340,6 +359,9 @@ body {
         </div>
       </div>
 
+      <!-- Market conditions row -->
+      <div id="market-conditions" style="display:none;margin-bottom:12px;display:flex;gap:6px;flex-wrap:wrap;"></div>
+
       <!-- CBOE confidence banner -->
       <div id="cboe-confidence" style="margin-bottom:12px;display:none;padding:10px 13px;border-radius:10px;font-size:12px;"></div>
 
@@ -359,8 +381,8 @@ body {
       </div>
 
       <div style="margin-top:12px; display:flex; gap:8px;">
-        <button class="btn btn-green" onclick="openRegisterModal()">✅ I Took This Trade</button>
-        <button class="btn btn-secondary" onclick="refreshPrices()" id="refresh-prices-btn" style="flex:0 0 auto;padding:14px 16px;">🔄</button>
+        <button class="btn btn-green" style="flex:1;" onclick="openRegisterModal()">✅ I Took This Trade</button>
+        <button class="btn btn-secondary" onclick="refreshPrices()" id="refresh-prices-btn" style="flex:0 0 auto;width:auto;padding:14px 16px;">🔄</button>
       </div>
     </div>
 
@@ -413,6 +435,19 @@ body {
       <!-- SPX variant selector -->
       <div class="card-title" style="margin-top:12px;">Strike Variants</div>
       <div class="strike-selector" id="spx-strike-selector"></div>
+
+      <div class="divider"></div>
+
+      <div class="card-title">Wealthsimple Steps</div>
+      <div class="steps" id="spx-steps-list"></div>
+
+      <div style="margin-top:14px;padding:10px 13px;background:var(--card2);border-radius:10px;font-size:12px;color:var(--muted);">
+        🎯 Close when debit ≤ <b id="spx-close-at" style="color:var(--text)">$0.00</b> (80% profit) &nbsp;|&nbsp; ⏰ Hard close 3:30 PM ET
+      </div>
+
+      <div style="margin-top:12px;display:flex;gap:8px;">
+        <button class="btn btn-green" style="flex:1;" onclick="openRegisterModal('SPX')">✅ I Took This SPX Trade</button>
+      </div>
     </div>
 
     <div class="card" style="padding:12px 16px;">
@@ -426,7 +461,7 @@ body {
     <div class="loading">
       <div style="font-size:32px;margin-bottom:8px;">📭</div>
       <div style="font-size:15px; font-weight:600; margin-bottom:6px;">No signal yet</div>
-      <div style="font-size:13px; color:var(--muted); margin-bottom:16px;">Market opens at 9:30 AM ET. Signal fires at 11:15 AM ET (9:15 MST).</div>
+      <div style="font-size:13px; color:var(--muted); margin-bottom:16px;">Market opens at 9:30 AM ET. First signal fires at 9:30 AM ET (7:30 MST).</div>
       <button class="btn btn-primary" onclick="calcNow()">Calculate Now</button>
     </div>
   </div>
@@ -502,11 +537,64 @@ body {
   </div>
 </div>
 
+<!-- ═══ CRYPTO 0DTE PAPER PAGE ═══ -->
+<div class="page" id="page-crypto">
+  <div class="card" style="padding:12px 16px;display:flex;justify-content:space-between;align-items:center;">
+    <div style="font-size:11px;color:var(--muted);">
+      <b style="color:var(--yellow);">PAPER TRADING</b> — no real orders. BTC/ETH 0DTE credit spreads on Binance, auto-traded (unlike SPY/SPX above, which are signals you take manually).
+    </div>
+  </div>
+  <div class="card" style="padding:12px 16px;">
+    <div class="ticker-toggle">
+      <button class="tt-btn active" id="tt-btc" onclick="switchCryptoTicker('BTC')">BTC</button>
+      <button class="tt-btn" id="tt-eth" onclick="switchCryptoTicker('ETH')">ETH</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Open Spreads (0DTE)</div>
+    <div id="crypto-positions">Loading…</div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Performance (All-Time, Paper)</div>
+    <div class="summary-row">
+      <div class="sum-box">
+        <div class="s-label">Trades</div>
+        <div class="s-val" id="crypto-total">—</div>
+      </div>
+      <div class="sum-box">
+        <div class="s-label">Win Rate</div>
+        <div class="s-val" id="crypto-wr">—</div>
+      </div>
+      <div class="sum-box">
+        <div class="s-label">Net P&amp;L</div>
+        <div class="s-val" id="crypto-net">—</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">P&amp;L Calendar — <span id="crypto-month-label">—</span></div>
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:8px;">
+      <div class="cal-hdr">Su</div><div class="cal-hdr">Mo</div><div class="cal-hdr">Tu</div>
+      <div class="cal-hdr">We</div><div class="cal-hdr">Th</div><div class="cal-hdr">Fr</div>
+      <div class="cal-hdr">Sa</div>
+    </div>
+    <div class="cal-grid" id="crypto-calendar"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Recent Trades</div>
+    <div id="crypto-trades">No settled trades yet</div>
+  </div>
+</div>
+
 <!-- ═══ REGISTER MODAL ═══ -->
 <div class="modal-bg" id="register-modal" onclick="closeModalIfBg(event)">
   <div class="modal">
     <div class="modal-handle"></div>
-    <div style="font-size:17px;font-weight:700;margin-bottom:16px;">Register Trade</div>
+    <div id="reg-modal-title" style="font-size:17px;font-weight:700;margin-bottom:16px;">Register Trade</div>
 
     <div class="form-group">
       <label class="form-label">Direction</label>
@@ -555,7 +643,7 @@ body {
       <label class="form-label">Net P&amp;L (total, all contracts)</label>
       <input class="form-input" id="close-pnl" type="number" step="0.5" placeholder="e.g. 47.00 or -80.00">
     </div>
-    <div style="font-size:12px;color:var(--muted);margin-bottom:16px;">
+    <div id="close-hint" style="font-size:12px;color:var(--muted);margin-bottom:16px;">
       Example: if credit was $0.47 and you closed at $0.09 debit → profit = ($0.47-$0.09) × 100 × contracts
     </div>
 
@@ -574,7 +662,44 @@ let _state  = null;
 let _page   = 'signal';
 let _selectedVariant = 1;  // 0=conservative, 1=suggested, 2=aggressive
 let _openTradeId = null;
+let _cryptoData = null;
+let _cryptoTicker = 'BTC';
+let _cryptoCalYear, _cryptoCalMonth;
 let _tickInterval;
+let _mode = 'SPY';      // 'SPY' or 'SPX'
+let _regTicker = 'SPY'; // ticker being registered in modal
+
+function switchMode(m) {
+  _mode = m;
+  document.getElementById('tt-spy').classList.toggle('active', m === 'SPY');
+  document.getElementById('tt-spx').classList.toggle('active', m === 'SPX');
+  document.getElementById('header-title').textContent = m === 'SPY' ? '📈 SPY Options' : '📊 SPX Options';
+  document.getElementById('header-ticker').textContent = m;
+
+  const s = _signal;
+  if (m === 'SPY') {
+    document.getElementById('header-price').textContent = s?.spy_price ? `$${s.spy_price.toFixed(2)}` : '—';
+  } else {
+    const spxPrice = s?.spx?.spx_price;
+    document.getElementById('header-price').textContent = spxPrice ? `$${spxPrice.toFixed(0)}` : '—';
+  }
+
+  applyModeVisibility();
+}
+
+function applyModeVisibility() {
+  const spyCard = document.getElementById('spy-main-card');
+  const spxCard = document.getElementById('spx-card');
+  if (!spyCard || !spxCard) return;
+  const hasSpx = _signal?.spx?.suggested;
+  if (_mode === 'SPX' && hasSpx) {
+    spyCard.style.display = 'none';
+    spxCard.style.display = 'block';
+  } else {
+    spyCard.style.display = 'block';
+    spxCard.style.display = 'none';
+  }
+}
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
@@ -613,6 +738,7 @@ async function loadAll() {
     renderPnl();
     renderGex();
     if (nextRes) renderNext(nextRes);
+    loadCrypto();
   } catch(e) {
     console.error(e);
     // Even on full failure, clear the loading spinner
@@ -641,9 +767,12 @@ function renderSignal() {
   document.getElementById('signal-content').style.display = 'block';
   document.getElementById('signal-none').style.display = 'none';
   renderSpx(s);
+  applyModeVisibility();
 
-  if (s.spy_price) {
+  if (_mode === 'SPY' && s.spy_price) {
     document.getElementById('header-price').textContent = `$${s.spy_price.toFixed(2)}`;
+  } else if (_mode === 'SPX' && s.spx?.spx_price) {
+    document.getElementById('header-price').textContent = `$${s.spx.spx_price.toFixed(0)}`;
   }
 
   // Build strike selector
@@ -671,7 +800,12 @@ function renderSpread(sig, sp) {
   const genAt = sig.generated_at
     ? new Date(sig.generated_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/Denver'}) + ' MST'
     : '';
-  const lbl = {premarket:'Pre-Market 6:30 MST', midmorning:'9:15 MST', late:'9:50 MST', on_demand:'On-Demand'}[sig.label] || sig.label || '';
+  const lbl = {
+    'market-open':'Market Open 7:30 MST', 'mid-morning':'8:15 MST',
+    'late-morning':'9:00 MST', 'pre-noon':'9:45 MST', 'last-call':'Last Call 10:15 MST',
+    'premarket':'Pre-Market 6:30 MST', 'midmorning':'9:15 MST', 'late':'9:50 MST',
+    'on_demand':'On-Demand',
+  }[sig.label] || sig.label || '';
   document.getElementById('sig-generated').textContent = `${lbl} — ${genAt}`;
   updateSignalAge();
 
@@ -693,6 +827,25 @@ function renderSpread(sig, sp) {
       <div>${s.replace(/\*\*(.*?)\*\*/g,'<b>$1</b>').replace(/^🔴 /,'🔴 ').replace(/^🟢 /,'🟢 ')}</div>
     </div>
   `).join('');
+
+  // VIX + P/C row
+  const mcEl = document.getElementById('market-conditions');
+  if (mcEl) {
+    const vix = sig.vix, pc = sig.pc_ratio;
+    const chips = [];
+    if (vix != null) {
+      const vixColor = vix < 12 ? '#ef4444' : vix < 15 ? '#f59e0b' : vix < 20 ? '#22c55e' : vix < 25 ? '#f59e0b' : '#ef4444';
+      const vixLabel = vix < 12 ? '⛔ too low' : vix < 15 ? '😴 low' : vix < 20 ? '✅ ideal' : vix < 25 ? '🟡 elevated' : '🔴 high';
+      chips.push(`<span style="background:rgba(99,102,241,.12);border:1px solid rgba(99,102,241,.25);border-radius:20px;padding:3px 10px;font-size:11px;font-weight:600;color:${vixColor}">VIX ${vix.toFixed(1)} — ${vixLabel}</span>`);
+    }
+    if (pc != null) {
+      const pcBias = pc < 0.7 ? '🐂 bullish' : pc > 1.2 ? '🐻 bearish' : '➡️ neutral';
+      const pcColor = pc < 0.7 ? 'var(--green)' : pc > 1.2 ? 'var(--red)' : 'var(--muted)';
+      chips.push(`<span style="background:rgba(99,102,241,.12);border:1px solid rgba(99,102,241,.25);border-radius:20px;padding:3px 10px;font-size:11px;font-weight:600;color:${pcColor}">P/C ${pc.toFixed(2)} — ${pcBias}</span>`);
+    }
+    mcEl.style.display = chips.length ? 'flex' : 'none';
+    mcEl.innerHTML = chips.join('');
+  }
 
   // CBOE confidence banner
   const cmp = sig.gex_compare;
@@ -771,7 +924,7 @@ function renderSpx(sig) {
   const spx = sig?.spx;
   const card = document.getElementById('spx-card');
   if (!spx || !spx.suggested) { card.style.display = 'none'; return; }
-  card.style.display = 'block';
+  // visibility is managed by applyModeVisibility() — just populate the content
 
   const isBull = spx.direction === 'BULL_PUT';
   document.getElementById('spx-badge').textContent = isBull ? '🐂 Bull Put Spread' : '🐻 Bear Call Spread';
@@ -802,6 +955,23 @@ function renderSpx(sig) {
   const spyProfit = sig?.suggested?.max_profit || 1;
   const ratio = (s.max_profit / spyProfit).toFixed(1);
   document.getElementById('spx-vs-spy').textContent = ratio;
+
+  // Steps — built dynamically from the selected variant so they always match chosen strikes
+  const isBullSpx = spx.direction === 'BULL_PUT';
+  const spxTab    = isBullSpx ? 'Put' : 'Call';
+  const dynSteps  = [
+    `Open SPX on Wealthsimple → Options → <b>${spxTab}</b> tab`,
+    `Expiry <b>${spx.expiry}</b> | SPX at <b>$${spx.spx_price?.toFixed(0)||'—'}</b>`,
+    `Find <b>$${s.short_strike}</b> → tap 🔴 <b>Bid (Sell)</b> = $${(s.short_bid||0).toFixed(2)}`,
+    `Find <b>$${s.long_strike}</b> → tap 🟢 <b>Ask (Buy)</b> = $${(s.long_ask||0).toFixed(2)}`,
+    `Net credit: <b>$${(s.net_credit||0).toFixed(2)}/share = $${(s.max_profit||0).toFixed(0)} per contract</b>`,
+    `Max loss: <b>$${(s.max_loss||0).toFixed(0)}/contract</b> | Breakeven: <b>$${(s.breakeven||0).toFixed(2)}</b>`,
+    `⚠️ Cash settled — no assignment risk`,
+  ];
+  document.getElementById('spx-steps-list').innerHTML = dynSteps.map((step, i) => `
+    <div class="step"><div class="num">${i+1}</div><div>${step}</div></div>
+  `).join('');
+  document.getElementById('spx-close-at').textContent = `$${((s.net_credit||0)*0.20).toFixed(2)}`;
 }
 
 function selectSpxVariant(i) {
@@ -833,9 +1003,10 @@ function renderTrade() {
     document.getElementById('open-trade-display').innerHTML = `
       <div class="trade-monitor ${severity}">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-          <div>
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
             <span class="pill ${isBull?'pill-green':'pill-red'}">${isBull?'Bull Put':'Bear Call'}</span>
-            <span style="font-size:13px;color:var(--muted);margin-left:6px;">${open.trade_id||''}</span>
+            <span style="background:rgba(99,102,241,.15);color:var(--accent);border-radius:10px;padding:2px 8px;font-size:11px;font-weight:700;">${open.ticker||'SPY'}</span>
+            <span style="font-size:13px;color:var(--muted);">${open.trade_id||''}</span>
           </div>
           <div style="font-size:12px;color:var(--muted);">${open.expiry||''}</div>
         </div>
@@ -860,9 +1031,14 @@ function renderTrade() {
           <div style="font-size:11px;color:var(--muted);margin-top:4px;">Close target: $${((open.credit||0)*0.20).toFixed(2)} debit (80% profit)</div>
         ` : '<div style="font-size:12px;color:var(--muted);">Live P&L updates every 30 min during market hours</div>'}
       </div>
-      <button class="btn btn-red btn-sm" style="margin-top:8px;width:auto;padding:8px 20px;" onclick="openCloseModal()">
-        Record Close
-      </button>
+      <div style="display:flex;gap:8px;margin-top:8px;">
+        <button class="btn btn-secondary btn-sm" style="width:auto;padding:8px 20px;" onclick="openEditModal()">
+          ✏️ Edit
+        </button>
+        <button class="btn btn-red btn-sm" style="width:auto;padding:8px 20px;" onclick="openCloseModal()">
+          Record Close
+        </button>
+      </div>
     `;
   } else {
     _openTradeId = null;
@@ -879,11 +1055,13 @@ function renderTrade() {
     histEl.innerHTML = closed.map(t => {
       const isBull = t.direction === 'BULL_PUT';
       const pnl = t.pnl || 0;
+      const tk  = t.ticker || 'SPY';
       return `
         <div style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid var(--border);">
-          <div>
+          <div style="display:flex;align-items:center;gap:5px;">
             <span class="pill ${isBull?'pill-green':'pill-red'}" style="font-size:10px;">${isBull?'BP':'BC'}</span>
-            <span style="font-size:13px;margin-left:6px;">$${t.short_strike}/$${t.long_strike}</span>
+            <span style="font-size:10px;font-weight:700;color:var(--accent);background:rgba(99,102,241,.12);border-radius:8px;padding:1px 6px;">${tk}</span>
+            <span style="font-size:13px;">$${t.short_strike}/$${t.long_strike}</span>
           </div>
           <div style="font-size:14px;font-weight:700;color:${pnl>=0?'var(--green)':'var(--red)'}">
             ${pnl>=0?'+':''}$${pnl.toFixed(2)}
@@ -939,6 +1117,115 @@ function renderPnl() {
   document.getElementById('pnl-today').innerHTML = `<span style="color:${col(todayPnl)}">${fmt(todayPnl)}</span>`;
   document.getElementById('pnl-week').innerHTML  = `<span style="color:${col(weekPnl)}">${fmt(weekPnl)}</span>`;
   document.getElementById('pnl-month').innerHTML = `<span style="color:${col(monthPnl)}">${fmt(monthPnl)}</span>`;
+}
+
+// ── Crypto 0DTE paper trading (BTC/ETH) — separate static file, own fetch ──────
+async function loadCrypto() {
+  try {
+    const d = await Promise.race([
+      fetch('/data_crypto0dte.json?t=' + Date.now(), {cache:'no-store'}).then(r => r.json()),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000)),
+    ]);
+    _cryptoData = d;
+    renderCrypto();
+  } catch (e) {
+    console.error('loadCrypto failed', e);
+  }
+}
+
+function switchCryptoTicker(t) {
+  _cryptoTicker = t;
+  document.getElementById('tt-btc').classList.toggle('active', t === 'BTC');
+  document.getElementById('tt-eth').classList.toggle('active', t === 'ETH');
+  renderCrypto();
+}
+
+function renderCrypto() {
+  if (!_cryptoData || !_cryptoData.symbols) return;
+  const d = _cryptoData.symbols[_cryptoTicker];
+  if (!d) return;
+
+  const fmtMoney = v => v == null ? '—' : '$' + Number(v).toFixed(2);
+  const fmtPnl   = v => v == null ? '—' : (v >= 0 ? '+' : '') + '$' + Number(v).toFixed(2);
+
+  const positions = d.open_positions || [];
+  const posEl = document.getElementById('crypto-positions');
+  if (positions.length === 0) {
+    posEl.innerHTML = `<div style="font-size:12px;color:var(--muted);">No open spread — waiting for next option-day rollover (~08:00 UTC)</div>`;
+  } else {
+    posEl.innerHTML = positions.map(p => {
+      const isBullPut = p.direction === 'BULL_PUT';
+      return `
+        <div style="background:var(--card2);border-radius:10px;padding:10px 12px;margin-top:8px;">
+          <span class="pill ${isBullPut?'pill-green':'pill-red'}" style="font-size:10px;">${p.direction.replace('_',' ')}</span>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px;">Short ${p.short_symbol} / Long ${p.long_symbol}</div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:6px;">
+            <span>Credit: ${fmtMoney(p.credit)}</span>
+            <span>Width: ${fmtMoney(p.width)}</span>
+            <span>Contracts: ${p.contracts}</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;margin-top:4px;">
+            <span style="color:var(--green)">Max profit: ${fmtMoney(p.max_profit)}</span>
+            <span style="color:var(--red)">Max loss: ${fmtMoney(p.max_loss)}</span>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  const perf = d.performance || {};
+  document.getElementById('crypto-total').textContent = perf.total || 0;
+  document.getElementById('crypto-wr').textContent = (perf.win_rate != null ? perf.win_rate.toFixed(1) : '0.0') + '%';
+  const netEl = document.getElementById('crypto-net');
+  const net = perf.net_pnl || 0;
+  netEl.innerHTML = `<span style="color:${net>=0?'var(--green)':'var(--red)'}">${fmtPnl(net)}</span>`;
+
+  if (_cryptoCalYear === undefined) {
+    const now = new Date();
+    _cryptoCalYear = now.getFullYear();
+    _cryptoCalMonth = now.getMonth();
+  }
+  renderCryptoCalendar(d.daily_pnl || {});
+
+  const trades = d.trades || [];
+  const tEl = document.getElementById('crypto-trades');
+  if (trades.length === 0) {
+    tEl.innerHTML = 'No settled trades yet';
+  } else {
+    tEl.innerHTML = trades.map(t => {
+      const isBullPut = t.direction === 'BULL_PUT';
+      const pnl = t.pnl || 0;
+      return `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid var(--border);">
+          <div style="display:flex;align-items:center;gap:5px;">
+            <span class="pill ${isBullPut?'pill-green':'pill-red'}" style="font-size:10px;">${t.direction.replace('_',' ')}</span>
+            <span style="font-size:12px;color:var(--muted);">${(t.closed_at||'').slice(0,10)}</span>
+          </div>
+          <div style="font-size:14px;font-weight:700;color:${pnl>=0?'var(--green)':'var(--red)'}">${fmtPnl(pnl)}</div>
+        </div>
+      `;
+    }).join('');
+  }
+}
+
+function renderCryptoCalendar(dailyPnl) {
+  const y = _cryptoCalYear, m = _cryptoCalMonth;
+  const days = new Date(y, m+1, 0).getDate();
+  const startDow = new Date(y, m, 1).getDay();
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  document.getElementById('crypto-month-label').textContent = `${months[m]} ${y}`;
+
+  let cells = Array(startDow).fill('<div class="cal-day empty"></div>');
+  for (let d = 1; d <= days; d++) {
+    const key = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const v = dailyPnl[key];
+    if (v == null) {
+      cells.push(`<div class="cal-day zero">${d}</div>`);
+    } else {
+      cells.push(`<div class="cal-day ${v>=0?'pos':'neg'}" title="$${v.toFixed(2)}">${d}</div>`);
+    }
+  }
+  document.getElementById('crypto-calendar').innerHTML = cells.join('');
 }
 
 // ── GEX page ──────────────────────────────────────────────────────────────────
@@ -1001,7 +1288,7 @@ function renderGex() {
     cmpEl.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
         <div>
-          <div style="font-size:11px;color:var(--muted);">AV Total GEX</div>
+          <div style="font-size:11px;color:var(--muted);">CBOE Total GEX</div>
           <div style="font-size:20px;font-weight:700;color:${avB>=0?'var(--green)':'var(--red)'}">
             ${avB>=0?'+':''}$${avB.toFixed(1)}B
           </div>
@@ -1013,12 +1300,12 @@ function renderGex() {
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">
         <div style="background:var(--card2);border-radius:10px;padding:10px 13px;">
-          <div style="font-size:11px;color:var(--muted);">AV Pin Strike</div>
+          <div style="font-size:11px;color:var(--muted);">CBOE Pin Strike</div>
           <div style="font-size:16px;font-weight:700;">$${cmp.av_pin_strike || '—'}</div>
           <div style="font-size:11px;color:var(--muted);margin-top:2px;">Ours: $${pin}</div>
         </div>
         <div style="background:var(--card2);border-radius:10px;padding:10px 13px;">
-          <div style="font-size:11px;color:var(--muted);">AV Direction</div>
+          <div style="font-size:11px;color:var(--muted);">CBOE Direction</div>
           <div style="font-size:13px;font-weight:700;color:${cmp.av_direction==='BULL_PUT'?'var(--green)':'var(--red)'}">
             ${cmp.av_direction === 'BULL_PUT' ? '🐂 Bull Put' : '🐻 Bear Call'}
           </div>
@@ -1061,7 +1348,12 @@ function renderGexBar(label, val, spot, above) {
 let _nextSecs = 0;
 function renderNext(data) {
   _nextSecs = data.seconds_until || 0;
-  const lbl = {premarket:'Pre-Market 6:30',midmorning:'9:15 MST',late:'9:50 MST',none:'No more signals today'}[data.label] || data.label;
+  const lbl = {
+    'market-open':'Market Open 7:30 MST', 'mid-morning':'8:15 MST',
+    'late-morning':'9:00 MST', 'pre-noon':'9:45 MST', 'last-call':'Last Call 10:15 MST',
+    'premarket':'Pre-Market 6:30', 'midmorning':'9:15 MST', 'late':'9:50 MST',
+    'none':'No more signals today',
+  }[data.label] || data.label;
   document.getElementById('next-label').textContent = lbl;
   updateCountdown();
 }
@@ -1078,7 +1370,7 @@ function startCountdown() { setInterval(tick, 1000); }
 async function calcNow() {
   const btn = document.getElementById('calc-btn');
   if (btn) { btn.textContent = '⏳ Calculating...'; btn.disabled = true; }
-  showToast('🔄 Fetching SPY data...');
+  showToast('🔄 Fetching SPY + SPX data...');
 
   const prevTs = _signal?.generated_at || '';
   try {
@@ -1113,26 +1405,65 @@ async function calcNow() {
   }
 }
 
-// ── Register modal ────────────────────────────────────────────────────────────
-function openRegisterModal() {
-  const s = _signal;
-  if (s) {
-    const spreads = s.spreads || [s.suggested];
-    const sp = spreads[_selectedVariant] || s.suggested;
-    const isBull = s.direction === 'BULL_PUT';
+// ── Edit modal (correct an already-registered trade) ──────────────────────────
+let _editMode = false;
+function openEditModal() {
+  const trades = (_state && _state.trades) ? _state.trades : [];
+  const open = trades.find(t => t.status === 'open');
+  if (!open) { showToast('No open trade to edit'); return; }
 
+  _editMode = true;
+  _regTicker = open.ticker || 'SPY';
+  const isBull = open.direction === 'BULL_PUT';
+
+  document.getElementById('reg-modal-title').textContent = `✏️ Edit ${_regTicker} Trade`;
+  document.getElementById('reg-direction').textContent = isBull ? 'Bull Put Spread' : 'Bear Call Spread';
+  document.getElementById('reg-direction').style.color = isBull ? 'var(--green)' : 'var(--red)';
+  document.getElementById('reg-short').value     = open.short_strike || '';
+  document.getElementById('reg-long').value      = open.long_strike  || '';
+  document.getElementById('reg-credit').value    = open.credit       || '';
+  document.getElementById('reg-expiry').value    = open.expiry       || '';
+  document.getElementById('reg-contracts').value = open.contracts    || 1;
+  document.getElementById('register-modal').classList.add('open');
+}
+
+// ── Register modal ────────────────────────────────────────────────────────────
+function openRegisterModal(ticker) {
+  _editMode = false;
+  _regTicker = ticker || _mode;  // default to current mode if not passed
+  const isSPX = _regTicker === 'SPX';
+  const src = isSPX ? _signal?.spx : _signal;
+  if (src) {
+    const spreads = src.spreads || [src.suggested];
+    const variant = isSPX ? _selectedSpxVariant : _selectedVariant;
+    const sp = spreads[variant] || src.suggested;
+    const isBull = src.direction === 'BULL_PUT';
+
+    document.getElementById('reg-modal-title').textContent = isSPX ? '📊 Register SPX Trade' : '📈 Register SPY Trade';
     document.getElementById('reg-direction').textContent = isBull ? 'Bull Put Spread' : 'Bear Call Spread';
     document.getElementById('reg-direction').style.color = isBull ? 'var(--green)' : 'var(--red)';
-    document.getElementById('reg-short').value   = sp.short_strike || '';
-    document.getElementById('reg-long').value    = sp.long_strike  || '';
-    document.getElementById('reg-credit').value  = sp.net_credit   || '';
-    document.getElementById('reg-expiry').value  = s.expiry || '';
+    document.getElementById('reg-short').value   = sp?.short_strike || '';
+    document.getElementById('reg-long').value    = sp?.long_strike  || '';
+    document.getElementById('reg-credit').value  = sp?.net_credit   || '';
+    document.getElementById('reg-expiry').value  = src.expiry || '';
+    document.getElementById('reg-contracts').value = '1';
   }
   document.getElementById('register-modal').classList.add('open');
 }
 
 function openCloseModal() {
   document.getElementById('close-pnl').value = '';
+  // Update hint based on open trade ticker
+  const trades = (_state && _state.trades) ? _state.trades : [];
+  const open = trades.find(t => t.status === 'open');
+  const hint = document.getElementById('close-hint');
+  if (hint && open) {
+    const tk = open.ticker || 'SPY';
+    const cr = (open.credit || 0).toFixed(2);
+    const cl = ((open.credit || 0) * 0.20).toFixed(2);
+    const profit = ((open.credit || 0) - (open.credit || 0) * 0.20).toFixed(2);
+    hint.textContent = `${tk} example: credit $${cr}, closed at $${cl} debit → profit = $${profit} × 100 × ${open.contracts||1} contract(s)`;
+  }
   document.getElementById('close-modal').classList.add('open');
 }
 
@@ -1146,7 +1477,6 @@ function closeModalIfBg(e) {
 
 async function submitTrade() {
   const trade = {
-    direction:    _signal?.direction || 'BULL_PUT',
     short_strike: parseFloat(document.getElementById('reg-short').value),
     long_strike:  parseFloat(document.getElementById('reg-long').value),
     credit:       parseFloat(document.getElementById('reg-credit').value),
@@ -1157,13 +1487,27 @@ async function submitTrade() {
     showToast('Fill in all fields'); return;
   }
   try {
-    await fetch(`${API}/api/signal`, {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({action:'register_trade', trade}),
-    });
-    closeModal();
-    showToast('✅ Trade registered!');
+    if (_editMode) {
+      await fetch(`${API}/api/signal`, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({action:'edit_trade', trade_id: _openTradeId, trade}),
+      });
+      closeModal();
+      showToast('✅ Trade corrected!');
+    } else {
+      const isSPX = _regTicker === 'SPX';
+      const src = isSPX ? _signal?.spx : _signal;
+      trade.ticker    = _regTicker || 'SPY';
+      trade.direction = src?.direction || _signal?.direction || 'BULL_PUT';
+      await fetch(`${API}/api/signal`, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({action:'register_trade', trade}),
+      });
+      closeModal();
+      showToast('✅ Trade registered!');
+    }
     setTimeout(loadAll, 1000);
   } catch(e) {
     showToast('Error: ' + e.message);

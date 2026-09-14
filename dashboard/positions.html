@@ -277,7 +277,7 @@ body {
 <div class="toast" id="toast"></div>
 
 <script>
-const TICKERS = ['nvda','amd','tsla','nbis','pltr','asts','spcx','eth','btc','sol','aave','coin','doge','mstr','pepe','rklb','mu'];
+const TICKERS = ['nvda','amd','tsla','nbis','asts','app','soxl','crcl','eth','btc','sol','aave','coin','doge','mstr','pepe','rklb','mu'];
 const CONFIG_API = '/bot_config.json';
 const BINANCE_PRICE_URL = 'https://fapi.binance.com/fapi/v1/ticker/price';
 
@@ -304,6 +304,18 @@ function fmtPct(n) {
   if (n == null || isNaN(n)) return '';
   return (n >= 0 ? '+' : '') + n.toFixed(1) + '%';
 }
+function fmtWinRate(perf) {
+  if (!perf || perf.closed_trades == null) return '—';
+  const total = perf.closed_trades || 0;
+  if (total === 0) return 'No trades yet';
+  const wins = perf.wins || 0;
+  const losses = perf.losses || 0;
+  const wr = perf.win_rate != null ? perf.win_rate : (total > 0 ? Math.round(wins / total * 100) : 0);
+  const net = perf.net_profit || 0;
+  const col = wr >= 60 ? 'var(--green)' : wr >= 40 ? 'var(--amber)' : 'var(--red)';
+  return `<span style="color:${col};font-weight:700">${wr}%</span> <span style="color:var(--muted)">${wins}W/${losses}L · ${net >= 0 ? '+' : ''}$${net.toFixed(2)}</span>`;
+}
+
 function timeSince(iso) {
   if (!iso) return '—';
   const s = (Date.now() - new Date(iso).getTime()) / 1000;
@@ -501,6 +513,10 @@ function buildCard(data) {
         <div class="i-label">Status</div>
         <div class="i-val" style="font-size:11px">${data.action || '—'}</div>
       </div>
+      <div class="info-cell" style="grid-column:1/-1">
+        <div class="i-label">Win Rate (all-time)</div>
+        <div class="i-val" id="winrate-${sym}" style="font-size:12px">${fmtWinRate(data.performance)}</div>
+      </div>
     </div>
 
     <div class="card-actions">
@@ -580,6 +596,10 @@ function updateCard(sym, data) {
   // Stops
   setText('stop-active-'+sym, fmtPrice(activeSl));
   setText('stop-hard-'+sym,   fmtPrice(hardSl));
+
+  // Win rate (innerHTML — has styled spans)
+  const wrEl = document.getElementById('winrate-'+sym);
+  if (wrEl) wrEl.innerHTML = fmtWinRate(data.performance);
 
   // Trail button — update if not pending
   if (!pendingActions.has(sym)) {
@@ -685,6 +705,10 @@ async function loadAll() {
       cardData[sym] = d;
       grid.appendChild(buildCard(d));
     });
+    // Auto-scroll to single position on load
+    if (active.length === 1) {
+      setTimeout(() => grid.scrollIntoView({behavior:'smooth'}), 100);
+    }
   } else {
     // In-place update
     active.forEach(d => {

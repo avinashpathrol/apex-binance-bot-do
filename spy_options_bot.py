@@ -23,6 +23,12 @@ TRIGGER_FILE = os.path.join(WEB_ROOT, 'spy_trigger.json')
 API_PORT          = 5001
 SPREAD_WIDTH      = 2       # SPY spread width ($)
 SPX_SPREAD_WIDTH  = 10      # SPX spread width ($) — $10 wide is standard 0DTE
+# A flat minimum credit (e.g. $0.05) isn't enough on its own — a $0.14 credit on
+# a $2-wide spread still clears that bar but is a genuinely poor ~14:1 risk/reward
+# (this happened live: a "last-call" BEAR_CALL 764/766 signal for $0.14 credit —
+# 7% of width — got suggested and taken). Require credit to be a real fraction of
+# the spread width regardless of the flat-dollar floor.
+MIN_CREDIT_WIDTH_RATIO = 0.12   # credit must be >= 12% of spread width
 # CBOE comparison uses no API key — public CDN endpoint
 
 # SPY alerts go to their own channel (DISCORD_SPY_WEBHOOK).
@@ -33,11 +39,63 @@ TELEGRAM_BOT_TOKEN   = os.getenv('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_CHAT_ID     = os.getenv('TELEGRAM_CHAT_ID', '')
 
 # Signal schedule (ET): (hour, minute, label, mst_display)
+# 5 runs from market open → 12:15 PM — last useful 0DTE entry window
 SCHEDULES = [
-    (8,  30, 'premarket',   '6:30 AM MST'),
-    (11, 15, 'midmorning',  '9:15 AM MST'),
-    (11, 50, 'late',        '9:50 AM MST'),
+    (9,  35, 'market-open',  '7:35 AM MST'),   # 5 min after open — lets rotation settle
+    (10, 15, 'mid-morning',  '8:15 AM MST'),
+    (11,  0, 'late-morning', '9:00 AM MST'),
+    (11, 45, 'pre-noon',     '9:45 AM MST'),
+    (12, 15, 'last-call',    '10:15 AM MST'),
 ]
+
+# VIX go/no-go thresholds
+VIX_MIN = 12   # below this: spreads pay near nothing — skip
+VIX_MAX = 30   # above this: 0DTE too volatile — skip (warn and skip)
+
+# Daily loss limit — stop signaling when today's closed P&L hits this
+DAILY_LOSS_LIMIT_USD = -110  # ≈ -$150 CAD
+
+# ── Crypto 0DTE paper trading — BTC/ETH daily-expiry options on Binance ────────
+# Same idea as the SPY signals above (0DTE credit spreads), different
+# instrument (Binance's crypto options, eapi.binance.com) and — unlike SPY,
+# which is signal-only because Binance can't execute it — this runs fully
+# automatically since it IS on Binance. Paper only for now: every "trade" is
+# priced from REAL live bid/ask/IV and tracked to REAL settlement, but no
+# funds move. Validated first via backtest (2yr BTC/ETH history, out-of-
+# sample checked) before this paper stage; see session notes.
+FUTURES_BASE_URL         = 'https://fapi.binance.com'
+OPTIONS_BASE_URL          = 'https://eapi.binance.com'
+CRYPTO_STATE_FILE         = os.path.join(WEB_ROOT, 'crypto0dte_state.json')
+CRYPTO_DASHBOARD_FILE     = os.path.join(WEB_ROOT, 'data_crypto0dte.json')
+CRYPTO_SYMBOLS_CONFIG     = {
+    'BTCUSDT': {'base': 'BTC', 'opt_prefix': 'BTC'},
+    'ETHUSDT': {'base': 'ETH', 'opt_prefix': 'ETH'},
+}
+CRYPTO_TRADE_RISK_USD     = 100.0   # paper max-loss-per-spread — explicitly a paper test size
+CRYPTO_K1                 = 0.7     # short strike distance, in 1-day sigma units (live IV based)
+CRYPTO_K2                 = 0.5     # extra width beyond the short strike, in sigma units
+CRYPTO_ADX_MIN            = 25.0
+CRYPTO_CHECK_INTERVAL_SEC = 300     # 0DTE spreads aren't actively managed — just watched for rollover
+CRYPTO_CHAIN_CACHE_TTL    = 3600    # strikes don't change intraday
+
+# ── Economic calendar ─────────────────────────────────────────────────────────
+# FOMC decision days, CPI and NFP release dates.
+# Update annually:  FOMC → federalreserve.gov  |  CPI/NFP → bls.gov
+HIGH_IMPACT_EVENTS: dict = {
+    # 2026 — remaining
+    '2026-09-04': 'NFP (Jobs Report)',
+    '2026-09-10': 'CPI Release',
+    '2026-09-17': 'FOMC Decision',
+    '2026-10-02': 'NFP (Jobs Report)',
+    '2026-10-13': 'CPI Release',
+    '2026-10-29': 'FOMC Decision',
+    '2026-11-06': 'NFP (Jobs Report)',
+    '2026-11-12': 'CPI Release',
+    '2026-12-04': 'NFP (Jobs Report)',
+    '2026-12-10': 'CPI Release',
+    '2026-12-16': 'FOMC Decision',
+    # 2027 — update when Fed publishes schedule
+}
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -96,6 +154,44 @@ def save_signal(sig: dict):
     except Exception as e:
         logger.warning(f'save_signal: {e}')
 
+def load_crypto_state() -> dict:
+    try:
+        if os.path.exists(CRYPTO_STATE_FILE):
+            data = json.load(open(CRYPTO_STATE_FILE))
+        else:
+            data = {}
+    except Exception:
+        data = {}
+    data.setdefault('symbols', {})
+    for sym in CRYPTO_SYMBOLS_CONFIG:
+        data['symbols'].setdefault(sym, {'current_option_date': None, 'open_positions': [], 'trades': []})
+        sym_state = data['symbols'][sym]
+        # Migration: positions opened before held_expiry_ms/expiry_ms existed
+        # would otherwise look "expired" on the first check and get settled
+        # early. Backfill from the date code in the position's own symbol
+        # string (format PREFIX-YYMMDD-STRIKE-C/P, expiry always 08:00 UTC).
+        if sym_state.get('held_expiry_ms') is None and sym_state.get('open_positions'):
+            first = sym_state['open_positions'][0]
+            expiry_ms = first.get('expiry_ms')
+            if expiry_ms is None:
+                try:
+                    date_code = first['short_symbol'].split('-')[1]
+                    dt = datetime.strptime(date_code, '%y%m%d').replace(hour=8, tzinfo=timezone.utc)
+                    expiry_ms = dt.timestamp() * 1000
+                except Exception:
+                    expiry_ms = None
+            if expiry_ms is not None:
+                sym_state['held_expiry_ms'] = expiry_ms
+                for p in sym_state['open_positions']:
+                    p.setdefault('expiry_ms', expiry_ms)
+    return data
+
+def save_crypto_state(st: dict):
+    try:
+        json.dump(st, open(CRYPTO_STATE_FILE, 'w'), indent=2, default=str)
+    except Exception as e:
+        logger.warning(f'save_crypto_state: {e}')
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def _safe_float(v, default: float = 0.0) -> float:
     """float() that converts NaN and None to default. NaN is truthy so 'x or 0' doesn't catch it."""
@@ -104,6 +200,39 @@ def _safe_float(v, default: float = 0.0) -> float:
         return default if f != f else f  # f != f is True only for NaN
     except (TypeError, ValueError):
         return default
+
+# ── VIX ──────────────────────────────────────────────────────────────────────
+def fetch_vix() -> Optional[float]:
+    """Current VIX level from Yahoo Finance — same yf import already used for SPY."""
+    try:
+        import yfinance as yf
+        fi = yf.Ticker('^VIX').fast_info
+        v = fi.get('lastPrice') or fi.get('regularMarketPrice') or fi.get('previousClose')
+        return round(float(v), 2) if v else None
+    except Exception as e:
+        logger.warning(f'fetch_vix: {e}')
+        return None
+
+def today_market_event() -> Optional[str]:
+    """Returns event label if today is a high-impact economic day, else None."""
+    return HIGH_IMPACT_EVENTS.get(et_now().strftime('%Y-%m-%d'))
+
+def fetch_spy_daily_trend() -> Optional[str]:
+    """20-day EMA trend from SPY daily closes. Returns 'BULLISH', 'BEARISH', or None."""
+    try:
+        import yfinance as yf
+        hist = yf.Ticker('SPY').history(period='25d', interval='1d')
+        if hist.empty or len(hist) < 20:
+            return None
+        closes = hist['Close'].dropna()
+        ema20  = float(closes.ewm(span=20, adjust=False).mean().iloc[-1])
+        last   = float(closes.iloc[-1])
+        trend  = 'BULLISH' if last > ema20 else 'BEARISH'
+        logger.info(f'SPY daily trend: {trend} (close ${last:.2f} vs EMA20 ${ema20:.2f})')
+        return trend
+    except Exception as e:
+        logger.warning(f'fetch_spy_daily_trend: {e}')
+        return None
 
 # ── Black-Scholes gamma ───────────────────────────────────────────────────────
 def _norm_pdf(x: float) -> float:
@@ -173,6 +302,10 @@ def fetch_spy_chain() -> Optional[dict]:
                 'oi':  int(oi),
             }
 
+        total_call_oi = sum(v['oi'] for v in call_map.values())
+        total_put_oi  = sum(v['oi'] for v in put_map.values())
+        pc_ratio = round(total_put_oi / total_call_oi, 2) if total_call_oi else None
+
         return {
             'spot':      round(float(spot), 2),
             'expiry':    target,
@@ -180,6 +313,7 @@ def fetch_spy_chain() -> Optional[dict]:
             'call_map':  call_map,
             'put_map':   put_map,
             'total_gex': sum(gex.values()),
+            'pc_ratio':  pc_ratio,
         }
     except Exception as e:
         logger.error(f'fetch_spy_chain: {e}')
@@ -281,7 +415,7 @@ def make_spread(data: dict, direction: str, short_s: float) -> Optional[dict]:
         long_ask  = cm.get(long_s,  {}).get('ask', 0)
 
     credit = round(float(short_bid) - float(long_ask), 2)
-    if credit <= 0.05:
+    if credit <= 0.05 or credit < w * MIN_CREDIT_WIDTH_RATIO:
         return None
 
     be = round(short_s - credit, 2) if direction == 'BULL_PUT' else round(short_s + credit, 2)
@@ -339,7 +473,7 @@ def fetch_spx_spreads(direction: str, spy_spot: float, spy_lower: float, spy_upp
             short_bid = _safe_float(row_s.get('bid'))
             long_ask  = _safe_float(row_l.get('ask'))
             credit    = round(short_bid - long_ask, 2)
-            if credit <= 0.10:
+            if credit <= 0.10 or credit < w * MIN_CREDIT_WIDTH_RATIO:
                 return None
             be = round(short_s - credit, 2) if direction == 'BULL_PUT' else round(short_s + credit, 2)
             return {
@@ -417,7 +551,25 @@ def fetch_spx_spreads(direction: str, spy_spot: float, spy_lower: float, spy_upp
         logger.warning(f'fetch_spx_spreads: {e}')
         return None
 
-def build_signal(data: dict, label: str) -> Optional[dict]:
+def compute_confidence(direction: str, vix: Optional[float], pc_ratio: Optional[float],
+                       gex_compare: Optional[dict], gex_regime: str) -> int:
+    """Score 0–4: VIX ideal zone, P/C confirms direction, CBOE agrees, positive GEX regime."""
+    score = 0
+    if vix is not None and 15 <= vix <= 20:
+        score += 1
+    if pc_ratio is not None:
+        if direction == 'BULL_PUT' and pc_ratio < 0.9:
+            score += 1
+        elif direction == 'BEAR_CALL' and pc_ratio > 1.0:
+            score += 1
+    if gex_compare and gex_compare.get('direction_agree'):
+        score += 1
+    if gex_regime == 'positive':
+        score += 1
+    return score
+
+
+def build_signal(data: dict, label: str, vix: Optional[float] = None) -> Optional[dict]:
     spot      = data['spot']
     gex       = data['gex']
     total_gex = data['total_gex']
@@ -529,6 +681,8 @@ def build_signal(data: dict, label: str) -> Optional[dict]:
     else:
         gex_compare = None
 
+    confidence = compute_confidence(direction, vix, data.get('pc_ratio'), gex_compare, gex_regime)
+
     return {
         'label':        label,
         'generated_at': et_now().isoformat(),
@@ -546,13 +700,16 @@ def build_signal(data: dict, label: str) -> Optional[dict]:
         'instructions': instructions,
         'gex_compare':  gex_compare,
         'spx':          spx,
+        'vix':          vix,
+        'pc_ratio':     data.get('pc_ratio'),
+        'confidence':   confidence,
         'open_trade':   None,
     }
 
 # ── Discord ───────────────────────────────────────────────────────────────────
 def _discord_fmt(msg: str) -> str:
-    """Discord uses **bold** — return as-is."""
-    return msg
+    """Discord uses **bold** — prepend a divider so messages don't stack unreadably."""
+    return '─────────────────────\n' + msg
 
 def _telegram_fmt(msg: str) -> str:
     """Convert Discord markdown to Telegram MarkdownV2-safe plain bold."""
@@ -603,27 +760,103 @@ discord = notify
 
 def format_discord(sig: dict) -> str:
     s   = sig['suggested']
-    mst = {'premarket': '6:30 AM MST ☀️', 'midmorning': '9:15 AM MST 📊', 'late': '9:50 AM MST 🕙', 'on_demand': 'On Demand 🔄'}
+    mst = {
+        'market-open':  '7:35 AM MST 🔔',
+        'mid-morning':  '8:15 AM MST 📊',
+        'late-morning': '9:00 AM MST 🕙',
+        'pre-noon':     '9:45 AM MST 🕒',
+        'last-call':    '10:15 AM MST ⏰',
+        'on_demand':    'On Demand 🔄',
+        # legacy labels for backward compat
+        'premarket':    '6:30 AM MST ☀️',
+        'midmorning':   '9:15 AM MST 📊',
+        'late':         '9:50 AM MST 🕙',
+    }
     regime_txt = '📌 Pinning (range-bound)' if sig['gex_regime'] == 'positive' else '⚡ Trending (volatile)'
     dir_emoji  = '🐂' if sig['direction'] == 'BULL_PUT' else '🐻'
     dir_name   = 'Bull Put Spread' if sig['direction'] == 'BULL_PUT' else 'Bear Call Spread'
     close_at   = round(s['net_credit'] * 0.20, 2)
 
+    # ── VIX line ────────────────────────────────────────────────────────────
+    vix = sig.get('vix')
+    if vix is not None:
+        if vix < 15:
+            vix_txt = f'VIX **{vix:.1f}** 😴 low vol — tight spreads'
+        elif vix < 20:
+            vix_txt = f'VIX **{vix:.1f}** ✅ ideal selling zone'
+        elif vix < 25:
+            vix_txt = f'VIX **{vix:.1f}** 🟡 elevated — wider ok'
+        else:
+            vix_txt = f'VIX **{vix:.1f}** 🔴 high vol — 1 contract max'
+    else:
+        vix_txt = None
+
+    # ── P/C ratio line ──────────────────────────────────────────────────────
+    pc = sig.get('pc_ratio')
+    if pc is not None:
+        if pc < 0.7:
+            pc_txt = f'SPY P/C **{pc:.2f}** 🐂 (bullish — confirms puts OTM)'
+        elif pc > 1.2:
+            pc_txt = f'SPY P/C **{pc:.2f}** 🐻 (bearish — confirms calls OTM)'
+        else:
+            pc_txt = f'SPY P/C **{pc:.2f}** ➡️ (neutral)'
+    else:
+        pc_txt = None
+
+    open_note = '\n_⏳ Signal at 9:35 — open rotation settles first. Confirm 9:30 candle direction before entering._' \
+        if sig['label'] == 'market-open' else ''
+    event = sig.get('market_event')
+    event_banner = f"\n🚨 **{event} day** — IV elevated, GEX unreliable. 1 contract max or skip." \
+        if event else ''
     lines = [
-        f"**📈 SPY Options — {mst.get(sig['label'], sig['label'])}**",
+        f"**📈 SPY Options — {mst.get(sig['label'], sig['label'])}**{open_note}{event_banner}",
         f"",
         f"SPY **${sig['spy_price']:.2f}** | Expiry **{sig['expiry']}**",
         f"GEX: {regime_txt} | Net GEX: **${sig['total_gex_b']:.1f}B**",
         f"📌 Pin **${sig['pin_strike']:.0f}** | Support **${sig['lower_wall']:.0f}** | Resist **${sig['upper_wall']:.0f}**",
     ]
+    if vix_txt:
+        lines.append(vix_txt)
+    if pc_txt:
+        lines.append(pc_txt)
+
+    # SPY daily trend vs signal direction
+    spy_trend = sig.get('spy_trend')
+    if spy_trend:
+        trend_emoji  = '📈' if spy_trend == 'BULLISH' else '📉'
+        trend_agrees = (spy_trend == 'BULLISH' and sig['direction'] == 'BULL_PUT') or \
+                       (spy_trend == 'BEARISH' and sig['direction'] == 'BEAR_CALL')
+        if trend_agrees:
+            lines.append(f"{trend_emoji} SPY daily trend **{spy_trend}** ✅ aligns with {dir_emoji} {dir_name}")
+        else:
+            lines.append(f"⚠️ SPY daily trend **{spy_trend}** — conflicts with {dir_emoji} {dir_name} · consider 1 contract or skip")
+
     cmp = sig.get('gex_compare')
     if cmp:
         agree_icon = '✅' if cmp['direction_agree'] else '⚠️'
         lines.append(
-            f"{agree_icon} AV cross-check: GEX **${cmp['av_total_gex_b']:.1f}B** "
+            f"{agree_icon} CBOE cross-check: GEX **${cmp['av_total_gex_b']:.1f}B** "
             f"| diff **${cmp['diff_b']:+.2f}B** "
             f"| dir {'agrees' if cmp['direction_agree'] else '**DISAGREES**'}"
         )
+
+    conf = sig.get('confidence', 0)
+    stars = '⭐' * conf + '☆' * (4 - conf)
+    sizing = {
+        0: '🚫 Skip — no factors align',
+        1: '⚠️ 1 contract max',
+        2: '1 contract',
+        3: '1–2 contracts',
+        4: '🔥 Full size (2–3 contracts)',
+    }.get(conf, '1 contract')
+    # Late signal: cap at 1 contract when confidence is below 3 — gamma risk spikes near noon
+    if sig['label'] == 'last-call' and conf < 3:
+        sizing = '⏰ Late signal — 1 contract max (gamma risk near noon)'
+    # High-impact event always caps at 1 contract
+    if event:
+        sizing = '⚠️ Event day — 1 contract max'
+    lines.append(f"{stars} Confidence **{conf}/4** — {sizing}")
+
     lines += [
         f"",
         f"{dir_emoji} **{dir_name}** (Suggested)",
@@ -660,7 +893,7 @@ def format_discord(sig: dict) -> str:
     return '\n'.join(lines)
 
 # ── Trade monitoring ──────────────────────────────────────────────────────────
-PROFIT_MILESTONES = [25, 50, 75, 80]   # alert at each of these %
+PROFIT_MILESTONES = [10, 25, 50, 65, 75, 80]   # alert at each of these %
 LOSS_WARN_PCT     = -20                 # warn when loss exceeds this
 UPDATE_INTERVAL   = 900                 # send regular P&L update every 15 min
 
@@ -672,13 +905,28 @@ def check_trades(state: dict) -> list:
     alerts = []
     try:
         import yfinance as yf
-        ticker = yf.Ticker('SPY')
-        fi     = ticker.fast_info
-        spot   = float(fi.get('lastPrice') or fi.get('previousClose') or 0)
         now_et = et_now()
         now_ts = time.time()
 
+        # Pre-fetch spot prices for each ticker used across open trades
+        _spots: dict = {}
+        _yf_tickers: dict = {}
+        for t in open_trades:
+            tk = t.get('ticker', 'SPY')
+            if tk not in _spots:
+                yft = yf.Ticker('^SPX' if tk == 'SPX' else 'SPY')
+                fi  = yft.fast_info
+                sp  = float(fi.get('lastPrice') or fi.get('previousClose') or 0)
+                _spots[tk]      = sp
+                _yf_tickers[tk] = yft
+
         for trade in open_trades:
+            ticker_name = trade.get('ticker', 'SPY')
+            yf_ticker   = _yf_tickers.get(ticker_name)
+            spot        = _spots.get(ticker_name, 0)
+            if not yf_ticker or not spot:
+                continue
+
             direction  = trade.get('direction')
             short_s    = float(trade.get('short_strike', 0))
             long_s     = float(trade.get('long_strike', 0))
@@ -690,15 +938,15 @@ def check_trades(state: dict) -> list:
             dir_name   = 'Bull Put' if isBull else 'Bear Call'
 
             try:
-                chain = ticker.option_chain(expiry)
+                chain = yf_ticker.option_chain(expiry)
                 if isBull:
                     pm        = {float(r['strike']): r for _, r in chain.puts.iterrows()}
-                    short_ask = float(pm.get(short_s, {}).get('ask', 0) or 0)
-                    long_bid  = float(pm.get(long_s,  {}).get('bid', 0) or 0)
+                    short_ask = _safe_float(pm.get(short_s, {}).get('ask'))
+                    long_bid  = _safe_float(pm.get(long_s,  {}).get('bid'))
                 else:
                     cm        = {float(r['strike']): r for _, r in chain.calls.iterrows()}
-                    short_ask = float(cm.get(short_s, {}).get('ask', 0) or 0)
-                    long_bid  = float(cm.get(long_s,  {}).get('bid', 0) or 0)
+                    short_ask = _safe_float(cm.get(short_s, {}).get('ask'))
+                    long_bid  = _safe_float(cm.get(long_s,  {}).get('bid'))
 
                 cur_debit  = round(short_ask - long_bid, 2)
                 profit_pct = round((credit - cur_debit) / credit * 100, 1) if credit else 0
@@ -716,14 +964,15 @@ def check_trades(state: dict) -> list:
                 for m in PROFIT_MILESTONES:
                     if profit_pct >= m and m not in milestones_hit:
                         milestones_hit.append(m)
-                        emoji  = '🚀' if m >= 75 else '✅' if m >= 50 else '💰'
+                        emoji  = '🚀' if m >= 75 else '✅' if m >= 50 else '💰' if m >= 25 else '📍'
                         advice = 'Strong close signal — lock in gains!' if m >= 75 else \
-                                 'Good time to close — solid profit secured' if m >= 50 else \
-                                 'Consider closing half if you want to play it safe'
+                                 'Good time to close — solid profit secured' if m >= 65 else \
+                                 'Consider closing half if you want to play it safe' if m >= 25 else \
+                                 'Trade moving in your favour — hold or set a mental stop'
                         close_cost = round(cur_debit * 100 * contracts, 2)
                         alerts.append(
-                            f"{emoji} **SPY {tid} — {m}% profit reached!**\n"
-                            f"{dir_name} ${short_s:.0f}/${long_s:.0f} | SPY ${spot:.2f}\n"
+                            f"{emoji} **{ticker_name} {tid} — {m}% profit reached!**\n"
+                            f"{dir_name} ${short_s:.0f}/${long_s:.0f} | {ticker_name} ${spot:.2f}\n"
                             f"Close now: buy back at **${cur_debit:.2f}** debit\n"
                             f"P&L if closed now: **+${pnl_now:.2f}** (${close_cost:.2f} cost × {contracts} contract{'s' if contracts>1 else ''})\n"
                             f"💡 {advice}"
@@ -733,7 +982,7 @@ def check_trades(state: dict) -> list:
                 if now_et.hour >= 14 and profit_pct >= 30 and 'afternoon_close' not in milestones_hit:
                     milestones_hit.append('afternoon_close')
                     alerts.append(
-                        f"🕑 **SPY {tid} — Afternoon close suggestion**\n"
+                        f"🕑 **{ticker_name} {tid} — Afternoon close suggestion**\n"
                         f"It's after 2 PM ET. Profit at **{profit_pct:.0f}%** (${pnl_now:+.2f}).\n"
                         f"Close debit: **${cur_debit:.2f}** | Time decay risk increasing — consider locking in."
                     )
@@ -743,9 +992,9 @@ def check_trades(state: dict) -> list:
                     milestones_hit.append('loss_warn')
                     danger = isBull and spot <= short_s + 1.0 or not isBull and spot >= short_s - 1.0
                     alerts.append(
-                        f"🔴 **SPY {tid} — Loss warning {profit_pct:.0f}%**\n"
-                        f"SPY ${spot:.2f} | P&L: **${pnl_now:+.2f}**\n"
-                        f"{'⚠️ SPY approaching your short strike $'+str(int(short_s))+' — close to limit damage' if danger else 'Consider cutting loss now before it gets worse'}"
+                        f"🔴 **{ticker_name} {tid} — Loss warning {profit_pct:.0f}%**\n"
+                        f"{ticker_name} ${spot:.2f} | P&L: **${pnl_now:+.2f}**\n"
+                        f"{'⚠️ '+ticker_name+' approaching your short strike $'+str(int(short_s))+' — close to limit damage' if danger else 'Consider cutting loss now before it gets worse'}"
                     )
 
                 # ── Strike approach warning ─────────────────────────────────
@@ -753,8 +1002,8 @@ def check_trades(state: dict) -> list:
                 if near_strike and 'near_strike' not in milestones_hit:
                     milestones_hit.append('near_strike')
                     alerts.append(
-                        f"⚠️ **SPY {tid} — Strike breach risk!**\n"
-                        f"SPY **${spot:.2f}** is within $0.75 of your short strike **${short_s:.0f}**\n"
+                        f"⚠️ **{ticker_name} {tid} — Strike breach risk!**\n"
+                        f"{ticker_name} **${spot:.2f}** is within $0.75 of your short strike **${short_s:.0f}**\n"
                         f"P&L now: **${pnl_now:+.2f}** | Close debit: **${cur_debit:.2f}**\n"
                         f"Recommend closing immediately to cap loss."
                     )
@@ -765,8 +1014,8 @@ def check_trades(state: dict) -> list:
                     bar   = '█' * int(max(0, profit_pct) / 10) + '░' * (10 - int(max(0, profit_pct) / 10))
                     emoji = '📈' if profit_pct > 0 else '📉'
                     alerts.append(
-                        f"{emoji} **SPY Position Update — {tid}**\n"
-                        f"{dir_name} ${short_s:.0f}/${long_s:.0f} | SPY ${spot:.2f}\n"
+                        f"{emoji} **{ticker_name} Position Update — {tid}**\n"
+                        f"{dir_name} ${short_s:.0f}/${long_s:.0f} | {ticker_name} ${spot:.2f}\n"
                         f"`{bar}` **{profit_pct:+.1f}%** | P&L: **${pnl_now:+.2f}**\n"
                         f"Close cost: **${cur_debit:.2f}** debit | Expires: {expiry}"
                     )
@@ -786,18 +1035,87 @@ def check_trades(state: dict) -> list:
 
     return alerts
 
+# ── Health ping ───────────────────────────────────────────────────────────────
+def send_health_ping(state: dict) -> None:
+    """9:25 AM ET pre-market ping — confirms bot is live and shows today's schedule."""
+    vix = fetch_vix()
+    today    = et_now().strftime('%Y-%m-%d')
+    today_pnl = state.get('pnl', {}).get(today, 0)
+    vix_ok   = (VIX_MIN <= vix <= VIX_MAX) if vix is not None else True
+    if vix is not None:
+        if vix < 15:
+            vix_label = f'VIX {vix:.1f} 😴 low vol'
+        elif vix < 20:
+            vix_label = f'VIX {vix:.1f} ✅ ideal zone'
+        elif vix < 25:
+            vix_label = f'VIX {vix:.1f} 🟡 elevated'
+        else:
+            vix_label = f'VIX {vix:.1f} 🔴 high — may skip'
+    else:
+        vix_label = 'VIX: unavailable'
+    sched_str = ' → '.join(mst for _, _, _, mst in SCHEDULES)
+    status_icon = '✅' if vix_ok else '⚠️'
+    goal_needed = 74.0 - today_pnl
+    discord(
+        f"☀️ **SPY Bot Ready — {et_now().strftime('%a %b %-d')}**\n"
+        f"{status_icon} {vix_label} "
+        f"{'(signals active)' if vix_ok else f'(signals may pause — outside [{VIX_MIN}–{VIX_MAX}])'}\n"
+        f"📅 5 signals: {sched_str}\n"
+        f"💰 Today P&L: **${today_pnl:+.2f}** | Goal: ${goal_needed:.2f} more to reach $74 (~$100 CAD)\n"
+        f"🛑 Daily loss limit: ${DAILY_LOSS_LIMIT_USD} | Hard close: 3:30 PM ET"
+    )
+
+
 # ── Signal runner ─────────────────────────────────────────────────────────────
 def run_signal(label: str, state: dict) -> dict:
+    # ── VIX go/no-go ─────────────────────────────────────────────────────────
+    vix = fetch_vix()
+    if vix is not None:
+        logger.info(f'[{label}] VIX={vix:.1f}')
+        if vix < VIX_MIN:
+            msg = (f"⏭️ **SPY Skipped — {label}**\n"
+                   f"VIX **{vix:.1f}** is below {VIX_MIN} — spreads pay near nothing. "
+                   f"Waiting for higher vol before selling premium.")
+            discord(msg)
+            logger.info(f'[{label}] Skipped — VIX too low ({vix:.1f} < {VIX_MIN})')
+            return state
+        if vix > VIX_MAX:
+            msg = (f"⏭️ **SPY Skipped — {label}**\n"
+                   f"VIX **{vix:.1f}** above {VIX_MAX} — 0DTE too volatile. "
+                   f"Max 1 contract if you trade manually today.")
+            discord(msg)
+            logger.info(f'[{label}] Skipped — VIX too high ({vix:.1f} > {VIX_MAX})')
+            return state
+
+    # ── Daily loss limit ─────────────────────────────────────────────────────
+    today     = et_now().strftime('%Y-%m-%d')
+    today_pnl = state.get('pnl', {}).get(today, 0)
+    if today_pnl <= DAILY_LOSS_LIMIT_USD:
+        loss_key = f'{today}_loss_limit_alerted'
+        if not state['fired'].get(loss_key):
+            state['fired'][loss_key] = True
+            save_state(state)
+            discord(
+                f"🛑 **SPY Daily Loss Limit — Signals Paused**\n"
+                f"Today's P&L: **${today_pnl:+.2f}** (limit: ${DAILY_LOSS_LIMIT_USD} ≈ -$150 CAD)\n"
+                f"No more signals today. Bot resumes tomorrow at 9:25 AM ET."
+            )
+        logger.info(f'[{label}] Skipped — daily loss limit (${today_pnl:+.2f} ≤ ${DAILY_LOSS_LIMIT_USD})')
+        return state
+
     logger.info(f'[{label}] Fetching SPY data...')
     data = fetch_spy_chain()
     if not data:
         logger.error(f'[{label}] No data available')
         return state
 
-    sig = build_signal(data, label)
+    sig = build_signal(data, label, vix=vix)
     if not sig:
         logger.warning(f'[{label}] Could not build signal (no liquid spreads)')
         return state
+
+    sig['market_event'] = today_market_event()
+    sig['spy_trend']    = fetch_spy_daily_trend()
 
     open_trade = next((t for t in state.get('trades', []) if t.get('status') == 'open'), None)
     sig['open_trade'] = open_trade
@@ -832,13 +1150,48 @@ def handle_trigger(trigger: dict, state: dict) -> dict:
         long_s    = t.get('long_strike', 0)
         credit    = t.get('credit', 0)
         contracts = t.get('contracts', 1)
+        tk_name = t.get('ticker', 'SPY')
         discord(
-            f"📝 **SPY Trade Registered**\n"
+            f"📝 **{tk_name} Trade Registered**\n"
             f"{'Bull Put' if direction == 'BULL_PUT' else 'Bear Call'} "
             f"${short_s:.0f}/{long_s:.0f} | Credit ${credit:.2f} × {contracts} contracts\n"
             f"Max profit: ${credit*100*contracts:.0f} | Close at: ${round(credit*0.20,2):.2f} debit"
         )
         logger.info(f'Trade registered: {t["trade_id"]}')
+
+    elif action == 'edit_trade':
+        tid = trigger.get('trade_id')
+        edits = trigger.get('trade', {})
+        for t in state['trades']:
+            if t['trade_id'] == tid and t['status'] == 'open':
+                for field in ('short_strike', 'long_strike', 'credit', 'contracts', 'expiry'):
+                    if field in edits and edits[field] not in (None, ''):
+                        t[field] = edits[field]
+                # Strikes/credit changed — old profit milestones no longer apply to the
+                # corrected numbers, so clear them and let fresh ones fire from here.
+                t['milestones_hit'] = []
+                t.pop('current_debit', None)
+                t.pop('profit_pct', None)
+                t.pop('pnl_now', None)
+                save_state(state)
+                sig = load_signal()
+                sig['open_trade'] = t
+                save_signal(sig)
+                direction = t.get('direction', '')
+                short_s   = t.get('short_strike', 0)
+                long_s    = t.get('long_strike', 0)
+                credit    = t.get('credit', 0)
+                contracts = t.get('contracts', 1)
+                tk_name   = t.get('ticker', 'SPY')
+                discord(
+                    f"✏️ **{tk_name} Trade Corrected**\n"
+                    f"{'Bull Put' if direction == 'BULL_PUT' else 'Bear Call'} "
+                    f"${short_s:.0f}/{long_s:.0f} | Credit ${credit:.2f} × {contracts} contracts\n"
+                    f"Max profit: ${credit*100*contracts:.0f} | Close at: ${round(credit*0.20,2):.2f} debit\n"
+                    f"Profit tracking reset to match the corrected numbers."
+                )
+                logger.info(f'Trade edited: {tid}')
+                break
 
     elif action == 'close_trade':
         tid   = trigger.get('trade_id')
@@ -921,6 +1274,310 @@ def next_signal_info() -> dict:
             return {'label': lbl, 'mst': mst, 'seconds_until': secs, 'et_time': f'{h:02d}:{m:02d} ET'}
     return {'label': 'none', 'mst': 'No more signals today', 'seconds_until': 0, 'et_time': ''}
 
+# ── Crypto 0DTE — pure-python indicators (no pandas/ta dependency in this file) ─
+def _crypto_ema(values, period):
+    alpha = 2.0/(period+1)
+    out = [None]*len(values)
+    if not values: return out
+    out[0] = values[0]
+    for i in range(1, len(values)):
+        out[i] = alpha*values[i] + (1-alpha)*out[i-1]
+    return out
+
+def _crypto_wilder(values, period):
+    alpha = 1.0/period
+    out = [None]*len(values)
+    if len(values) < period: return out
+    out[period-1] = sum(values[:period])/period
+    for i in range(period, len(values)):
+        out[i] = alpha*values[i] + (1-alpha)*out[i-1]
+    return out
+
+def _crypto_get(base: str, path: str, params: dict = None) -> dict:
+    r = requests.get(base + path, params=params or {}, timeout=15)
+    r.raise_for_status()
+    return r.json()
+
+def crypto_get_klines(symbol: str, interval='1h', limit=200) -> list:
+    raw = _crypto_get(FUTURES_BASE_URL, '/fapi/v1/klines', {'symbol': symbol, 'interval': interval, 'limit': limit})
+    return [{'time': k[0], 'open': float(k[1]), 'high': float(k[2]), 'low': float(k[3]),
+              'close': float(k[4]), 'volume': float(k[5])} for k in raw]
+
+def crypto_get_trend(symbol: str) -> str:
+    """Same ADX/EMA trend logic Apex uses live, hand-rolled here to avoid
+    adding a pandas/ta dependency to this file."""
+    try:
+        candles = crypto_get_klines(symbol, '1h', 200)
+        closes = [c['close'] for c in candles]; highs = [c['high'] for c in candles]; lows = [c['low'] for c in candles]
+        n = len(candles)
+        plus_dm=[0.0]*n; minus_dm=[0.0]*n
+        for i in range(1,n):
+            up = highs[i]-highs[i-1]; down = lows[i-1]-lows[i]
+            plus_dm[i] = up if (up>down and up>0) else 0.0
+            minus_dm[i] = down if (down>up and down>0) else 0.0
+        tr=[0.0]*n
+        for i in range(n):
+            tr[i] = highs[i]-lows[i] if i==0 else max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1]))
+        sm_tr=_crypto_wilder(tr,14); sm_pdm=_crypto_wilder(plus_dm,14); sm_mdm=_crypto_wilder(minus_dm,14)
+        pdi = 100*sm_pdm[-1]/sm_tr[-1] if sm_tr[-1] else 0
+        mdi = 100*sm_mdm[-1]/sm_tr[-1] if sm_tr[-1] else 0
+        dx=[None]*n
+        for i in range(n):
+            if sm_tr[i] and sm_pdm[i] is not None and sm_mdm[i] is not None:
+                p = 100*sm_pdm[i]/sm_tr[i]; m = 100*sm_mdm[i]/sm_tr[i]
+                if p+m>0: dx[i] = 100*abs(p-m)/(p+m)
+        dx_clean=[d if d is not None else 0.0 for d in dx]
+        adx = _crypto_wilder(dx_clean,14)[-1]
+        ema21 = _crypto_ema(closes,21)[-1]; ema50 = _crypto_ema(closes,50)[-1]
+        if adx is not None and adx >= CRYPTO_ADX_MIN and pdi > mdi and ema21 > ema50:
+            return 'BULLISH'
+        if adx is not None and adx >= CRYPTO_ADX_MIN and mdi > pdi and ema21 < ema50:
+            return 'BEARISH'
+        return 'CHOPPY'
+    except Exception as e:
+        logger.warning(f'crypto_get_trend[{symbol}] failed: {e}, defaulting to CHOPPY')
+        return 'CHOPPY'
+
+def crypto_get_index_price(underlying: str) -> float:
+    d = _crypto_get(OPTIONS_BASE_URL, '/eapi/v1/index', {'underlying': underlying})
+    return float(d['indexPrice'])
+
+_crypto_chain_cache = {}
+def crypto_get_option_chain(opt_prefix: str) -> dict:
+    now = time.time()
+    cached = _crypto_chain_cache.get(opt_prefix)
+    if cached and (now - cached['ts']) < CRYPTO_CHAIN_CACHE_TTL:
+        return cached['data']
+    info = _crypto_get(OPTIONS_BASE_URL, '/eapi/v1/exchangeInfo')
+    syms = [s for s in info.get('optionSymbols', []) if s['symbol'].startswith(opt_prefix + '-')]
+    date_codes = sorted(set(s['symbol'].split('-')[1] for s in syms))
+    if not date_codes:
+        raise RuntimeError(f'no listed option contracts for {opt_prefix}')
+    soonest = date_codes[0]
+    calls = sorted(float(s['symbol'].split('-')[2]) for s in syms if s['symbol'].split('-')[1]==soonest and s['side']=='CALL')
+    puts  = sorted(float(s['symbol'].split('-')[2]) for s in syms if s['symbol'].split('-')[1]==soonest and s['side']=='PUT')
+    expiry_ms = next(s['expiryDate'] for s in syms if s['symbol'].split('-')[1] == soonest)
+    data = {'date_code': soonest, 'expiry_ms': expiry_ms, 'strikes': {'C': calls, 'P': puts}}
+    _crypto_chain_cache[opt_prefix] = {'data': data, 'ts': now}
+    return data
+
+def crypto_get_quotes(symbols: list) -> dict:
+    if not symbols: return {}
+    tickers = _crypto_get(OPTIONS_BASE_URL, '/eapi/v1/ticker')
+    marks   = _crypto_get(OPTIONS_BASE_URL, '/eapi/v1/mark')
+    want = set(symbols)
+    tmap = {t['symbol']: t for t in tickers if t['symbol'] in want}
+    mmap = {m['symbol']: m for m in marks if m['symbol'] in want}
+    out = {}
+    for sym in symbols:
+        t, m = tmap.get(sym), mmap.get(sym)
+        if not t: continue
+        out[sym] = {'bid': float(t['bidPrice']), 'ask': float(t['askPrice']),
+                     'mark_iv': float(m['markIV']) if m else None}
+    return out
+
+def _crypto_nearest_strike(strikes: list, target: float) -> float:
+    return min(strikes, key=lambda s: abs(s-target))
+
+def _crypto_fmt_strike(s):
+    return str(int(s)) if s == int(s) else str(s)
+
+def crypto_build_spread(opt_prefix, date_code, chain, direction, spot, sigma_move):
+    target_short = CRYPTO_K1 * sigma_move
+    if direction == 'BULL_PUT':
+        side = 'P'
+        below = [s for s in chain['strikes']['P'] if s < spot]
+        if not below: return None
+        short_strike = _crypto_nearest_strike(below, spot - target_short)
+        further = [s for s in below if s < short_strike]
+        if not further: return None
+        long_strike = _crypto_nearest_strike(further, short_strike - CRYPTO_K2*sigma_move)
+    else:
+        side = 'C'
+        above = [s for s in chain['strikes']['C'] if s > spot]
+        if not above: return None
+        short_strike = _crypto_nearest_strike(above, spot + target_short)
+        further = [s for s in above if s > short_strike]
+        if not further: return None
+        long_strike = _crypto_nearest_strike(further, short_strike + CRYPTO_K2*sigma_move)
+
+    short_sym = f'{opt_prefix}-{date_code}-{_crypto_fmt_strike(short_strike)}-{side}'
+    long_sym  = f'{opt_prefix}-{date_code}-{_crypto_fmt_strike(long_strike)}-{side}'
+    quotes = crypto_get_quotes([short_sym, long_sym])
+    if short_sym not in quotes or long_sym not in quotes: return None
+    short_bid = quotes[short_sym]['bid']; long_ask = quotes[long_sym]['ask']
+    credit = round(short_bid - long_ask, 4)
+    width = abs(long_strike - short_strike)
+    if credit <= 0 or width <= 0 or credit < width*MIN_CREDIT_WIDTH_RATIO: return None
+    max_loss_per_unit = width - credit
+    if max_loss_per_unit <= 0: return None
+    contracts = round(CRYPTO_TRADE_RISK_USD / max_loss_per_unit, 2)
+    if contracts < 0.01: return None
+    return {'direction': direction, 'short_symbol': short_sym, 'long_symbol': long_sym,
+            'short_strike': short_strike, 'long_strike': long_strike,
+            'credit': credit, 'width': width, 'contracts': contracts,
+            'max_loss': round(max_loss_per_unit*contracts, 2), 'max_profit': round(credit*contracts, 2)}
+
+def crypto_vertical_payoff(direction, K_short, K_long, settle):
+    if direction == 'BULL_PUT':
+        return max(0, K_short-settle) - max(0, K_long-settle)
+    return max(0, settle-K_short) - max(0, settle-K_long)
+
+def crypto_current_option_date() -> str:
+    now = datetime.now(timezone.utc)
+    d = now.date() if now.hour >= 8 else (now.date() - timedelta(days=1))
+    return d.isoformat()
+
+def crypto_settle_open_positions(symbol, cfg, sym_state):
+    base = cfg['base']
+    positions = sym_state.get('open_positions', [])
+    if not positions: return
+    try:
+        settle_price = crypto_get_index_price(symbol)
+    except Exception as e:
+        notify(f'❌ **Crypto 0DTE Paper [{base}] ERROR**\n\nsettle: could not fetch index price: {e}')
+        return
+    for pos in positions:
+        owed = crypto_vertical_payoff(pos['direction'], pos['short_strike'], pos['long_strike'], settle_price)
+        pnl = round((pos['credit'] - owed) * pos['contracts'], 2)
+        trade = dict(pos, settle_price=settle_price, pnl=pnl, win=pnl>0,
+                     closed_at=datetime.now(timezone.utc).isoformat(), date=pos.get('opened_date'))
+        sym_state.setdefault('trades', []).append(trade)
+        emoji = '🟢' if pnl>=0 else '🔴'
+        notify(
+            f'{emoji} **Crypto 0DTE Paper [{base}] — {pos["direction"]} SETTLED**\n\n'
+            f'Short {pos["short_symbol"]} / Long {pos["long_symbol"]}\n'
+            f'Settle: ${settle_price:,.2f}\n'
+            f'Credit: ${pos["credit"]:.2f} | Contracts: {pos["contracts"]}\n'
+            f'Net P&L: **${pnl:+.2f}** (paper)'
+        )
+        logger.info(f'[Crypto0DTE:{base}] Settled {pos["direction"]} pnl={pnl:+.2f} settle={settle_price:.2f}')
+    sym_state['open_positions'] = []
+
+def crypto_open_new_positions(symbol, cfg, sym_state, chain):
+    base = cfg['base']
+    try:
+        spot = crypto_get_index_price(symbol)
+        trend = crypto_get_trend(symbol)
+        if not chain['strikes']['C']:
+            logger.warning(f'[Crypto0DTE:{base}] no call strikes listed, skipping'); return
+        atm_strike = _crypto_nearest_strike(chain['strikes']['C'], spot)
+        atm_sym = f"{cfg['opt_prefix']}-{chain['date_code']}-{_crypto_fmt_strike(atm_strike)}-C"
+        atm_quote = crypto_get_quotes([atm_sym]).get(atm_sym)
+        iv = atm_quote['mark_iv'] if atm_quote and atm_quote.get('mark_iv') else 0.5
+        # size the strike distance off the ACTUAL time remaining to this contract's
+        # real expiry, not a hardcoded 1-day assumption - matters once DTE > ~1 day
+        hours_to_expiry = max((chain['expiry_ms'] - datetime.now(timezone.utc).timestamp()*1000) / 3600000.0, 1.0)
+        sigma_move = iv * math.sqrt(hours_to_expiry/24.0/365) * spot
+
+        sides = ['BULL_PUT'] if trend=='BULLISH' else ['BEAR_CALL'] if trend=='BEARISH' else ['BULL_PUT','BEAR_CALL']
+        opened_date = crypto_current_option_date()
+        for direction in sides:
+            spread = crypto_build_spread(cfg['opt_prefix'], chain['date_code'], chain, direction, spot, sigma_move)
+            if spread is None:
+                logger.info(f'[Crypto0DTE:{base}] {direction}: no qualifying spread this cycle'); continue
+            spread['opened_date'] = opened_date
+            spread['opened_at'] = datetime.now(timezone.utc).isoformat()
+            spread['expiry_ms'] = chain['expiry_ms']
+            spread['trend'] = trend
+            sym_state.setdefault('open_positions', []).append(spread)
+            notify(
+                f'🎯 **Crypto 0DTE Paper [{base}] — {direction} OPENED**\n\n'
+                f'Short {spread["short_symbol"]} / Long {spread["long_symbol"]}\n'
+                f'Credit: ${spread["credit"]:.2f} | Width: ${spread["width"]:.2f} | Contracts: {spread["contracts"]}\n'
+                f'Max profit: ${spread["max_profit"]:.2f} | Max loss: ${spread["max_loss"]:.2f} (paper, capped)\n'
+                f'📊 Trend: {trend} | Spot: ${spot:,.2f} | IV: {iv*100:.1f}% | DTE: {hours_to_expiry/24:.1f}d'
+            )
+            logger.info(f'[Crypto0DTE:{base}] Opened {direction} credit={spread["credit"]:.2f} contracts={spread["contracts"]}')
+    except Exception as e:
+        logger.error(f'[Crypto0DTE:{base}] open_new_positions failed: {e}', exc_info=True)
+        notify(f'❌ **Crypto 0DTE Paper [{base}] ERROR**\n\nopen_new_positions failed: {e}')
+
+# How far out the SOONEST listed contract may be for us to still call it "0DTE" and
+# trade it. Binance's near-term listing calendar isn't a fixed weekday pattern (it can
+# skip days, and what's skipped today might not be skipped next week if they change
+# the schedule) - so this is deliberately NOT keyed to any hardcoded day-of-week.
+# Instead we just check the actual gap to the real next expiry, live, every cycle.
+CRYPTO_MAX_DTE_HOURS = 30   # ~24h cadence + buffer for listing-time jitter
+
+def crypto_check_rollover(symbol, cfg, crypto_state):
+    sym_state = crypto_state['symbols'][symbol]
+    base = cfg['base']
+    now_ms = datetime.now(timezone.utc).timestamp() * 1000
+
+    # Still holding a position whose REAL contract hasn't actually expired yet -
+    # nothing to do (this is what stops us from "settling" a Friday-expiring
+    # contract early just because a calendar day ticked over on Wednesday/Thursday).
+    held_expiry_ms = sym_state.get('held_expiry_ms')
+    if held_expiry_ms is not None and now_ms < held_expiry_ms:
+        return
+
+    if sym_state.get('open_positions'):
+        logger.info(f'[Crypto0DTE:{base}] Held contract has passed real expiry - settling')
+        crypto_settle_open_positions(symbol, cfg, sym_state)
+        sym_state['held_expiry_ms'] = None
+        save_crypto_state(crypto_state)
+
+    try:
+        chain = crypto_get_option_chain(cfg['opt_prefix'])
+    except Exception as e:
+        logger.warning(f'[Crypto0DTE:{base}] option chain fetch failed: {e}')
+        return
+
+    hours_to_expiry = (chain['expiry_ms'] - now_ms) / 3600000.0
+    if hours_to_expiry > CRYPTO_MAX_DTE_HOURS:
+        logger.info(f'[Crypto0DTE:{base}] no genuine 0DTE listed right now — soonest expiry is '
+                    f'{hours_to_expiry/24:.1f} days out (>{CRYPTO_MAX_DTE_HOURS}h threshold). '
+                    f'Skipping this cycle, will re-check in 5 min.')
+        return  # deliberately do NOT set held_expiry_ms - keep re-checking every cycle
+                # so we catch it the moment Binance lists something closer
+
+    crypto_open_new_positions(symbol, cfg, sym_state, chain)
+    sym_state['held_expiry_ms'] = chain['expiry_ms']
+    sym_state['current_option_date'] = crypto_current_option_date()
+    save_crypto_state(crypto_state)
+
+def crypto_write_dashboard(crypto_state):
+    symbols_payload = {}
+    for symbol, cfg in CRYPTO_SYMBOLS_CONFIG.items():
+        base = cfg['base']
+        sym_state = crypto_state['symbols'][symbol]
+        trades = sym_state.get('trades', [])
+        wins = [t for t in trades if t['win']]; losses = [t for t in trades if not t['win']]
+        total = len(trades)
+        daily_pnl = {}
+        for t in trades:
+            d = t.get('date') or (t.get('closed_at') or '')[:10]
+            if d: daily_pnl[d] = round(daily_pnl.get(d,0) + t['pnl'], 2)
+        symbols_payload[base] = {
+            'symbol': symbol,
+            'open_positions': sym_state.get('open_positions', []),
+            'trade_risk_usd': CRYPTO_TRADE_RISK_USD,
+            'performance': {
+                'total': total, 'wins': len(wins), 'losses': len(losses),
+                'win_rate': round(len(wins)/total*100, 1) if total else 0,
+                'net_pnl': round(sum(t['pnl'] for t in trades), 2),
+            },
+            'daily_pnl': daily_pnl,
+            'trades': list(reversed(trades[-30:])),
+        }
+    payload = {'generated_at': datetime.now(timezone.utc).isoformat(), 'paper_trading': True, 'symbols': symbols_payload}
+    try:
+        with open(CRYPTO_DASHBOARD_FILE, 'w') as f:
+            json.dump(payload, f, indent=2)
+    except Exception as e:
+        logger.warning(f'crypto_write_dashboard failed: {e}')
+
+def run_crypto_0dte_cycle(crypto_state):
+    for symbol, cfg in CRYPTO_SYMBOLS_CONFIG.items():
+        try:
+            crypto_check_rollover(symbol, cfg, crypto_state)
+        except Exception as e:
+            logger.error(f'[Crypto0DTE:{cfg["base"]}] rollover error: {e}', exc_info=True)
+            notify(f'❌ **Crypto 0DTE Paper [{cfg["base"]}] ERROR**\n\n{e}')
+    crypto_write_dashboard(crypto_state)
+
+
 def start_api():
     while True:
         try:
@@ -941,13 +1598,27 @@ def main():
         return
 
     logger.info(f'🎯 SPY Options Bot starting — API on port {API_PORT}')
+    logger.info(f'🚀 Crypto 0DTE Paper (BTC+ETH) starting — ${CRYPTO_TRADE_RISK_USD}/spread, PAPER ONLY, no real orders')
+    notify(
+        f'🚀 **Crypto 0DTE Paper Trading Started**\n\n'
+        f'📊 Strategy: 0DTE credit spreads, trend-tilted (BULL_PUT/BEAR_CALL/iron condor when choppy)\n'
+        f'💵 ${CRYPTO_TRADE_RISK_USD}/spread max-loss sizing — PAPER ONLY, no real orders\n'
+        f'⏱ Rollover check every {CRYPTO_CHECK_INTERVAL_SEC//60} min | New position each option-day (~08:00 UTC)'
+    )
     threading.Thread(target=start_api, daemon=True).start()
 
     state        = load_state()
     last_monitor = 0.0
+    crypto_state = load_crypto_state()
+    last_crypto_check = 0.0
 
     while True:
         try:
+            # Crypto 0DTE paper trading — 24/7, independent of US market hours
+            if time.time() - last_crypto_check > CRYPTO_CHECK_INTERVAL_SEC:
+                run_crypto_0dte_cycle(crypto_state)
+                last_crypto_check = time.time()
+
             # Handle trigger file
             if os.path.exists(TRIGGER_FILE):
                 try:
@@ -962,6 +1633,15 @@ def main():
             if is_market_day():
                 now_et = et_now()
                 today  = now_et.strftime('%Y-%m-%d')
+
+                # Health ping at 9:25 AM ET — pre-market readiness check
+                health_key    = f'{today}_health'
+                health_target = now_et.replace(hour=9, minute=25, second=0, microsecond=0)
+                if (not state['fired'].get(health_key)
+                        and abs((now_et - health_target).total_seconds()) < 90):
+                    send_health_ping(state)
+                    state['fired'][health_key] = True
+                    save_state(state)
 
                 # Scheduled signals (fire within 90s window)
                 for (h, m, lbl, _) in SCHEDULES:
