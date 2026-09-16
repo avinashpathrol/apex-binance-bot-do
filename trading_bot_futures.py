@@ -163,11 +163,11 @@ SYMBOLS_CONFIG = {
         'base': 'SOXL',
         'dashboard_file': 'data_futures_soxl.json',
         'min_atr': 0.8,
-        'trade_amount': 20.0,
+        'trade_amount': 40.0,
         'max_loss_pct': 0.35,
         'market_hours_only': True,
         'one_way': True,
-        'leverage': 15,
+        'leverage': 50,  # max available at this position size (Binance bracket 1: 0-$50k notional)
         'skip_margin_type': True,
         'daily_profit_lock': 5.0,
         'trend_continuation_enabled': True,
