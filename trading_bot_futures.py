@@ -279,6 +279,18 @@ SYMBOLS_CONFIG = {
 }
 TRADING_SYMBOLS = ['NBISUSDT', 'AMDUSDT', 'APPUSDT', 'SOXLUSDT', 'CRCLUSDT', 'ASTSUSDT', 'TSLAUSDT']
 
+# Auto-tunable SL/trail parameters live here at runtime, layered over the
+# hardcoded SYMBOLS_CONFIG defaults, so run_weekly_auto_tune() can persist a
+# change without editing this source file. Always read these three params
+# (hard_sl_atr, trail_activate_atr, trail_dist_atr) through get_symbol_cfg(),
+# never SYMBOLS_CONFIG directly, so live trading and the auto-tuner always
+# agree on which value is actually in effect.
+def get_symbol_cfg(symbol: str, key: str, default):
+    override = state.get('runtime', {}).get('auto_tune_overrides', {}).get(symbol, {})
+    if key in override:
+        return override[key]
+    return SYMBOLS_CONFIG.get(symbol, {}).get(key, default)
+
 # Correlated pairs — skip entry in symbol B if symbol A already has an open trade.
 # Add pairs here when you observe two symbols that move lockstep and you want to cap
 # sector concentration. Empty by default — all symbols trade independently.
@@ -900,7 +912,7 @@ def run_weekly_trade_review() -> None:
 # which usually means the exit logic (trail stop / profit target) is
 # giving back on winners what it saves on losers. Purely informational --
 # no auto-tuning, a human decides what to change.
-MONTHLY_REVIEW_INTERVAL_DAYS = 30
+MONTHLY_REVIEW_INTERVAL_DAYS = 7   # check-in cadence is weekly; buckets are still calendar months
 MONTHLY_REVIEW_MIN_MONTHS    = 2
 MONTHLY_REVIEW_MIN_BUCKET_N  = 5
 MONTHLY_REVIEW_MIN_TRADES    = 15
@@ -980,6 +992,349 @@ def run_monthly_strategy_review() -> None:
 
     send_telegram('\n'.join(lines))
     logger.info('📆 Monthly strategy review sent')
+
+
+# ── Weekly auto-tune — same rigor as the manual TSLA fix, automated ────────
+# The monthly review above only flags problems for a human to look at. This
+# closes the loop: when a symbol is flagged, replay its real closed trades
+# against actual historical Binance price data (same method used to validate
+# the TSLA trail-activation fix on 2026-09-16), test candidate values for the
+# three SL/trail parameters one at a time, and only deploy a change if it
+# improves total P&L AND holds up in a strict majority of individual monthly
+# buckets -- never react to one bad week or a single aggregate number, which
+# is exactly the "confirm your bias" failure mode a single backtest produces.
+# Because this applies without human sign-off, it carries a real safety net:
+# every change is logged in full via Telegram, and a later run checks real
+# (not replayed) performance since the change and auto-reverts if it's
+# clearly worse -- an out-of-sample gate against genuinely new trades, not
+# just the historical data the change was chosen on.
+AUTO_TUNE_INTERVAL_DAYS       = 7
+AUTO_TUNE_MIN_TRADES          = 50
+AUTO_TUNE_MIN_MONTHS          = 3
+AUTO_TUNE_MIN_IMPROVEMENT_USD = 10.0
+AUTO_TUNE_COOLDOWN_DAYS       = 21
+AUTO_TUNE_ROLLBACK_MIN_TRADES = 15
+AUTO_TUNE_CACHE_FILE          = os.path.join(
+    os.path.dirname(BOT_STATE_FILE) or '.', 'auto_tune_replay_cache.json')
+
+HARD_SL_CANDIDATES       = [0.75, 0.90, 1.00, 1.10, 1.25, 1.50]
+TRAIL_ACTIVATE_CANDIDATES = [0.50, 0.60, 0.75, 0.90, 1.00, 1.15, 1.30, 1.50]
+TRAIL_DIST_CANDIDATES     = [0.15, 0.20, 0.25, 0.30, 0.40]
+
+def _autotune_fetch_klines(symbol: str, interval: str, start_ms: int, end_ms: int, limit: int = 1500) -> list:
+    """Fetching a symbol's full trade history (dozens to 100+ trades, each
+    needing an ATR window + a price-path window) can burst well past
+    Binance's public rate limit -- caught in testing when TSLA's fetch got
+    429'd into returning nothing right after NBIS's fetch used up the
+    budget. Retry with backoff specifically on 429 rather than treating it
+    like any other failure, since it's transient and recoverable."""
+    out, cursor = [], start_ms
+    while cursor < end_ms:
+        batch = None
+        for attempt in range(4):
+            try:
+                batch = binance_futures_public('/fapi/v1/klines', {
+                    'symbol': symbol, 'interval': interval, 'limit': limit,
+                    'startTime': cursor, 'endTime': end_ms,
+                })
+                break
+            except requests.exceptions.HTTPError as e:
+                if e.response is not None and e.response.status_code == 429 and attempt < 3:
+                    time.sleep(3 * (attempt + 1))
+                    continue
+                raise
+        if not batch:
+            break
+        out.extend(batch)
+        cursor = batch[-1][0] + 1
+        if len(batch) < limit:
+            break
+        time.sleep(0.25)
+    return out
+
+def _autotune_atr_at_entry(symbol: str, opened_at_iso: str) -> Optional[float]:
+    try:
+        entry_dt = datetime.fromisoformat(opened_at_iso.replace('Z', '+00:00'))
+        entry_ms = int(entry_dt.timestamp() * 1000)
+        klines = _autotune_fetch_klines(symbol, '1h', entry_ms - 16 * 3600 * 1000, entry_ms)
+        klines = [k for k in klines if k[0] < entry_ms]
+        if len(klines) < 14:
+            return None
+        ranges = [float(k[2]) - float(k[3]) for k in klines[-14:]]
+        return sum(ranges) / len(ranges)
+    except Exception as e:
+        logger.warning(f'autotune_atr [{symbol}]: {e}')
+        return None
+
+def _autotune_price_path(symbol: str, opened_at_iso: str, closed_at_iso: str) -> list:
+    try:
+        od = datetime.fromisoformat(opened_at_iso.replace('Z', '+00:00'))
+        cd = datetime.fromisoformat(closed_at_iso.replace('Z', '+00:00'))
+        start_ms = int(od.timestamp() * 1000)
+        end_ms   = int(cd.timestamp() * 1000) + 60000
+        klines = _autotune_fetch_klines(symbol, '1m', start_ms, end_ms)
+        return [[k[0], float(k[2]), float(k[3]), float(k[4])] for k in klines]  # time, high, low, close
+    except Exception as e:
+        logger.warning(f'autotune_path [{symbol}]: {e}')
+        return []
+
+def _autotune_load_cache() -> dict:
+    return read_json(AUTO_TUNE_CACHE_FILE, {})
+
+def _autotune_save_cache(cache: dict) -> None:
+    write_json(AUTO_TUNE_CACHE_FILE, cache)
+
+def _autotune_enrich_trades(symbol: str, trades: list) -> Tuple[list, int]:
+    """Attach {atr, path} to each trade, fetching only what isn't already
+    cached from a previous week's run -- avoids re-fetching a growing
+    history's full price data every single week. Returns (enriched, failed)
+    -- failed is tracked explicitly so a rate-limit storm or API outage
+    shows up as a visible skip rather than silently shrinking the sample
+    and letting the candidate search run on a truncated, non-random subset."""
+    cache = _autotune_load_cache()
+    sym_cache = cache.setdefault(symbol, {})
+    enriched = []
+    fetched_new = 0
+    failed = 0
+    for r in trades:
+        # closed_at, not opened_at -- partial closes/scale-outs of the same
+        # position share one opened_at, which caused an 8-trade cache
+        # collision in testing (siblings silently reused each other's price
+        # path). closed_at is unique per real trade record.
+        key = r['closed_at']
+        cached = sym_cache.get(key)
+        if cached and cached.get('atr') is not None and cached.get('path'):
+            enriched.append({'side': r['side'], 'entry_price': r['entry_price'],
+                             'closed_at': r['closed_at'], 'atr': cached['atr'], 'path': cached['path']})
+            continue
+        atr = _autotune_atr_at_entry(symbol, r['opened_at'])
+        if atr is None:
+            failed += 1
+            continue
+        path = _autotune_price_path(symbol, r['opened_at'], r['closed_at'])
+        if not path:
+            failed += 1
+            continue
+        sym_cache[key] = {'atr': atr, 'path': path}
+        enriched.append({'side': r['side'], 'entry_price': r['entry_price'],
+                         'closed_at': r['closed_at'], 'atr': atr, 'path': path})
+        fetched_new += 1
+        time.sleep(0.3)  # throttle between trades, not just between pages within one trade's fetch
+    if fetched_new:
+        _autotune_save_cache(cache)
+        logger.info(f'🔧 [{symbol}] auto-tune: fetched {fetched_new} new trade(s) of replay data'
+                    + (f', {failed} failed' if failed else ''))
+    return enriched, failed
+
+def _autotune_simulate_exit(side: str, entry_price: float, atr: float, path: list,
+                             hard_sl_mult: float, trail_activate_mult: float,
+                             trail_dist_mult: float, max_loss_pct: float,
+                             collateral: float, leverage: float) -> float:
+    """Bar-by-bar replay matching check_sl_trail()'s exact math. Returns the
+    simulated exit price."""
+    is_long = side == 'LONG'
+    qty = (collateral * leverage * 0.995) / entry_price if entry_price else 0
+    hard_sl_dist = atr * hard_sl_mult
+    max_loss_dollar = collateral * max_loss_pct
+    max_loss_dist = (max_loss_dollar / qty) if qty > 0 else hard_sl_dist
+    sl_dist = min(hard_sl_dist, max_loss_dist)
+    sl = entry_price - sl_dist if is_long else entry_price + sl_dist
+    activate_dist = atr * trail_activate_mult
+
+    best = entry_price
+    trail_active = False
+    for _, hi, lo, close in path:
+        if not trail_active:
+            if (lo <= sl) if is_long else (hi >= sl):
+                return sl
+        fav = hi if is_long else lo
+        if (is_long and fav > best) or (not is_long and fav < best):
+            best = fav
+        profit_dist = (best - entry_price) if is_long else (entry_price - best)
+        if not trail_active and profit_dist >= activate_dist:
+            trail_active = True
+        if trail_active:
+            dyn_dist = max(atr * trail_dist_mult, profit_dist * 0.18)
+            trail_stop = best - dyn_dist if is_long else best + dyn_dist
+            trail_stop = max(trail_stop, entry_price) if is_long else min(trail_stop, entry_price)
+            adverse = lo if is_long else hi
+            if (adverse <= trail_stop) if is_long else (adverse >= trail_stop):
+                return trail_stop
+    return path[-1][3] if path else entry_price
+
+def _autotune_candidate_pnl(symbol: str, enriched: list, hard_sl_mult: float,
+                             trail_activate_mult: float, trail_dist_mult: float) -> Tuple[float, dict]:
+    """Returns (total_pnl, {month: pnl}) for this symbol's real trades replayed
+    under the given candidate parameter set."""
+    collateral = SYMBOLS_CONFIG.get(symbol, {}).get('trade_amount', 30.0)
+    leverage   = SYMBOLS_CONFIG.get(symbol, {}).get('leverage', 30)
+    max_loss_pct = SYMBOLS_CONFIG.get(symbol, {}).get('max_loss_pct', 0.30)
+    total = 0.0
+    monthly: dict = {}
+    for d in enriched:
+        qty = (collateral * leverage * 0.995) / d['entry_price']
+        exit_price = _autotune_simulate_exit(
+            d['side'], d['entry_price'], d['atr'], d['path'],
+            hard_sl_mult, trail_activate_mult, trail_dist_mult, max_loss_pct, collateral, leverage)
+        fee = (d['entry_price'] + exit_price) * qty * FEE_RATE
+        pnl = ((exit_price - d['entry_price']) if d['side'] == 'LONG' else (d['entry_price'] - exit_price)) * qty - fee
+        total += pnl
+        month = d['closed_at'][:7]
+        monthly[month] = monthly.get(month, 0.0) + pnl
+    return total, monthly
+
+def _autotune_qualifies(baseline_total: float, baseline_monthly: dict,
+                         cand_total: float, cand_monthly: dict) -> bool:
+    if cand_total < baseline_total + AUTO_TUNE_MIN_IMPROVEMENT_USD:
+        return False
+    months = sorted(set(baseline_monthly) & set(cand_monthly))
+    if len(months) < AUTO_TUNE_MIN_MONTHS:
+        return False
+    improved = sum(1 for m in months if cand_monthly[m] >= baseline_monthly[m])
+    return improved > len(months) / 2
+
+def run_weekly_auto_tune() -> None:
+    last = state['runtime'].get('last_auto_tune')
+    if last:
+        try:
+            age_days = (datetime.now(timezone.utc) -
+                        datetime.fromisoformat(last.replace('Z', '+00:00'))).days
+        except Exception:
+            age_days = AUTO_TUNE_INTERVAL_DAYS
+        if age_days < AUTO_TUNE_INTERVAL_DAYS:
+            return
+
+    state['runtime']['last_auto_tune'] = now_utc_iso()
+    overrides = state['runtime'].setdefault('auto_tune_overrides', {})
+    history    = state['runtime'].setdefault('auto_tune_history', [])
+    save_state()
+
+    all_records = [t for t in load_trade_log() if not t.get('dust') and t.get('closed_at')
+                   and t.get('opened_at') and t.get('entry_price') and t.get('side')]
+
+    # ── Rollback check: does an existing override hold up on new real trades? ──
+    for symbol, ov in list(overrides.items()):
+        applied_at = ov.get('applied_at')
+        if not applied_at:
+            continue
+        new_trades = [r for r in all_records if r['symbol'] == symbol and r['opened_at'] > applied_at]
+        if len(new_trades) < AUTO_TUNE_ROLLBACK_MIN_TRADES:
+            continue
+        new_avg = sum(r['pnl'] for r in new_trades) / len(new_trades)
+        baseline_avg = ov.get('baseline_avg_pnl', 0)
+        new_total = sum(r['pnl'] for r in new_trades)
+        base = SYMBOLS_CONFIG.get(symbol, {}).get('base', symbol)
+        if new_total < 0 and new_avg < baseline_avg:
+            reverted = overrides.pop(symbol)
+            history.append({'symbol': symbol, 'action': 'reverted', 'params': reverted,
+                            'at': now_utc_iso(), 'reason': f'{len(new_trades)} new trades averaged '
+                            f'${new_avg:+.2f}/trade (worse than ${baseline_avg:+.2f}/trade before the change)'})
+            save_state()
+            send_telegram(
+                f'↩️ <b>Auto-Tune Reverted — {base}</b>\n\n'
+                f'The {reverted.get("param")}={reverted.get("value")} change from '
+                f'{applied_at[:10]} did not hold up: {len(new_trades)} real trades since then '
+                f'averaged ${new_avg:+.2f}/trade (net ${new_total:+.2f}), worse than the '
+                f'${baseline_avg:+.2f}/trade baseline it was meant to beat. Reverted to the prior value.'
+            )
+            logger.info(f'↩️ [{base}] auto-tune reverted — did not hold up out-of-sample')
+        else:
+            history.append({'symbol': symbol, 'action': 'validated', 'params': ov,
+                            'at': now_utc_iso(), 'note': f'{len(new_trades)} new trades averaged ${new_avg:+.2f}/trade'})
+            save_state()
+            logger.info(f'✅ [{symbol}] auto-tune change validated on {len(new_trades)} new real trades')
+
+    # ── Look for a new change to make ───────────────────────────────────────
+    for symbol in TRADING_SYMBOLS:
+        time.sleep(2)  # extra spacing between symbols on top of the per-trade throttle in enrich
+        base = SYMBOLS_CONFIG.get(symbol, {}).get('base', symbol)
+        existing = overrides.get(symbol)
+        if existing:
+            applied_days_ago = (datetime.now(timezone.utc) -
+                                 datetime.fromisoformat(existing['applied_at'].replace('Z', '+00:00'))).days
+            if applied_days_ago < AUTO_TUNE_COOLDOWN_DAYS:
+                continue  # give a recent change time to be evaluated before touching this symbol again
+
+        sym_records = [r for r in all_records if r['symbol'] == symbol]
+        if len(sym_records) < AUTO_TUNE_MIN_TRADES:
+            continue
+
+        cur_hard_sl   = get_symbol_cfg(symbol, 'hard_sl_atr', HARD_SL_ATR)
+        cur_activate  = get_symbol_cfg(symbol, 'trail_activate_atr', TRAIL_ACTIVATE_ATR)
+        cur_trail_dst = get_symbol_cfg(symbol, 'trail_dist_atr', 0.25)
+
+        enriched, failed = _autotune_enrich_trades(symbol, sym_records)
+        if failed > 0 and failed >= len(sym_records) * 0.2:
+            # A high failure rate (rate limiting, API outage) would make the
+            # replay run on a small, non-random subset -- skip this symbol
+            # this cycle rather than draw a conclusion from bad data, and
+            # say so out loud instead of silently doing nothing.
+            base = SYMBOLS_CONFIG.get(symbol, {}).get('base', symbol)
+            logger.warning(f'🔧 [{base}] auto-tune: {failed}/{len(sym_records)} trades failed to '
+                          f'fetch replay data -- skipping this cycle, will retry next week')
+            send_telegram(f'⚠️ <b>Auto-Tune Skipped — {base}</b>\n'
+                         f'{failed}/{len(sym_records)} trades failed to fetch price history '
+                         f'(likely rate-limited) -- skipping this week, will retry next cycle.')
+            continue
+        if len(enriched) < AUTO_TUNE_MIN_TRADES:
+            continue
+
+        baseline_total, baseline_monthly = _autotune_candidate_pnl(
+            symbol, enriched, cur_hard_sl, cur_activate, cur_trail_dst)
+        if len(baseline_monthly) < AUTO_TUNE_MIN_MONTHS:
+            continue
+        if baseline_total >= 0 and len(baseline_monthly) >= AUTO_TUNE_MIN_MONTHS:
+            months_sorted = sorted(baseline_monthly.values())
+            mean_m = statistics.mean(months_sorted)
+            stdev_m = statistics.stdev(months_sorted) if len(months_sorted) > 1 else 0
+            icir = (mean_m / stdev_m) if stdev_m else None
+            if icir is not None and icir >= MONTHLY_REVIEW_ICIR_WEAK:
+                continue  # not flagged -- profitable and consistent, leave it alone
+
+        candidates = (
+            [('hard_sl_atr', v, v, cur_activate, cur_trail_dst) for v in HARD_SL_CANDIDATES if v != cur_hard_sl] +
+            [('trail_activate_atr', v, cur_hard_sl, v, cur_trail_dst) for v in TRAIL_ACTIVATE_CANDIDATES if v != cur_activate] +
+            [('trail_dist_atr', v, cur_hard_sl, cur_activate, v) for v in TRAIL_DIST_CANDIDATES if v != cur_trail_dst]
+        )
+        best = None
+        for param_name, value, hs, ta, td in candidates:
+            cand_total, cand_monthly = _autotune_candidate_pnl(symbol, enriched, hs, ta, td)
+            if _autotune_qualifies(baseline_total, baseline_monthly, cand_total, cand_monthly):
+                improvement = cand_total - baseline_total
+                if best is None or improvement > best['improvement']:
+                    best = {'param': param_name, 'value': value, 'improvement': improvement,
+                            'cand_total': cand_total, 'cand_monthly': cand_monthly}
+
+        if best is None:
+            logger.info(f'🔧 [{base}] auto-tune: reviewed {len(enriched)} trades, no consistent '
+                       f'improvement found across {len(HARD_SL_CANDIDATES)+len(TRAIL_ACTIVATE_CANDIDATES)+len(TRAIL_DIST_CANDIDATES)} candidates tested')
+            continue
+
+        overrides[symbol] = {'param': best['param'], 'value': best['value']}
+        baseline_avg_pnl = baseline_total / len(enriched)
+        applied_at = now_utc_iso()
+        overrides[symbol]['applied_at'] = applied_at
+        overrides[symbol]['baseline_avg_pnl'] = baseline_avg_pnl
+        history.append({'symbol': symbol, 'action': 'applied', 'params': overrides[symbol],
+                        'at': applied_at, 'baseline_total': round(baseline_total, 2),
+                        'candidate_total': round(best['cand_total'], 2)})
+        save_state()
+
+        month_lines = '\n'.join(
+            f'    {m}: ${baseline_monthly.get(m,0):+.2f} → ${best["cand_monthly"].get(m,0):+.2f}'
+            for m in sorted(set(baseline_monthly) | set(best['cand_monthly'])))
+        send_telegram(
+            f'🔧 <b>Auto-Tune Applied — {base}</b>\n\n'
+            f'Replayed {len(enriched)} real trades against actual price history. '
+            f'Changing <b>{best["param"]}</b>: {[cur_hard_sl, cur_activate, cur_trail_dst][["hard_sl_atr","trail_activate_atr","trail_dist_atr"].index(best["param"])]} → <b>{best["value"]}</b>\n\n'
+            f'Replayed P&L: ${baseline_total:+.2f} → ${best["cand_total"]:+.2f} '
+            f'(+${best["improvement"]:.2f}), improved in a majority of months tested:\n{month_lines}\n\n'
+            f'⚠️ This is a replay estimate, not a guarantee — real performance since this change will be '
+            f'checked automatically after {AUTO_TUNE_ROLLBACK_MIN_TRADES} new trades, and reverted if it '
+            f"doesn't hold up."
+        )
+        logger.info(f'🔧 [{base}] auto-tune applied: {best["param"]}={best["value"]} '
+                    f'(replayed +${best["improvement"]:.2f})')
 
 
 def get_decision(symbol: str, df: pd.DataFrame) -> dict:
@@ -1280,9 +1635,9 @@ def check_sl_trail(symbol: str, position: str, price: float) -> Tuple[bool, str]
     if entry is None or atr is None or atr <= 0:
         return False, ''
     is_long            = position == 'LONG'
-    sl_atr_mult        = SYMBOLS_CONFIG.get(symbol, {}).get('hard_sl_atr', HARD_SL_ATR)
+    sl_atr_mult        = get_symbol_cfg(symbol, 'hard_sl_atr', HARD_SL_ATR)
     hard_sl_dist       = atr * sl_atr_mult
-    trail_activate_mult = SYMBOLS_CONFIG.get(symbol, {}).get('trail_activate_atr', TRAIL_ACTIVATE_ATR)
+    trail_activate_mult = get_symbol_cfg(symbol, 'trail_activate_atr', TRAIL_ACTIVATE_ATR)
     activate_dist      = atr * trail_activate_mult
     force_trail_active = ss.get('force_trail_active', False)
     profit_so_far      = (best - entry) if is_long else (entry - best)
@@ -1332,7 +1687,7 @@ def check_sl_trail(symbol: str, position: str, price: float) -> Tuple[bool, str]
         logger.info(f'📐 [{symbol}] Trail not active | profit={profit_dist:.4f} < {activate_dist:.4f}')
         return False, ''
 
-    trail_atr_mult = SYMBOLS_CONFIG.get(symbol, {}).get('trail_dist_atr', 0.25)
+    trail_atr_mult = get_symbol_cfg(symbol, 'trail_dist_atr', 0.25)
     dyn_dist   = max(atr * trail_atr_mult, profit_dist * 0.18)
     trail_stop = best - dyn_dist if is_long else best + dyn_dist
     # Breakeven floor: once trail activates never stop out at a loss
@@ -1358,15 +1713,16 @@ def build_trail_info(symbol: str, position: Optional[str]) -> dict:
         collateral = safe_float(ss.get('active_trade_amount'), 30.0)
         leverage   = safe_float(ss.get('active_leverage'), 30.0)
         qty        = (collateral * leverage * 0.995) / ep if ep else 0
-        max_loss_dist = (12.0 / qty) if qty > 0 else atr * HARD_SL_ATR
-        sl_dist    = min(atr * HARD_SL_ATR, max_loss_dist)
+        sl_atr_mult = get_symbol_cfg(symbol, 'hard_sl_atr', HARD_SL_ATR)
+        max_loss_dist = (12.0 / qty) if qty > 0 else atr * sl_atr_mult
+        sl_dist    = min(atr * sl_atr_mult, max_loss_dist)
         info['sl'] = round(ep - sl_dist, 4) if position == 'LONG' \
                 else round(ep + sl_dist, 4)
     if ep and bp and atr:
         profit = (bp - ep) if position == 'LONG' else (ep - bp)
-        trail_activate_mult = SYMBOLS_CONFIG.get(symbol, {}).get('trail_activate_atr', TRAIL_ACTIVATE_ATR)
+        trail_activate_mult = get_symbol_cfg(symbol, 'trail_activate_atr', TRAIL_ACTIVATE_ATR)
         if profit >= atr * trail_activate_mult:
-            trail_atr_mult = SYMBOLS_CONFIG.get(symbol, {}).get('trail_dist_atr', 0.25)
+            trail_atr_mult = get_symbol_cfg(symbol, 'trail_dist_atr', 0.25)
             dyn = max(atr * trail_atr_mult, profit * 0.20)
             info['trail_stop'] = round(bp - dyn, 4) if position == 'LONG' else round(bp + dyn, 4)
             info['active'] = True
@@ -2418,8 +2774,8 @@ def check_paper_trail(symbol: str, price: float) -> Tuple[bool, str]:
     best    = pos.get('trail_best_price', entry)
     if not atr or atr <= 0:
         return False, ''
-    hard_sl_dist  = atr * cfg.get('hard_sl_atr', HARD_SL_ATR)
-    activate_dist = atr * cfg.get('trail_activate_atr', TRAIL_ACTIVATE_ATR)
+    hard_sl_dist  = atr * get_symbol_cfg(symbol, 'hard_sl_atr', HARD_SL_ATR)
+    activate_dist = atr * get_symbol_cfg(symbol, 'trail_activate_atr', TRAIL_ACTIVATE_ATR)
     profit_so_far = (best - entry) if is_long else (entry - best)
     trail_active  = profit_so_far >= activate_dist
 
@@ -2440,7 +2796,7 @@ def check_paper_trail(symbol: str, price: float) -> Tuple[bool, str]:
     if profit_dist < activate_dist:
         return False, ''
 
-    dyn_dist   = max(atr * cfg.get('trail_dist_atr', 0.25), profit_dist * 0.18)
+    dyn_dist   = max(atr * get_symbol_cfg(symbol, 'trail_dist_atr', 0.25), profit_dist * 0.18)
     trail_stop = best - dyn_dist if is_long else best + dyn_dist
     trail_stop = max(trail_stop, entry) if is_long else min(trail_stop, entry)
     if (is_long and price <= trail_stop) or (not is_long and price >= trail_stop):
@@ -2642,6 +2998,7 @@ def run_once():
         run_weekly_atr_health_check()
         run_weekly_trade_review()
         run_monthly_strategy_review()
+        run_weekly_auto_tune()
 
         # ── Find which symbols already have open positions ────────────────────
         open_syms = set()
