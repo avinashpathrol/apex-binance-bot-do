@@ -1204,6 +1204,17 @@ def run_weekly_auto_tune() -> None:
         if age_days < AUTO_TUNE_INTERVAL_DAYS:
             return
 
+    # This runs synchronously inside run_once(), and fetching a symbol's full
+    # trade history (dozens to 100+ trades) can take minutes even with
+    # rate-limit backoff -- measured ~3 min end-to-end in testing. That would
+    # leave any currently-open position unmonitored (no SL/trail checks) for
+    # the whole duration. Defer to the next cycle (~30s later) rather than
+    # consume this week's slot -- cheap to retry, and it'll run as soon as
+    # everything is flat again.
+    if any(sym_state(sym).get('position') for sym in TRADING_SYMBOLS):
+        logger.info('🔧 auto-tune: deferred -- a position is open, will retry next cycle')
+        return
+
     state['runtime']['last_auto_tune'] = now_utc_iso()
     overrides = state['runtime'].setdefault('auto_tune_overrides', {})
     history    = state['runtime'].setdefault('auto_tune_history', [])
