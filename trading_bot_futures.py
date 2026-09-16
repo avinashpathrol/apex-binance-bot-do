@@ -13,6 +13,7 @@ import time
 import hmac
 import hashlib
 import logging
+import statistics
 import requests
 import pandas as pd
 import ta
@@ -875,6 +876,102 @@ def run_weekly_trade_review() -> None:
                    f'No condition stands out as a consistent drag — looks healthy.')
         send_telegram(msg)
         logger.info(f'📋 [{base}] Weekly trade review sent ({len(flags)} flags)')
+
+
+# ── Monthly consistency review — is the edge real or noise? ────────────────
+# The weekly review above answers "which conditions are dragging on a
+# symbol." This answers a different, coarser question: bucketing each
+# symbol's trades by calendar month and checking whether net P&L is stable
+# across months (a real edge) or wildly inconsistent (probably noise) --
+# same idea as the Information Coefficient / ICIR concept from quant
+# research (mean of a period metric divided by its stdev across periods).
+# Below 0.3 is the same "probably noise" bar that framework uses. Also
+# flags the specific pattern a bucketed weekly review can miss: a symbol
+# with a large trade count and decent win rate that still nets near zero,
+# which usually means the exit logic (trail stop / profit target) is
+# giving back on winners what it saves on losers. Purely informational --
+# no auto-tuning, a human decides what to change.
+MONTHLY_REVIEW_INTERVAL_DAYS = 30
+MONTHLY_REVIEW_MIN_MONTHS    = 2
+MONTHLY_REVIEW_MIN_BUCKET_N  = 5
+MONTHLY_REVIEW_MIN_TRADES    = 15
+MONTHLY_REVIEW_ICIR_WEAK     = 0.3
+MONTHLY_REVIEW_FLAT_MIN_N    = 30      # "large sample" threshold for the flat-despite-volume flag
+MONTHLY_REVIEW_FLAT_PER_TRADE = 0.50   # avg $/trade below this (in absolute value) counts as "flat"
+
+def run_monthly_strategy_review() -> None:
+    last = state['runtime'].get('last_monthly_review')
+    if last:
+        try:
+            age_days = (datetime.now(timezone.utc) -
+                        datetime.fromisoformat(last.replace('Z', '+00:00'))).days
+        except Exception:
+            age_days = MONTHLY_REVIEW_INTERVAL_DAYS
+        if age_days < MONTHLY_REVIEW_INTERVAL_DAYS:
+            return
+
+    state['runtime']['last_monthly_review'] = now_utc_iso()
+    save_state()
+
+    records = [t for t in load_trade_log() if not t.get('dust') and t.get('closed_at')]
+    if not records:
+        logger.info('📆 Monthly strategy review: no trades logged yet')
+        return
+
+    lines = ['📆 <b>Monthly Strategy Review</b>', '']
+    any_symbol_reported = False
+
+    for symbol in TRADING_SYMBOLS:
+        sym_records = [r for r in records if r.get('symbol') == symbol]
+        n = len(sym_records)
+        base = SYMBOLS_CONFIG.get(symbol, {}).get('base', symbol)
+        if n < MONTHLY_REVIEW_MIN_TRADES:
+            continue
+
+        by_month = {}
+        for r in sym_records:
+            by_month.setdefault(r['closed_at'][:7], []).append(r)
+        month_nets = []
+        for month, rs in sorted(by_month.items()):
+            if len(rs) < MONTHLY_REVIEW_MIN_BUCKET_N:
+                continue
+            month_nets.append(sum(float(r.get('pnl', 0)) for r in rs))
+
+        total_net  = sum(float(r.get('pnl', 0)) for r in sym_records)
+        wins       = len([r for r in sym_records if r.get('win')])
+        wr         = wins / n * 100
+        per_trade  = total_net / n
+
+        flags = []
+        if total_net < 0:
+            flags.append(f'🔴 Losing money overall: net ${total_net:+.2f} across {n} trades')
+
+        if len(month_nets) >= MONTHLY_REVIEW_MIN_MONTHS:
+            mean_net = statistics.mean(month_nets)
+            stdev_net = statistics.stdev(month_nets) if len(month_nets) > 1 else 0
+            icir = (mean_net / stdev_net) if stdev_net else None
+            if icir is not None and icir < MONTHLY_REVIEW_ICIR_WEAK and total_net >= 0:
+                flags.append(f'🟡 Inconsistent month to month (consistency score {icir:+.2f}, '
+                             f'below {MONTHLY_REVIEW_ICIR_WEAK} = likely noise, not a stable edge)')
+
+        if n >= MONTHLY_REVIEW_FLAT_MIN_N and abs(per_trade) < MONTHLY_REVIEW_FLAT_PER_TRADE and total_net >= 0:
+            flags.append(f'🟠 Flat despite volume: {n} trades, {wr:.0f}% win rate, but only '
+                         f'${per_trade:+.3f}/trade average — check whether exits are giving back '
+                         f'winners\' gains (trail stop / profit target may need review)')
+
+        if flags:
+            any_symbol_reported = True
+            lines.append(f'<b>{base}</b> — {n} trades, {wr:.1f}% WR, net ${total_net:+.2f}')
+            lines.extend(f'  {f}' for f in flags)
+            lines.append('')
+
+    if not any_symbol_reported:
+        logger.info('📆 Monthly strategy review: no symbol flagged, or not enough history yet')
+        return
+
+    send_telegram('\n'.join(lines))
+    logger.info('📆 Monthly strategy review sent')
+
 
 def get_decision(symbol: str, df: pd.DataFrame) -> dict:
     c = df.iloc[-1]
@@ -2533,6 +2630,7 @@ def run_once():
         run_overnight_strategy()
         run_weekly_atr_health_check()
         run_weekly_trade_review()
+        run_monthly_strategy_review()
 
         # ── Find which symbols already have open positions ────────────────────
         open_syms = set()
