@@ -1009,11 +1009,12 @@ def run_monthly_strategy_review() -> None:
 # clearly worse -- an out-of-sample gate against genuinely new trades, not
 # just the historical data the change was chosen on.
 AUTO_TUNE_INTERVAL_DAYS       = 7
-AUTO_TUNE_MIN_TRADES          = 50
-AUTO_TUNE_MIN_MONTHS          = 3
+AUTO_TUNE_MIN_TRADES          = 10   # lowered from 50 -- don't let a new ticker bleed for months untuned
+AUTO_TUNE_MIN_BUCKETS         = 3    # chronological chunks, NOT calendar months -- see _autotune_time_buckets
 AUTO_TUNE_MIN_IMPROVEMENT_USD = 10.0
 AUTO_TUNE_COOLDOWN_DAYS       = 21
-AUTO_TUNE_ROLLBACK_MIN_TRADES = 15
+AUTO_TUNE_ROLLBACK_MIN_TRADES = 10   # lowered from 15, in step with the lower min-trades bar -- a change
+                                      # made on thinner data should be re-checked sooner, not later
 AUTO_TUNE_CACHE_FILE          = os.path.join(
     os.path.dirname(BOT_STATE_FILE) or '.', 'auto_tune_replay_cache.json')
 
@@ -1164,14 +1165,25 @@ def _autotune_simulate_exit(side: str, entry_price: float, atr: float, path: lis
 
 def _autotune_candidate_pnl(symbol: str, enriched: list, hard_sl_mult: float,
                              trail_activate_mult: float, trail_dist_mult: float) -> Tuple[float, dict]:
-    """Returns (total_pnl, {month: pnl}) for this symbol's real trades replayed
-    under the given candidate parameter set."""
+    """Returns (total_pnl, {bucket_index: pnl}) for this symbol's real trades
+    replayed under the given candidate parameter set. Buckets are
+    chronological chunks of the trade sequence, NOT calendar months -- a
+    ticker with only 10-30 trades might all fall in the same 1-2 real
+    calendar months, which would make a months-based consistency check
+    impossible to pass regardless of how good the candidate is. Chunking by
+    trade order instead scales down gracefully: 3-6 buckets regardless of
+    how much wall-clock time the trades span."""
     collateral = SYMBOLS_CONFIG.get(symbol, {}).get('trade_amount', 30.0)
     leverage   = SYMBOLS_CONFIG.get(symbol, {}).get('leverage', 30)
     max_loss_pct = SYMBOLS_CONFIG.get(symbol, {}).get('max_loss_pct', 0.30)
+    ordered = sorted(enriched, key=lambda d: d['closed_at'])
+    n = len(ordered)
+    num_buckets = min(6, max(AUTO_TUNE_MIN_BUCKETS, n // 10)) if n else 1
+    bucket_size = max(1, n // num_buckets) if num_buckets else max(1, n)
+
     total = 0.0
-    monthly: dict = {}
-    for d in enriched:
+    buckets: dict = {}
+    for idx, d in enumerate(ordered):
         qty = (collateral * leverage * 0.995) / d['entry_price']
         exit_price = _autotune_simulate_exit(
             d['side'], d['entry_price'], d['atr'], d['path'],
@@ -1179,19 +1191,19 @@ def _autotune_candidate_pnl(symbol: str, enriched: list, hard_sl_mult: float,
         fee = (d['entry_price'] + exit_price) * qty * FEE_RATE
         pnl = ((exit_price - d['entry_price']) if d['side'] == 'LONG' else (d['entry_price'] - exit_price)) * qty - fee
         total += pnl
-        month = d['closed_at'][:7]
-        monthly[month] = monthly.get(month, 0.0) + pnl
-    return total, monthly
+        b = min(idx // bucket_size, num_buckets - 1)
+        buckets[b] = buckets.get(b, 0.0) + pnl
+    return total, buckets
 
-def _autotune_qualifies(baseline_total: float, baseline_monthly: dict,
-                         cand_total: float, cand_monthly: dict) -> bool:
+def _autotune_qualifies(baseline_total: float, baseline_buckets: dict,
+                         cand_total: float, cand_buckets: dict) -> bool:
     if cand_total < baseline_total + AUTO_TUNE_MIN_IMPROVEMENT_USD:
         return False
-    months = sorted(set(baseline_monthly) & set(cand_monthly))
-    if len(months) < AUTO_TUNE_MIN_MONTHS:
+    buckets = sorted(set(baseline_buckets) & set(cand_buckets))
+    if len(buckets) < AUTO_TUNE_MIN_BUCKETS:
         return False
-    improved = sum(1 for m in months if cand_monthly[m] >= baseline_monthly[m])
-    return improved > len(months) / 2
+    improved = sum(1 for b in buckets if cand_buckets[b] >= baseline_buckets[b])
+    return improved > len(buckets) / 2
 
 def run_weekly_auto_tune() -> None:
     last = state['runtime'].get('last_auto_tune')
@@ -1290,15 +1302,15 @@ def run_weekly_auto_tune() -> None:
         if len(enriched) < AUTO_TUNE_MIN_TRADES:
             continue
 
-        baseline_total, baseline_monthly = _autotune_candidate_pnl(
+        baseline_total, baseline_buckets = _autotune_candidate_pnl(
             symbol, enriched, cur_hard_sl, cur_activate, cur_trail_dst)
-        if len(baseline_monthly) < AUTO_TUNE_MIN_MONTHS:
+        if len(baseline_buckets) < AUTO_TUNE_MIN_BUCKETS:
             continue
-        if baseline_total >= 0 and len(baseline_monthly) >= AUTO_TUNE_MIN_MONTHS:
-            months_sorted = sorted(baseline_monthly.values())
-            mean_m = statistics.mean(months_sorted)
-            stdev_m = statistics.stdev(months_sorted) if len(months_sorted) > 1 else 0
-            icir = (mean_m / stdev_m) if stdev_m else None
+        if baseline_total >= 0 and len(baseline_buckets) >= AUTO_TUNE_MIN_BUCKETS:
+            bucket_vals = sorted(baseline_buckets.values())
+            mean_b = statistics.mean(bucket_vals)
+            stdev_b = statistics.stdev(bucket_vals) if len(bucket_vals) > 1 else 0
+            icir = (mean_b / stdev_b) if stdev_b else None
             if icir is not None and icir >= MONTHLY_REVIEW_ICIR_WEAK:
                 continue  # not flagged -- profitable and consistent, leave it alone
 
@@ -1309,12 +1321,12 @@ def run_weekly_auto_tune() -> None:
         )
         best = None
         for param_name, value, hs, ta, td in candidates:
-            cand_total, cand_monthly = _autotune_candidate_pnl(symbol, enriched, hs, ta, td)
-            if _autotune_qualifies(baseline_total, baseline_monthly, cand_total, cand_monthly):
+            cand_total, cand_buckets = _autotune_candidate_pnl(symbol, enriched, hs, ta, td)
+            if _autotune_qualifies(baseline_total, baseline_buckets, cand_total, cand_buckets):
                 improvement = cand_total - baseline_total
                 if best is None or improvement > best['improvement']:
                     best = {'param': param_name, 'value': value, 'improvement': improvement,
-                            'cand_total': cand_total, 'cand_monthly': cand_monthly}
+                            'cand_total': cand_total, 'cand_buckets': cand_buckets}
 
         if best is None:
             logger.info(f'🔧 [{base}] auto-tune: reviewed {len(enriched)} trades, no consistent '
@@ -1331,15 +1343,17 @@ def run_weekly_auto_tune() -> None:
                         'candidate_total': round(best['cand_total'], 2)})
         save_state()
 
-        month_lines = '\n'.join(
-            f'    {m}: ${baseline_monthly.get(m,0):+.2f} → ${best["cand_monthly"].get(m,0):+.2f}'
-            for m in sorted(set(baseline_monthly) | set(best['cand_monthly'])))
+        bucket_lines = '\n'.join(
+            f'    chunk {b+1}: ${baseline_buckets.get(b,0):+.2f} → ${best["cand_buckets"].get(b,0):+.2f}'
+            for b in sorted(set(baseline_buckets) | set(best['cand_buckets'])))
+        n_trades_note = f' ({len(enriched)} trades total -- thin sample, watch the rollback check closely)' \
+            if len(enriched) < 50 else ''
         send_telegram(
-            f'🔧 <b>Auto-Tune Applied — {base}</b>\n\n'
+            f'🔧 <b>Auto-Tune Applied — {base}</b>{n_trades_note}\n\n'
             f'Replayed {len(enriched)} real trades against actual price history. '
             f'Changing <b>{best["param"]}</b>: {[cur_hard_sl, cur_activate, cur_trail_dst][["hard_sl_atr","trail_activate_atr","trail_dist_atr"].index(best["param"])]} → <b>{best["value"]}</b>\n\n'
             f'Replayed P&L: ${baseline_total:+.2f} → ${best["cand_total"]:+.2f} '
-            f'(+${best["improvement"]:.2f}), improved in a majority of months tested:\n{month_lines}\n\n'
+            f'(+${best["improvement"]:.2f}), improved in a majority of chronological chunks tested:\n{bucket_lines}\n\n'
             f'⚠️ This is a replay estimate, not a guarantee — real performance since this change will be '
             f'checked automatically after {AUTO_TUNE_ROLLBACK_MIN_TRADES} new trades, and reverted if it '
             f"doesn't hold up."
