@@ -1247,19 +1247,25 @@ RSI_SHORT_MIN_CANDIDATES = [34, 38, 42]
 RSI_SHORT_MAX_CANDIDATES = [66, 70, 74]
 PULLBACK_ZONE_CANDIDATES = [0.012, 0.018, 0.024]
 
-def _autotune_entry_history(symbol: str, since_ms: int) -> Optional[Tuple[list, list]]:
-    """Fetch 1H and 4H klines covering since_ms through now, with enough
-    lookback before since_ms for indicator warmup. Returns (klines_1h,
-    klines_4h) or None on failure."""
+def _autotune_entry_history(symbol: str, since_ms: int) -> Optional[Tuple[list, list, dict]]:
+    """Fetch 1H, 4H, and 1-minute klines covering since_ms through now, with
+    enough 1H/4H lookback before since_ms for indicator warmup. The 1-minute
+    data only needs to cover the actually-tested window (since_ms onward,
+    plus a small buffer for boundary alignment), not the warmup period --
+    it's used to reconstruct the still-forming candle at each intra-hour
+    checkpoint. Returns (klines_1h, klines_4h, klines_1m_by_hour) or None."""
     now_ms = int(time.time() * 1000)
     start_1h = since_ms - ENTRY_BACKTEST_WARMUP_BARS * 3600 * 1000
     start_4h = since_ms - ENTRY_BACKTEST_4H_WINDOW * 4 * 3600 * 1000
+    start_1m = since_ms - 3600 * 1000
     try:
         klines_1h = _autotune_fetch_klines(symbol, '1h', start_1h, now_ms)
         klines_4h = _autotune_fetch_klines(symbol, '4h', start_4h, now_ms)
         if len(klines_1h) < ENTRY_BACKTEST_WARMUP_BARS + 10 or len(klines_4h) < ENTRY_BACKTEST_4H_WINDOW:
             return None
-        return klines_1h, klines_4h
+        klines_1m = _autotune_fetch_klines(symbol, '1m', start_1m, now_ms)
+        klines_1m_by_hour = _autotune_group_1m_by_hour(klines_1m, klines_1h)
+        return klines_1h, klines_4h, klines_1m_by_hour
     except Exception as e:
         logger.warning(f'autotune_entry_history [{symbol}]: {e}')
         return None
@@ -1288,18 +1294,60 @@ def _autotune_lookup_4h_trend(trend_series: list, ts_ms: int) -> str:
         result = trend
     return result
 
-def _autotune_replay_entries(symbol: str, klines_1h: list, trend4h_series: list,
-                              entry_overrides: dict, hard_sl_mult: float,
+def _autotune_group_1m_by_hour(klines_1m: list, klines_1h: list) -> dict:
+    """hour_open_time_ms -> sorted list of 1m klines within that hour. Single
+    pass; both inputs are already chronologically sorted."""
+    hour_opens = [k[0] for k in klines_1h]
+    grouped = {h: [] for h in hour_opens}
+    hi, n_hours = 0, len(hour_opens)
+    for k in klines_1m:
+        t = k[0]
+        while hi + 1 < n_hours and hour_opens[hi + 1] <= t:
+            hi += 1
+        if hour_opens[hi] <= t < hour_opens[hi] + 3600000:
+            grouped[hour_opens[hi]].append(k)
+    return grouped
+
+def _autotune_synthetic_bar(bars_in_window: list, open_time: int, open_price: float) -> Optional[list]:
+    """Aggregate 1-minute bars seen so far within an hour into what a live
+    poll's still-forming 1H candle would show at that moment -- same shape
+    Binance's own klines return, so _build_1h_indicators can't tell the
+    difference. This is the core of the intra-hour fix: production polls
+    continuously and reacts to this partial candle; the original replay only
+    ever saw the fully-closed bar, missing most of what live trading catches."""
+    if not bars_in_window:
+        return None
+    highs = [float(k[2]) for k in bars_in_window]
+    lows  = [float(k[3]) for k in bars_in_window]
+    close = float(bars_in_window[-1][4])
+    vol   = sum(float(k[5]) for k in bars_in_window)
+    return [open_time, open_price, max(highs), min(lows), close, vol, bars_in_window[-1][0], 0, 0, 0, 0, 0]
+
+ENTRY_BACKTEST_CHECKPOINTS_MIN = list(range(5, 61, 5))  # every 5 min into the hour to
+    # poll -- mimics live trading's continuous polling reacting to the still-
+    # forming candle, instead of only ever checking the fully-closed bar. 60
+    # uses the real closed bar directly (exact match to the original method).
+
+def _autotune_replay_entries(symbol: str, klines_1h: list, klines_1m_by_hour: dict,
+                              trend4h_series: list, entry_overrides: dict, hard_sl_mult: float,
                               trail_activate_mult: float, trail_dist_mult: float) -> list:
     """Walk the 1H bars, running the REAL get_decision() with entry_overrides
     temporarily applied via the SAME runtime-override layer get_symbol_cfg()
     reads (NOT SYMBOLS_CONFIG directly -- get_symbol_cfg always prefers a
     live runtime override over SYMBOLS_CONFIG, so mutating SYMBOLS_CONFIG
     here would be silently ignored for any symbol that already has an
-    earlier auto-tuned entry override in effect). Collects hypothetical
-    entries and simulates each one's exit. Enforces one-position-at-a-time,
-    same as live trading. Returns a list of {side, entry_price, pnl,
-    closed_at} dicts."""
+    earlier auto-tuned entry override in effect).
+
+    Within each hour, checks several intra-hour checkpoints (a synthetic
+    still-forming candle built from 1-minute data) before falling back to
+    the fully-closed bar -- the original bar-close-only version was tested
+    on CRCL and found only 3 of 14 real signals, because live trading polls
+    continuously within the hour and this didn't. Takes the FIRST checkpoint
+    that fires, matching how live trading would have caught it as soon as
+    the condition was true, not only once the hour fully closed.
+
+    Enforces one-position-at-a-time, same as live trading. Returns a list of
+    {side, entry_price, pnl, closed_at} dicts."""
     live_overrides = state['runtime'].setdefault('auto_tune_overrides', {}).setdefault(symbol, {})
     had_key = {k: (k in live_overrides) for k in entry_overrides}
     original = {k: live_overrides.get(k) for k in entry_overrides}
@@ -1313,26 +1361,57 @@ def _autotune_replay_entries(symbol: str, klines_1h: list, trend4h_series: list,
         i = ENTRY_BACKTEST_WARMUP_BARS
         n = len(klines_1h)
         while i < n and len(trades) < ENTRY_BACKTEST_MAX_TRADES:
-            window = klines_1h[i - ENTRY_BACKTEST_WARMUP_BARS + 1: i + 1]
-            df = _build_1h_indicators(window)
-            if df['atr'].isna().iloc[-1] or df['rsi'].isna().iloc[-1]:
-                i += 1
-                continue
-            bar_close_time = klines_1h[i][6]
-            trend4h = _autotune_lookup_4h_trend(trend4h_series, bar_close_time)
-            try:
-                decision = get_decision(symbol, df, trend4h_override=trend4h)
-            except Exception:
+            hour_open_time  = klines_1h[i][0]
+            hour_open_price = float(klines_1h[i][1])
+            bars_this_hour  = klines_1m_by_hour.get(hour_open_time, [])
+            prior_closed    = klines_1h[i - ENTRY_BACKTEST_WARMUP_BARS + 1: i]
+
+            fired = None
+            for cp_min in ENTRY_BACKTEST_CHECKPOINTS_MIN:
+                if cp_min == 60:
+                    synth = klines_1h[i]
+                    cp_time = klines_1h[i][6]
+                else:
+                    cp_time = hour_open_time + cp_min * 60000
+                    bars_upto = [b for b in bars_this_hour if b[0] < cp_time]
+                    synth = _autotune_synthetic_bar(bars_upto, hour_open_time, hour_open_price)
+                    if synth is None:
+                        continue
+                window = prior_closed + [synth]
+                if len(window) < ENTRY_BACKTEST_WARMUP_BARS:
+                    continue
+                df = _build_1h_indicators(window)
+                if df['atr'].isna().iloc[-1] or df['rsi'].isna().iloc[-1]:
+                    continue
+                trend4h = _autotune_lookup_4h_trend(trend4h_series, cp_time)
+                try:
+                    decision = get_decision(symbol, df, trend4h_override=trend4h)
+                except Exception:
+                    continue
+                if decision['action'] in ('LONG', 'SHORT'):
+                    # get_decision() itself doesn't gate on market hours --
+                    # production checks this separately before ACTING on a
+                    # decision (see run_symbol()). Replicate that gate here,
+                    # or a hypothetical "entry" outside real trading hours
+                    # blocks the one-position slot for however long it takes
+                    # to resolve, starving genuine market-hours opportunities
+                    # the real bot would have caught instead. This was the
+                    # actual cause of the 3-vs-14 gap found testing on CRCL,
+                    # not checkpoint granularity.
+                    cp_dt = datetime.fromtimestamp(cp_time / 1000, tz=timezone.utc)
+                    if SYMBOLS_CONFIG[symbol].get('market_hours_only') and not is_us_market_open(cp_dt):
+                        continue
+                    if not in_entry_window(SYMBOLS_CONFIG[symbol], cp_dt):
+                        continue
+                    fired = (decision, float(synth[4]), float(df['atr'].iloc[-1]), cp_time)
+                    break
+
+            if fired is None:
                 i += 1
                 continue
 
-            if decision['action'] not in ('LONG', 'SHORT'):
-                i += 1
-                continue
-
-            entry_price = float(klines_1h[i][4])  # close
-            atr = float(df['atr'].iloc[-1])
-            entry_dt = datetime.fromtimestamp(bar_close_time / 1000, tz=timezone.utc)
+            decision, entry_price, atr, entry_time_ms = fired
+            entry_dt = datetime.fromtimestamp(entry_time_ms / 1000, tz=timezone.utc)
             exit_search_end = entry_dt + timedelta(hours=ENTRY_BACKTEST_MAX_HOLD_HRS)
             path = _autotune_price_path(symbol, entry_dt.isoformat(), exit_search_end.isoformat())
             if not path:
@@ -1346,7 +1425,7 @@ def _autotune_replay_entries(symbol: str, klines_1h: list, trend4h_series: list,
             pnl = ((exit_price - entry_price) if decision['action'] == 'LONG'
                    else (entry_price - exit_price)) * qty - fee
             exit_time_ms = path[-1][0]
-            for k, (t, hi, lo, close) in enumerate(path):
+            for t, hi, lo, close in path:
                 is_long = decision['action'] == 'LONG'
                 # cheap re-check: first bar whose extreme matches the recorded
                 # exit price approximates when the exit actually happened
@@ -1537,10 +1616,10 @@ def run_weekly_auto_tune() -> None:
             if hist is None:
                 logger.info(f'🔧 [{base}] auto-tune: not enough price history for entry-signal backtest, skipping')
                 continue
-            klines_1h, klines_4h = hist
+            klines_1h, klines_4h, klines_1m_by_hour = hist
             trend4h_series = _autotune_4h_trend_series(klines_4h)
             entry_baseline_trades = _autotune_replay_entries(
-                symbol, klines_1h, trend4h_series, {}, cur_hard_sl, cur_activate, cur_trail_dst)
+                symbol, klines_1h, klines_1m_by_hour, trend4h_series, {}, cur_hard_sl, cur_activate, cur_trail_dst)
             entry_baseline_total, entry_baseline_buckets = _autotune_entry_candidate_pnl(entry_baseline_trades)
             if len(entry_baseline_trades) >= AUTO_TUNE_MIN_TRADES and len(entry_baseline_buckets) >= AUTO_TUNE_MIN_BUCKETS:
                 entry_candidates = (
@@ -1552,7 +1631,7 @@ def run_weekly_auto_tune() -> None:
                 )
                 for param_name, value, ov in entry_candidates:
                     cand_trades = _autotune_replay_entries(
-                        symbol, klines_1h, trend4h_series, ov, cur_hard_sl, cur_activate, cur_trail_dst)
+                        symbol, klines_1h, klines_1m_by_hour, trend4h_series, ov, cur_hard_sl, cur_activate, cur_trail_dst)
                     cand_total, cand_buckets = _autotune_entry_candidate_pnl(cand_trades)
                     if _autotune_qualifies(entry_baseline_total, entry_baseline_buckets, cand_total, cand_buckets):
                         improvement = cand_total - entry_baseline_total
@@ -2458,18 +2537,24 @@ def process_manual_trade(cfg: dict) -> None:
     clear_flag('manual_trade')
 
 
-def is_us_market_open() -> bool:
-    """True during regular US market hours Mon-Fri 9:45am-4:00pm ET (handles DST)."""
+def _et_tz():
     try:
         import zoneinfo
-        tz = zoneinfo.ZoneInfo('America/New_York')
+        return zoneinfo.ZoneInfo('America/New_York')
     except Exception:
         from datetime import timezone, timedelta
-        # Rough DST fallback: EDT Mar-Nov = UTC-4, EST Nov-Mar = UTC-5
         month = __import__('datetime').datetime.utcnow().month
         offset = -4 if 3 <= month <= 11 else -5
-        tz = timezone(timedelta(hours=offset))
-    now_et = __import__('datetime').datetime.now(tz)
+        return timezone(timedelta(hours=offset))
+
+def is_us_market_open(at: Optional[datetime] = None) -> bool:
+    """True during regular US market hours Mon-Fri 9:45am-4:00pm ET (handles
+    DST). `at` (an aware datetime) checks that point in time instead of now
+    -- used by the auto-tune entry-signal backtest to faithfully replicate
+    this same gate historically; defaults to real "now" for live trading,
+    unchanged from before."""
+    tz = _et_tz()
+    now_et = at.astimezone(tz) if at is not None else datetime.now(tz)
     if now_et.weekday() >= 5:
         return False
     if (now_et.month, now_et.day) in US_MARKET_HOLIDAYS:
@@ -2480,22 +2565,16 @@ def is_us_market_open() -> bool:
     return open_time <= now_et < close_time
 
 
-def in_entry_window(cfg: dict) -> bool:
-    """True if now (ET) falls inside the symbol's optional entry_window_et,
-    a (start_h, start_m, end_h, end_m) tuple restricting new entries to a
-    sub-range of market hours. Symbols without this key trade all session."""
+def in_entry_window(cfg: dict, at: Optional[datetime] = None) -> bool:
+    """True if `at` (ET, defaults to now) falls inside the symbol's optional
+    entry_window_et, a (start_h, start_m, end_h, end_m) tuple restricting new
+    entries to a sub-range of market hours. Symbols without this key trade
+    all session."""
     window = cfg.get('entry_window_et')
     if not window:
         return True
-    try:
-        import zoneinfo
-        tz = zoneinfo.ZoneInfo('America/New_York')
-    except Exception:
-        from datetime import timezone, timedelta
-        month = __import__('datetime').datetime.utcnow().month
-        offset = -4 if 3 <= month <= 11 else -5
-        tz = timezone(timedelta(hours=offset))
-    now_et = __import__('datetime').datetime.now(tz)
+    tz = _et_tz()
+    now_et = at.astimezone(tz) if at is not None else datetime.now(tz)
     sh, sm, eh, em = window
     start = now_et.replace(hour=sh, minute=sm, second=0, microsecond=0)
     end   = now_et.replace(hour=eh, minute=em, second=0, microsecond=0)
