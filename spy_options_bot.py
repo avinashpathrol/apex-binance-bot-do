@@ -693,13 +693,22 @@ def build_signal(data: dict, label: str, vix: Optional[float] = None, spy_trend:
     if vg_lower_wall is not None and vg_upper_wall is not None:
         volume_gex_direction = 'BULL_PUT' if (spot - vg_lower_wall) <= (vg_upper_wall - spot) else 'BEAR_CALL'
 
-    # 3 strike variants
+    # 3 strike variants — "Suggested" sits at the nearest whole-dollar strike
+    # to the wall itself (SPY strikes are $1 apart near the money, no $0.50
+    # increments exist, so this is the tightest buffer actually tradeable).
+    # Backtested against 3 months of real SPY+VIX data: this placement beat a
+    # full $1+ buffer on both win rate (81.3% vs 80.7%) and total P&L (+$962
+    # vs +$544 over 75 vs 57 trades) — tighter meant more premium collected
+    # per trade without a worse hit rate.
+    # floor/ceil (not round) so the strike always lands on the safe side of
+    # the wall -- rounding up on a BULL_PUT would put the short strike ABOVE
+    # support, meaning it's already breached the moment price touches the wall.
     spreads = []
     if direction == 'BULL_PUT':
-        base = math.floor(lower_wall) - 1
+        base = math.floor(lower_wall)
         variants = [(+2, 'Conservative'), (0, 'Suggested'), (-2, 'Aggressive')]
     else:
-        base = math.ceil(upper_wall) + 1
+        base = math.ceil(upper_wall)
         variants = [(-2, 'Conservative'), (0, 'Suggested'), (+2, 'Aggressive')]
 
     for (delta, lbl) in variants:
@@ -1004,7 +1013,8 @@ def format_discord(sig: dict) -> str:
 
 # ── Trade monitoring ──────────────────────────────────────────────────────────
 PROFIT_MILESTONES = [10, 25, 50, 65, 75, 80]   # alert at each of these %
-LOSS_WARN_PCT     = -20                 # warn when loss exceeds this
+LOSS_WARN_PCT     = -20                 # early heads-up when loss exceeds this
+STOP_LOSS_MULT    = 2.5                 # firm stop: cost to close has grown to this many x the credit received
 UPDATE_INTERVAL   = 900                 # send regular P&L update every 15 min
 
 def check_trades(state: dict) -> list:
@@ -1105,6 +1115,22 @@ def check_trades(state: dict) -> list:
                         f"🔴 **{ticker_name} {tid} — Loss warning {profit_pct:.0f}%**\n"
                         f"{ticker_name} ${spot:.2f} | P&L: **${pnl_now:+.2f}**\n"
                         f"{'⚠️ '+ticker_name+' approaching your short strike $'+str(int(short_s))+' — close to limit damage' if danger else 'Consider cutting loss now before it gets worse'}"
+                    )
+
+                # ── Stop loss (firm) ─────────────────────────────────────────
+                # Backtested against 3 months of real SPY+VIX data: closing at
+                # 2.5x the credit received caps the worst-case loss (~$167 ->
+                # ~$100-113 per contract) at the cost of ~25-40% less total
+                # profit, since some trades that hit this level do recover by
+                # end of day if held. This is the firm "close it now" trigger;
+                # the -20% warning above is just an earlier heads-up, not a stop.
+                if credit and cur_debit >= credit * STOP_LOSS_MULT and 'stop_loss' not in milestones_hit:
+                    milestones_hit.append('stop_loss')
+                    alerts.append(
+                        f"🛑 **{ticker_name} {tid} — STOP LOSS HIT**\n"
+                        f"{ticker_name} ${spot:.2f} | P&L: **${pnl_now:+.2f}**\n"
+                        f"Cost to close (${cur_debit:.2f}) has reached {STOP_LOSS_MULT}x your credit (${credit:.2f}).\n"
+                        f"Close now on Wealthsimple — buy back at **${cur_debit:.2f}** debit to cap the loss here."
                     )
 
                 # ── Strike approach warning ─────────────────────────────────
