@@ -114,6 +114,7 @@ SYMBOLS_CONFIG = {
         'skip_margin_type': True,
         'daily_profit_lock': 6.0,
         'short_only': True,
+        'ema_cross_enabled': True,  # backtested 2026-09-16, 90 days real data -- see get_decision()
         'rsi_long_min': 30,
         'rsi_long_max': 60,
         'rsi_short_min': 35,
@@ -191,6 +192,7 @@ SYMBOLS_CONFIG = {
         'daily_profit_lock': 2.5,
         'trend_continuation_enabled': True,
         'breakout_enabled': True,
+        'ema_cross_enabled': True,  # backtested 2026-09-16, 90 days real data -- see get_decision()
         'rsi_long_min': 27,
         'rsi_long_max': 66,
         'rsi_short_min': 22,
@@ -219,6 +221,7 @@ SYMBOLS_CONFIG = {
         'skip_margin_type': True,
         'daily_profit_lock': 7.0,
         'trend_continuation_enabled': True,
+        'ema_cross_enabled': True,  # backtested 2026-09-16, 90 days real data -- see get_decision()
         'rsi_long_min': 25,
         'rsi_long_max': 65,
         'rsi_short_min': 20,
@@ -1733,10 +1736,43 @@ def get_decision(symbol: str, df: pd.DataFrame, trend4h_override: Optional[str] 
                 'regime': 'CHOPPY' if adx < ADX_MIN else 'TRENDING',
                 'trend_direction': trend, 'reason': reason, 'indicators': snap}
 
-    if adx < ADX_MIN:
-        return hold(f'ADX {adx:.1f} < {ADX_MIN} — market choppy, no entry')
     if atr < min_atr:
         return hold(f'ATR {atr:.4f} too low (min {min_atr}) — not enough movement to cover fees')
+
+    vol_ok = vol >= vol_ma * 0.9   # require ≥90% of 20-bar average to enter
+    trend4h = trend4h_override if trend4h_override is not None else get_4h_trend(symbol)
+
+    # ── EMA21/50 cross entry — opt-in per symbol, runs BEFORE the ADX gate ────
+    # ADX is a Wilder-smoothed lagging indicator by construction. Backtested
+    # 2026-09-16 against 90 days of real price history + our actual live exit
+    # mechanics on TSLA/NBIS/AMD: waiting for ADX >= ADX_MIN (the gate below)
+    # lost to entering right at the EMA21/50 cross in 11 of 12 symbol-months
+    # tested -- a median 22-70 hours pass (NBIS worst: median 70h, 8% of the
+    # move already gone) before ADX confirms what the EMA cross already
+    # showed. This does NOT wait for that gate, but still requires the same
+    # 4H trend filter and volume confirmation the other entry types use.
+    if cfg.get('ema_cross_enabled') and not pd.isna(p['ema21']) and not pd.isna(p['ema50']):
+        p_ema21, p_ema50 = float(p['ema21']), float(p['ema50'])
+        crossed_up   = p_ema21 <= p_ema50 and ema21 > ema50
+        crossed_down = p_ema21 >= p_ema50 and ema21 < ema50
+        if (crossed_up or crossed_down) and vol_ok:
+            cross_dir = 'BULLISH' if crossed_up else 'BEARISH'
+            counter_trend = (cross_dir == 'BULLISH' and trend4h == '4H BEARISH') or \
+                            (cross_dir == 'BEARISH' and trend4h == '4H BULLISH')
+            if not counter_trend:
+                conf = 62
+                if adx > 18:             conf += 5   # some trend strength already, even pre-confirmation
+                if vol >= vol_ma * 1.2:  conf += 8
+                return {
+                    'action': 'LONG' if crossed_up else 'SHORT', 'confidence': min(conf, 85),
+                    'regime': 'TRENDING', 'trend_direction': cross_dir,
+                    'reason': (f'EMA21/50 cross {"up" if crossed_up else "down"} | ADX {adx:.1f} '
+                               f'(pre-confirmation) | RSI {rsi:.1f} | vol {vol:.0f}/{vol_ma:.0f}'),
+                    'indicators': snap,
+                }
+
+    if adx < ADX_MIN:
+        return hold(f'ADX {adx:.1f} < {ADX_MIN} — market choppy, no entry')
 
     di_bullish  = adx_pos > adx_neg
     ema_bullish = ema21 > ema50
@@ -1752,13 +1788,10 @@ def get_decision(symbol: str, df: pd.DataFrame, trend4h_override: Optional[str] 
         )
 
     # ── 4H trend filter — only trade in direction of higher timeframe ────────────
-    trend4h = trend4h_override if trend4h_override is not None else get_4h_trend(symbol)
     if trend == 'BULLISH' and trend4h == '4H BEARISH':
         return hold(f'BULLISH on 1H but 4H is BEARISH — counter-trend, skipping', trend)
     if trend == 'BEARISH' and trend4h == '4H BULLISH':
         return hold(f'BEARISH on 1H but 4H is BULLISH — counter-trend, skipping', trend)
-
-    vol_ok = vol >= vol_ma * 0.9   # require ≥90% of 20-bar average to enter
 
     if trend == 'BULLISH':
         dist_pct      = (price - ema21) / ema21
@@ -1872,6 +1905,7 @@ def _classify_entry_type(entry_reason: str) -> str:
     r = (entry_reason or '').lower()
     if 'donchian breakout' in r:    return 'breakout'
     if 'trend continuation' in r:   return 'trend_continuation'
+    if 'ema21/50 cross' in r:       return 'ema_cross'
     if 'pullback to ema21' in r or 'bounce to ema21' in r: return 'pullback'
     return 'other'
 
