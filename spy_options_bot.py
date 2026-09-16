@@ -5,6 +5,7 @@ import os, json, math, logging, time, threading
 from datetime import datetime, date, timezone, timedelta
 from math import log, sqrt, exp, pi, erf
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
 from typing import Optional
 
 try:
@@ -1322,7 +1323,16 @@ def handle_trigger(trigger: dict, state: dict) -> dict:
     return state
 
 # ── HTTP API server ───────────────────────────────────────────────────────────
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    """Plain HTTPServer handles one connection at a time with no read/write
+    timeout — a single stuck or slow client (flaky mobile network, backgrounded
+    app) blocks every other request indefinitely. Threading + a per-connection
+    timeout means one bad client can only ever wedge itself, never the API."""
+    daemon_threads = True
+
 class APIHandler(BaseHTTPRequestHandler):
+    timeout = 15  # seconds — abort a connection that stalls mid-request
+
     def _cors(self):
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
@@ -1742,7 +1752,7 @@ def run_crypto_0dte_cycle(crypto_state):
 def start_api():
     while True:
         try:
-            server = HTTPServer(('0.0.0.0', API_PORT), APIHandler)
+            server = ThreadingHTTPServer(('0.0.0.0', API_PORT), APIHandler)
             logger.info(f'API listening on port {API_PORT}')
             server.serve_forever()
         except Exception as e:
