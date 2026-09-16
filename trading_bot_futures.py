@@ -197,6 +197,15 @@ SYMBOLS_CONFIG = {
         'rsi_short_max': 68,
         'pullback_zone_pct': 0.030,
         'trail_dist_atr': 0.20,
+        # Backtested 2026-09-16 by replaying all 100 real closed TSLA trades
+        # against actual 1-minute Binance price history: raising this from the
+        # global default (0.75) consistently reduced losses in every one of
+        # the 4 months tested (tightening the hard SL or widening trail_dist
+        # instead both made it worse — this was the only direction that
+        # helped). TSLA was net roughly flat (-$3.58/100 trades) beforehand;
+        # this doesn't make it profitable, just less of a drag. See
+        # project_loop_engineering_framework memory for the full analysis.
+        'trail_activate_atr': 1.0,
     },
     'NBISUSDT': {
         'base': 'NBIS',
@@ -1273,7 +1282,8 @@ def check_sl_trail(symbol: str, position: str, price: float) -> Tuple[bool, str]
     is_long            = position == 'LONG'
     sl_atr_mult        = SYMBOLS_CONFIG.get(symbol, {}).get('hard_sl_atr', HARD_SL_ATR)
     hard_sl_dist       = atr * sl_atr_mult
-    activate_dist      = atr * TRAIL_ACTIVATE_ATR
+    trail_activate_mult = SYMBOLS_CONFIG.get(symbol, {}).get('trail_activate_atr', TRAIL_ACTIVATE_ATR)
+    activate_dist      = atr * trail_activate_mult
     force_trail_active = ss.get('force_trail_active', False)
     profit_so_far      = (best - entry) if is_long else (entry - best)
 
@@ -1354,7 +1364,8 @@ def build_trail_info(symbol: str, position: Optional[str]) -> dict:
                 else round(ep + sl_dist, 4)
     if ep and bp and atr:
         profit = (bp - ep) if position == 'LONG' else (ep - bp)
-        if profit >= atr * TRAIL_ACTIVATE_ATR:
+        trail_activate_mult = SYMBOLS_CONFIG.get(symbol, {}).get('trail_activate_atr', TRAIL_ACTIVATE_ATR)
+        if profit >= atr * trail_activate_mult:
             trail_atr_mult = SYMBOLS_CONFIG.get(symbol, {}).get('trail_dist_atr', 0.25)
             dyn = max(atr * trail_atr_mult, profit * 0.20)
             info['trail_stop'] = round(bp - dyn, 4) if position == 'LONG' else round(bp + dyn, 4)
@@ -2408,7 +2419,7 @@ def check_paper_trail(symbol: str, price: float) -> Tuple[bool, str]:
     if not atr or atr <= 0:
         return False, ''
     hard_sl_dist  = atr * cfg.get('hard_sl_atr', HARD_SL_ATR)
-    activate_dist = atr * TRAIL_ACTIVATE_ATR
+    activate_dist = atr * cfg.get('trail_activate_atr', TRAIL_ACTIVATE_ATR)
     profit_so_far = (best - entry) if is_long else (entry - best)
     trail_active  = profit_so_far >= activate_dist
 
