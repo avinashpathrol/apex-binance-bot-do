@@ -655,6 +655,36 @@ def get_current_price(symbol: str) -> float:
 _4h_cache: dict = {}
 H4_CACHE_TTL    = 1800
 
+def _4h_klines_to_df(klines: list) -> pd.DataFrame:
+    df4 = pd.DataFrame(klines, columns=[
+        'time','open','high','low','close','volume',
+        'close_time','quote_volume','trades','taker_base','taker_quote','ignore',
+    ])
+    for col in ('high','low','close'):
+        df4[col] = df4[col].astype(float)
+    return df4
+
+def _compute_4h_trend(df4: pd.DataFrame) -> Tuple[str, float, float, float]:
+    """Shared by live get_4h_trend() and the auto-tune entry-signal backtest,
+    so both use byte-identical logic -- no separate reimplementation to drift
+    out of sync. Returns (trend_label, adx, adx_pos, adx_neg) for the LAST
+    row of df4, which for the backtest path is a windowed slice ending at
+    some historical point in time (rolling indicators are causal, so this
+    is a faithful point-in-time value, not a lookahead)."""
+    adx_ind        = ta.trend.ADXIndicator(df4['high'], df4['low'], df4['close'], window=14)
+    adx_s, pos_s, neg_s = adx_ind.adx(), adx_ind.adx_pos(), adx_ind.adx_neg()
+    ema21_s = ta.trend.EMAIndicator(df4['close'], window=21).ema_indicator()
+    ema50_s = ta.trend.EMAIndicator(df4['close'], window=50).ema_indicator()
+    adx4, adx_pos4, adx_neg4 = float(adx_s.iloc[-1]), float(pos_s.iloc[-1]), float(neg_s.iloc[-1])
+    ema21_4, ema50_4 = float(ema21_s.iloc[-1]), float(ema50_s.iloc[-1])
+    if adx4 >= 20 and adx_pos4 > adx_neg4 and ema21_4 > ema50_4:
+        trend4 = '4H BULLISH'
+    elif adx4 >= 20 and adx_neg4 > adx_pos4 and ema21_4 < ema50_4:
+        trend4 = '4H BEARISH'
+    else:
+        trend4 = '4H NEUTRAL'
+    return trend4, adx4, adx_pos4, adx_neg4
+
 def get_4h_trend(symbol: str) -> str:
     now = time.time()
     cached = _4h_cache.get(symbol)
@@ -663,30 +693,8 @@ def get_4h_trend(symbol: str) -> str:
     try:
         klines = binance_futures_public('/fapi/v1/klines',
                                         {'symbol': symbol, 'interval': '4h', 'limit': 60})
-        df4 = pd.DataFrame(klines, columns=[
-            'time','open','high','low','close','volume',
-            'close_time','quote_volume','trades','taker_base','taker_quote','ignore',
-        ])
-        for col in ('high','low','close'):
-            df4[col] = df4[col].astype(float)
-        adx_ind       = ta.trend.ADXIndicator(df4['high'], df4['low'], df4['close'], window=14)
-        df4['adx']     = adx_ind.adx()
-        df4['adx_pos'] = adx_ind.adx_pos()
-        df4['adx_neg'] = adx_ind.adx_neg()
-        df4['ema21']   = ta.trend.EMAIndicator(df4['close'], window=21).ema_indicator()
-        df4['ema50']   = ta.trend.EMAIndicator(df4['close'], window=50).ema_indicator()
-        c4 = df4.iloc[-1]
-        adx4     = float(c4['adx'])
-        adx_pos4 = float(c4['adx_pos'])
-        adx_neg4 = float(c4['adx_neg'])
-        ema21_4  = float(c4['ema21'])
-        ema50_4  = float(c4['ema50'])
-        if adx4 >= 20 and adx_pos4 > adx_neg4 and ema21_4 > ema50_4:
-            trend4 = '4H BULLISH'
-        elif adx4 >= 20 and adx_neg4 > adx_pos4 and ema21_4 < ema50_4:
-            trend4 = '4H BEARISH'
-        else:
-            trend4 = '4H NEUTRAL'
+        df4 = _4h_klines_to_df(klines)
+        trend4, adx4, adx_pos4, adx_neg4 = _compute_4h_trend(df4)
         _4h_cache[symbol] = {'trend': trend4, 'ts': now}
         logger.info(f'📊 [{symbol}] 4H: {trend4} | ADX={adx4:.1f} +DI={adx_pos4:.1f} -DI={adx_neg4:.1f}')
         return trend4
@@ -696,9 +704,11 @@ def get_4h_trend(symbol: str) -> str:
 
 
 # ── Market Data & Signal ──────────────────────────────────────────────────────
-def get_market_data(symbol: str) -> pd.DataFrame:
-    klines = binance_futures_public('/fapi/v1/klines',
-                                    {'symbol': symbol, 'interval': '1h', 'limit': 100})
+def _build_1h_indicators(klines: list) -> pd.DataFrame:
+    """Shared by live get_market_data() and the auto-tune entry-signal
+    backtest -- both call this on a klines list so the indicator math can
+    never drift out of sync between live trading and what the backtest
+    thinks live trading does."""
     df = pd.DataFrame(klines, columns=[
         'time','open','high','low','close','volume',
         'close_time','quote_volume','trades','taker_base','taker_quote','ignore',
@@ -719,6 +729,11 @@ def get_market_data(symbol: str) -> pd.DataFrame:
     df['dc_upper'] = df['high'].rolling(DC_PERIOD).max().shift(1)
     df['dc_lower'] = df['low'].rolling(DC_PERIOD).min().shift(1)
     return df
+
+def get_market_data(symbol: str) -> pd.DataFrame:
+    klines = binance_futures_public('/fapi/v1/klines',
+                                    {'symbol': symbol, 'interval': '1h', 'limit': 100})
+    return _build_1h_indicators(klines)
 
 ATR_HEALTH_INTERVAL_DAYS = 7   # re-check once a week — daily is too noisy/short-window to trust
 
@@ -1008,6 +1023,11 @@ def run_monthly_strategy_review() -> None:
 # (not replayed) performance since the change and auto-reverts if it's
 # clearly worse -- an out-of-sample gate against genuinely new trades, not
 # just the historical data the change was chosen on.
+ENTRY_TUNE_ENABLED            = False  # gate: entry-signal backtest currently only checks
+                                         # conditions at bar CLOSE, missing intra-hour polling
+                                         # live trading actually does (confirmed on CRCL: found only
+                                         # 3 of 14 real signals). Flip True once upgraded to sample
+                                         # within each hour, not just at the close.
 AUTO_TUNE_INTERVAL_DAYS       = 7
 AUTO_TUNE_MIN_TRADES          = 10   # lowered from 50 -- don't let a new ticker bleed for months untuned
 AUTO_TUNE_MIN_BUCKETS         = 3    # chronological chunks, NOT calendar months -- see _autotune_time_buckets
@@ -1205,6 +1225,165 @@ def _autotune_qualifies(baseline_total: float, baseline_buckets: dict,
     improved = sum(1 for b in buckets if cand_buckets[b] >= baseline_buckets[b])
     return improved > len(buckets) / 2
 
+
+# ── Entry-signal auto-tune — a bigger, riskier problem than exit tuning ────
+# Exit tuning replays REAL trades (fixed, known entries) -- a well-anchored
+# question. Entry tuning has to ask "what NEW trades would have fired under
+# a different threshold," which requires re-running the actual entry
+# decision tree (get_decision) against historical bars, not just replaying
+# known outcomes. Built to reuse the exact same indicator/decision code the
+# live bot runs (_build_1h_indicators, _compute_4h_trend, get_decision
+# itself) rather than a separate reimplementation, specifically to avoid
+# the kind of drift bug that would be invisible until it silently produced
+# wrong backtests.
+ENTRY_BACKTEST_WARMUP_BARS   = 100   # matches production's get_market_data() window exactly
+ENTRY_BACKTEST_4H_WINDOW     = 60    # matches production's get_4h_trend() window exactly
+ENTRY_BACKTEST_MAX_HOLD_HRS  = 72    # cap a hypothetical trade's search window; real trades rarely run longer
+ENTRY_BACKTEST_MAX_TRADES    = 150   # safety cap -- a badly-loosened candidate could otherwise fire constantly
+
+RSI_LONG_MIN_CANDIDATES  = [25, 30, 35]
+RSI_LONG_MAX_CANDIDATES  = [58, 62, 66]
+RSI_SHORT_MIN_CANDIDATES = [34, 38, 42]
+RSI_SHORT_MAX_CANDIDATES = [66, 70, 74]
+PULLBACK_ZONE_CANDIDATES = [0.012, 0.018, 0.024]
+
+def _autotune_entry_history(symbol: str, since_ms: int) -> Optional[Tuple[list, list]]:
+    """Fetch 1H and 4H klines covering since_ms through now, with enough
+    lookback before since_ms for indicator warmup. Returns (klines_1h,
+    klines_4h) or None on failure."""
+    now_ms = int(time.time() * 1000)
+    start_1h = since_ms - ENTRY_BACKTEST_WARMUP_BARS * 3600 * 1000
+    start_4h = since_ms - ENTRY_BACKTEST_4H_WINDOW * 4 * 3600 * 1000
+    try:
+        klines_1h = _autotune_fetch_klines(symbol, '1h', start_1h, now_ms)
+        klines_4h = _autotune_fetch_klines(symbol, '4h', start_4h, now_ms)
+        if len(klines_1h) < ENTRY_BACKTEST_WARMUP_BARS + 10 or len(klines_4h) < ENTRY_BACKTEST_4H_WINDOW:
+            return None
+        return klines_1h, klines_4h
+    except Exception as e:
+        logger.warning(f'autotune_entry_history [{symbol}]: {e}')
+        return None
+
+def _autotune_4h_trend_series(klines_4h: list) -> list:
+    """(close_time_ms, trend_label) for every 4H bar with enough history
+    behind it, each computed from a trailing ENTRY_BACKTEST_4H_WINDOW-bar
+    slice ending at that bar -- same rolling window production uses, so
+    each value is a faithful point-in-time trend, not a lookahead."""
+    out = []
+    for j in range(ENTRY_BACKTEST_4H_WINDOW - 1, len(klines_4h)):
+        window = klines_4h[j - ENTRY_BACKTEST_4H_WINDOW + 1: j + 1]
+        df4 = _4h_klines_to_df(window)
+        try:
+            trend4, _, _, _ = _compute_4h_trend(df4)
+        except Exception:
+            trend4 = '4H NEUTRAL'
+        out.append((klines_4h[j][6], trend4))  # index 6 = close_time
+    return out
+
+def _autotune_lookup_4h_trend(trend_series: list, ts_ms: int) -> str:
+    result = '4H NEUTRAL'
+    for close_time, trend in trend_series:
+        if close_time > ts_ms:
+            break
+        result = trend
+    return result
+
+def _autotune_replay_entries(symbol: str, klines_1h: list, trend4h_series: list,
+                              entry_overrides: dict, hard_sl_mult: float,
+                              trail_activate_mult: float, trail_dist_mult: float) -> list:
+    """Walk the 1H bars, running the REAL get_decision() with entry_overrides
+    temporarily applied via the SAME runtime-override layer get_symbol_cfg()
+    reads (NOT SYMBOLS_CONFIG directly -- get_symbol_cfg always prefers a
+    live runtime override over SYMBOLS_CONFIG, so mutating SYMBOLS_CONFIG
+    here would be silently ignored for any symbol that already has an
+    earlier auto-tuned entry override in effect). Collects hypothetical
+    entries and simulates each one's exit. Enforces one-position-at-a-time,
+    same as live trading. Returns a list of {side, entry_price, pnl,
+    closed_at} dicts."""
+    live_overrides = state['runtime'].setdefault('auto_tune_overrides', {}).setdefault(symbol, {})
+    had_key = {k: (k in live_overrides) for k in entry_overrides}
+    original = {k: live_overrides.get(k) for k in entry_overrides}
+    live_overrides.update(entry_overrides)
+    collateral = SYMBOLS_CONFIG[symbol].get('trade_amount', 30.0)
+    leverage   = SYMBOLS_CONFIG[symbol].get('leverage', 30)
+    max_loss_pct = SYMBOLS_CONFIG[symbol].get('max_loss_pct', 0.30)
+
+    trades = []
+    try:
+        i = ENTRY_BACKTEST_WARMUP_BARS
+        n = len(klines_1h)
+        while i < n and len(trades) < ENTRY_BACKTEST_MAX_TRADES:
+            window = klines_1h[i - ENTRY_BACKTEST_WARMUP_BARS + 1: i + 1]
+            df = _build_1h_indicators(window)
+            if df['atr'].isna().iloc[-1] or df['rsi'].isna().iloc[-1]:
+                i += 1
+                continue
+            bar_close_time = klines_1h[i][6]
+            trend4h = _autotune_lookup_4h_trend(trend4h_series, bar_close_time)
+            try:
+                decision = get_decision(symbol, df, trend4h_override=trend4h)
+            except Exception:
+                i += 1
+                continue
+
+            if decision['action'] not in ('LONG', 'SHORT'):
+                i += 1
+                continue
+
+            entry_price = float(klines_1h[i][4])  # close
+            atr = float(df['atr'].iloc[-1])
+            entry_dt = datetime.fromtimestamp(bar_close_time / 1000, tz=timezone.utc)
+            exit_search_end = entry_dt + timedelta(hours=ENTRY_BACKTEST_MAX_HOLD_HRS)
+            path = _autotune_price_path(symbol, entry_dt.isoformat(), exit_search_end.isoformat())
+            if not path:
+                i += 1
+                continue
+            exit_price = _autotune_simulate_exit(
+                decision['action'], entry_price, atr, path,
+                hard_sl_mult, trail_activate_mult, trail_dist_mult, max_loss_pct, collateral, leverage)
+            qty = (collateral * leverage * 0.995) / entry_price
+            fee = (entry_price + exit_price) * qty * FEE_RATE
+            pnl = ((exit_price - entry_price) if decision['action'] == 'LONG'
+                   else (entry_price - exit_price)) * qty - fee
+            exit_time_ms = path[-1][0]
+            for k, (t, hi, lo, close) in enumerate(path):
+                is_long = decision['action'] == 'LONG'
+                # cheap re-check: first bar whose extreme matches the recorded
+                # exit price approximates when the exit actually happened
+                if abs((hi if is_long else lo) - exit_price) < 1e-9 or abs((lo if is_long else hi) - exit_price) < 1e-9:
+                    exit_time_ms = t
+                    break
+            trades.append({
+                'side': decision['action'], 'entry_price': entry_price, 'pnl': pnl,
+                'closed_at': datetime.fromtimestamp(exit_time_ms / 1000, tz=timezone.utc).isoformat(),
+            })
+            # advance i to the first 1H bar at/after the exit -- don't scan for a
+            # new entry while "in" this hypothetical position
+            while i < n and klines_1h[i][6] < exit_time_ms:
+                i += 1
+        return trades
+    finally:
+        for k in entry_overrides:
+            if had_key[k]:
+                live_overrides[k] = original[k]
+            else:
+                live_overrides.pop(k, None)
+
+def _autotune_entry_candidate_pnl(trades: list) -> Tuple[float, dict]:
+    """Same chronological-chunk bucketing as _autotune_candidate_pnl, applied
+    to a list of hypothetical entry-replay trades instead of real ones."""
+    ordered = sorted(trades, key=lambda d: d['closed_at'])
+    n = len(ordered)
+    num_buckets = min(6, max(AUTO_TUNE_MIN_BUCKETS, n // 10)) if n else 1
+    bucket_size = max(1, n // num_buckets) if num_buckets else max(1, n)
+    total = 0.0
+    buckets: dict = {}
+    for idx, d in enumerate(ordered):
+        total += d['pnl']
+        b = min(idx // bucket_size, num_buckets - 1)
+        buckets[b] = buckets.get(b, 0.0) + d['pnl']
+    return total, buckets
+
 def run_weekly_auto_tune() -> None:
     last = state['runtime'].get('last_auto_tune')
     if last:
@@ -1236,26 +1415,35 @@ def run_weekly_auto_tune() -> None:
                    and t.get('opened_at') and t.get('entry_price') and t.get('side')]
 
     # ── Rollback check: does an existing override hold up on new real trades? ──
+    # overrides[symbol] is {param_name: value, '_meta': {...}} -- the param_name
+    # key is what get_symbol_cfg() actually reads at runtime; '_meta' is
+    # bookkeeping only. (Storing param/value as literal dict keys 'param' and
+    # 'value' instead of the real param name was a real bug found 2026-09-16:
+    # get_symbol_cfg's `if key in override` could never match, so an "applied"
+    # change silently never took effect. Fixed here; see
+    # project_loop_engineering_framework memory for the incident.)
     for symbol, ov in list(overrides.items()):
-        applied_at = ov.get('applied_at')
+        meta = ov.get('_meta', {})
+        applied_at = meta.get('applied_at')
         if not applied_at:
             continue
         new_trades = [r for r in all_records if r['symbol'] == symbol and r['opened_at'] > applied_at]
         if len(new_trades) < AUTO_TUNE_ROLLBACK_MIN_TRADES:
             continue
         new_avg = sum(r['pnl'] for r in new_trades) / len(new_trades)
-        baseline_avg = ov.get('baseline_avg_pnl', 0)
+        baseline_avg = meta.get('baseline_avg_pnl', 0)
         new_total = sum(r['pnl'] for r in new_trades)
         base = SYMBOLS_CONFIG.get(symbol, {}).get('base', symbol)
         if new_total < 0 and new_avg < baseline_avg:
             reverted = overrides.pop(symbol)
+            reverted_meta = reverted.get('_meta', {})
             history.append({'symbol': symbol, 'action': 'reverted', 'params': reverted,
                             'at': now_utc_iso(), 'reason': f'{len(new_trades)} new trades averaged '
                             f'${new_avg:+.2f}/trade (worse than ${baseline_avg:+.2f}/trade before the change)'})
             save_state()
             send_telegram(
                 f'↩️ <b>Auto-Tune Reverted — {base}</b>\n\n'
-                f'The {reverted.get("param")}={reverted.get("value")} change from '
+                f'The {reverted_meta.get("param")}={reverted_meta.get("value")} change from '
                 f'{applied_at[:10]} did not hold up: {len(new_trades)} real trades since then '
                 f'averaged ${new_avg:+.2f}/trade (net ${new_total:+.2f}), worse than the '
                 f'${baseline_avg:+.2f}/trade baseline it was meant to beat. Reverted to the prior value.'
@@ -1273,6 +1461,7 @@ def run_weekly_auto_tune() -> None:
         base = SYMBOLS_CONFIG.get(symbol, {}).get('base', symbol)
         existing = overrides.get(symbol)
         if existing:
+            existing = existing.get('_meta', existing)  # tolerate either shape defensively
             applied_days_ago = (datetime.now(timezone.utc) -
                                  datetime.fromisoformat(existing['applied_at'].replace('Z', '+00:00'))).days
             if applied_days_ago < AUTO_TUNE_COOLDOWN_DAYS:
@@ -1285,6 +1474,15 @@ def run_weekly_auto_tune() -> None:
         cur_hard_sl   = get_symbol_cfg(symbol, 'hard_sl_atr', HARD_SL_ATR)
         cur_activate  = get_symbol_cfg(symbol, 'trail_activate_atr', TRAIL_ACTIVATE_ATR)
         cur_trail_dst = get_symbol_cfg(symbol, 'trail_dist_atr', 0.25)
+        cur_rsi_lmin  = get_symbol_cfg(symbol, 'rsi_long_min', RSI_LONG_MIN)
+        cur_rsi_lmax  = get_symbol_cfg(symbol, 'rsi_long_max', RSI_LONG_MAX)
+        cur_rsi_smin  = get_symbol_cfg(symbol, 'rsi_short_min', RSI_SHORT_MIN)
+        cur_rsi_smax  = get_symbol_cfg(symbol, 'rsi_short_max', RSI_SHORT_MAX)
+        cur_pullback  = get_symbol_cfg(symbol, 'pullback_zone_pct', PULLBACK_ZONE_PCT)
+        cur_values = {'hard_sl_atr': cur_hard_sl, 'trail_activate_atr': cur_activate,
+                     'trail_dist_atr': cur_trail_dst, 'rsi_long_min': cur_rsi_lmin,
+                     'rsi_long_max': cur_rsi_lmax, 'rsi_short_min': cur_rsi_smin,
+                     'rsi_short_max': cur_rsi_smax, 'pullback_zone_pct': cur_pullback}
 
         enriched, failed = _autotune_enrich_trades(symbol, sym_records)
         if failed > 0 and failed >= len(sym_records) * 0.2:
@@ -1328,41 +1526,91 @@ def run_weekly_auto_tune() -> None:
                     best = {'param': param_name, 'value': value, 'improvement': improvement,
                             'cand_total': cand_total, 'cand_buckets': cand_buckets}
 
+        entry_search_ran = False
+        if best is None and ENTRY_TUNE_ENABLED:
+            logger.info(f'🔧 [{base}] auto-tune: reviewed {len(enriched)} trades, no consistent exit '
+                       f'improvement found across {len(HARD_SL_CANDIDATES)+len(TRAIL_ACTIVATE_CANDIDATES)+len(TRAIL_DIST_CANDIDATES)} candidates -- '
+                       f'trying entry-signal parameters (bigger overfitting risk, only reached when exit tuning finds nothing)')
+            entry_search_ran = True
+            since_ms = int(datetime.fromisoformat(min(r['opened_at'] for r in sym_records).replace('Z', '+00:00')).timestamp() * 1000)
+            hist = _autotune_entry_history(symbol, since_ms)
+            if hist is None:
+                logger.info(f'🔧 [{base}] auto-tune: not enough price history for entry-signal backtest, skipping')
+                continue
+            klines_1h, klines_4h = hist
+            trend4h_series = _autotune_4h_trend_series(klines_4h)
+            entry_baseline_trades = _autotune_replay_entries(
+                symbol, klines_1h, trend4h_series, {}, cur_hard_sl, cur_activate, cur_trail_dst)
+            entry_baseline_total, entry_baseline_buckets = _autotune_entry_candidate_pnl(entry_baseline_trades)
+            if len(entry_baseline_trades) >= AUTO_TUNE_MIN_TRADES and len(entry_baseline_buckets) >= AUTO_TUNE_MIN_BUCKETS:
+                entry_candidates = (
+                    [('rsi_long_min', v, {'rsi_long_min': v}) for v in RSI_LONG_MIN_CANDIDATES if v != cur_rsi_lmin] +
+                    [('rsi_long_max', v, {'rsi_long_max': v}) for v in RSI_LONG_MAX_CANDIDATES if v != cur_rsi_lmax] +
+                    [('rsi_short_min', v, {'rsi_short_min': v}) for v in RSI_SHORT_MIN_CANDIDATES if v != cur_rsi_smin] +
+                    [('rsi_short_max', v, {'rsi_short_max': v}) for v in RSI_SHORT_MAX_CANDIDATES if v != cur_rsi_smax] +
+                    [('pullback_zone_pct', v, {'pullback_zone_pct': v}) for v in PULLBACK_ZONE_CANDIDATES if v != cur_pullback]
+                )
+                for param_name, value, ov in entry_candidates:
+                    cand_trades = _autotune_replay_entries(
+                        symbol, klines_1h, trend4h_series, ov, cur_hard_sl, cur_activate, cur_trail_dst)
+                    cand_total, cand_buckets = _autotune_entry_candidate_pnl(cand_trades)
+                    if _autotune_qualifies(entry_baseline_total, entry_baseline_buckets, cand_total, cand_buckets):
+                        improvement = cand_total - entry_baseline_total
+                        if best is None or improvement > best['improvement']:
+                            best = {'param': param_name, 'value': value, 'improvement': improvement,
+                                    'cand_total': cand_total, 'cand_buckets': cand_buckets, 'is_entry': True,
+                                    'baseline_total': entry_baseline_total, 'baseline_buckets': entry_baseline_buckets,
+                                    'n_trades': len(entry_baseline_trades)}
+            else:
+                logger.info(f'🔧 [{base}] auto-tune: only {len(entry_baseline_trades)} hypothetical entries in '
+                           f'backtest, not enough to evaluate entry-signal candidates')
+
         if best is None:
-            logger.info(f'🔧 [{base}] auto-tune: reviewed {len(enriched)} trades, no consistent '
-                       f'improvement found across {len(HARD_SL_CANDIDATES)+len(TRAIL_ACTIVATE_CANDIDATES)+len(TRAIL_DIST_CANDIDATES)} candidates tested')
+            logger.info(f'🔧 [{base}] auto-tune: no consistent improvement found in exit'
+                       f'{" or entry" if entry_search_ran else ""} parameters')
             continue
 
-        overrides[symbol] = {'param': best['param'], 'value': best['value']}
-        baseline_avg_pnl = baseline_total / len(enriched)
+        is_entry = best.get('is_entry', False)
+        eff_baseline_total = best.get('baseline_total', baseline_total)
+        eff_baseline_buckets = best.get('baseline_buckets', baseline_buckets)
+        eff_n = best.get('n_trades', len(enriched))
+
         applied_at = now_utc_iso()
-        overrides[symbol]['applied_at'] = applied_at
-        overrides[symbol]['baseline_avg_pnl'] = baseline_avg_pnl
+        baseline_avg_pnl = eff_baseline_total / eff_n if eff_n else 0
+        overrides[symbol] = {
+            best['param']: best['value'],
+            '_meta': {'param': best['param'], 'value': best['value'], 'applied_at': applied_at,
+                      'baseline_avg_pnl': baseline_avg_pnl, 'is_entry_param': is_entry},
+        }
         history.append({'symbol': symbol, 'action': 'applied', 'params': overrides[symbol],
-                        'at': applied_at, 'baseline_total': round(baseline_total, 2),
+                        'at': applied_at, 'baseline_total': round(eff_baseline_total, 2),
                         'candidate_total': round(best['cand_total'], 2)})
         save_state()
 
         bucket_lines = '\n'.join(
-            f'    chunk {b+1}: ${baseline_buckets.get(b,0):+.2f} → ${best["cand_buckets"].get(b,0):+.2f}'
-            for b in sorted(set(baseline_buckets) | set(best['cand_buckets'])))
-        n_trades_note = f' ({len(enriched)} trades total -- thin sample, watch the rollback check closely)' \
-            if len(enriched) < 50 else ''
+            f'    chunk {b+1}: ${eff_baseline_buckets.get(b,0):+.2f} → ${best["cand_buckets"].get(b,0):+.2f}'
+            for b in sorted(set(eff_baseline_buckets) | set(best['cand_buckets'])))
+        n_trades_note = f' ({eff_n} trades -- thin sample, watch the rollback check closely)' \
+            if eff_n < 50 else ''
+        kind_note = '🎯 <b>Entry-signal change</b> (bigger overfitting risk than exit tuning)' if is_entry \
+            else '🛑 Exit-parameter change'
         send_telegram(
             f'🔧 <b>Auto-Tune Applied — {base}</b>{n_trades_note}\n\n'
-            f'Replayed {len(enriched)} real trades against actual price history. '
-            f'Changing <b>{best["param"]}</b>: {[cur_hard_sl, cur_activate, cur_trail_dst][["hard_sl_atr","trail_activate_atr","trail_dist_atr"].index(best["param"])]} → <b>{best["value"]}</b>\n\n'
-            f'Replayed P&L: ${baseline_total:+.2f} → ${best["cand_total"]:+.2f} '
+            f'{kind_note}\n'
+            f'Replayed {eff_n} {"hypothetical entries from a historical bar-by-bar re-run of the entry logic" if is_entry else "real trades"} '
+            f'against actual price history. '
+            f'Changing <b>{best["param"]}</b>: {cur_values.get(best["param"])} → <b>{best["value"]}</b>\n\n'
+            f'Replayed P&L: ${eff_baseline_total:+.2f} → ${best["cand_total"]:+.2f} '
             f'(+${best["improvement"]:.2f}), improved in a majority of chronological chunks tested:\n{bucket_lines}\n\n'
             f'⚠️ This is a replay estimate, not a guarantee — real performance since this change will be '
             f'checked automatically after {AUTO_TUNE_ROLLBACK_MIN_TRADES} new trades, and reverted if it '
             f"doesn't hold up."
         )
         logger.info(f'🔧 [{base}] auto-tune applied: {best["param"]}={best["value"]} '
-                    f'(replayed +${best["improvement"]:.2f})')
+                    f'(replayed +${best["improvement"]:.2f}, entry_param={is_entry})')
 
 
-def get_decision(symbol: str, df: pd.DataFrame) -> dict:
+def get_decision(symbol: str, df: pd.DataFrame, trend4h_override: Optional[str] = None) -> dict:
     c = df.iloc[-1]
     p = df.iloc[-2]
     adx     = float(c['adx'])
@@ -1381,11 +1629,15 @@ def get_decision(symbol: str, df: pd.DataFrame) -> dict:
     dc_lower = float(c['dc_lower']) if not pd.isna(c['dc_lower']) else None
     min_atr = SYMBOLS_CONFIG[symbol]['min_atr']
     cfg = SYMBOLS_CONFIG[symbol]
-    rsi_long_min      = cfg.get('rsi_long_min',      RSI_LONG_MIN)
-    rsi_long_max      = cfg.get('rsi_long_max',      RSI_LONG_MAX)
-    rsi_short_min     = cfg.get('rsi_short_min',     RSI_SHORT_MIN)
-    rsi_short_max     = cfg.get('rsi_short_max',     RSI_SHORT_MAX)
-    pullback_zone_pct = cfg.get('pullback_zone_pct', PULLBACK_ZONE_PCT)
+    # Routed through get_symbol_cfg (not cfg.get directly) so a live
+    # auto-tune override actually takes effect here -- these are the entry
+    # parameters run_weekly_auto_tune() can tune, same mechanism as the
+    # SL/trail params in check_sl_trail().
+    rsi_long_min      = get_symbol_cfg(symbol, 'rsi_long_min',      RSI_LONG_MIN)
+    rsi_long_max      = get_symbol_cfg(symbol, 'rsi_long_max',      RSI_LONG_MAX)
+    rsi_short_min     = get_symbol_cfg(symbol, 'rsi_short_min',     RSI_SHORT_MIN)
+    rsi_short_max     = get_symbol_cfg(symbol, 'rsi_short_max',     RSI_SHORT_MAX)
+    pullback_zone_pct = get_symbol_cfg(symbol, 'pullback_zone_pct', PULLBACK_ZONE_PCT)
 
     snap = {
         'adx':     round(adx, 2),
@@ -1421,7 +1673,7 @@ def get_decision(symbol: str, df: pd.DataFrame) -> dict:
         )
 
     # ── 4H trend filter — only trade in direction of higher timeframe ────────────
-    trend4h = get_4h_trend(symbol)
+    trend4h = trend4h_override if trend4h_override is not None else get_4h_trend(symbol)
     if trend == 'BULLISH' and trend4h == '4H BEARISH':
         return hold(f'BULLISH on 1H but 4H is BEARISH — counter-trend, skipping', trend)
     if trend == 'BEARISH' and trend4h == '4H BULLISH':
