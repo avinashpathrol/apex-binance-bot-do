@@ -48,6 +48,13 @@ BINANCE_API_SECRET = os.environ.get('BINANCE_API_SECRET', '').strip()
 DISCORD_WEBHOOK_URL = os.environ.get('DISCORD_WEBHOOK_URL', '').strip()
 BOT_CONFIG_FILE    = os.environ.get('BOT_CONFIG_FILE', 'bot_config.json').strip()
 BOT_STATE_FILE     = os.environ.get('BOT_STATE_FILE_FUTURES', 'bot_state_futures.json').strip()
+# Lightweight regime/sentiment journal -- unlike SPY (5 signals/day), Apex
+# evaluates all 7 symbols every ~30s, so this is sampled hourly per symbol
+# (see _log_apex_regime_snapshot) rather than logged every cycle, to avoid
+# ~20k entries/day of noise. Added 2026-09-17 so Hermes's daily analysis has
+# a real day-by-day memory of market regime/trend, not just trade P&L.
+APEX_REGIME_LOG_FILE     = 'apex_regime_history.jsonl'
+APEX_REGIME_LOG_INTERVAL_HOURS = 1
 TRADES_LOG_FILE    = os.environ.get('FUTURES_TRADES_LOG', 'trades_log_futures.json').strip()
 
 DEFAULT_TRADE_AMOUNT_USDT = float(os.environ.get('FUTURES_TRADE_AMOUNT_USDT', '20'))
@@ -63,6 +70,32 @@ OVERNIGHT_CFG = {
     'sl_pct':   0.035,   # 3.5% hard stop — at 40x this is ~143% of collateral per
                          # stop-out (backtested), not capped at the $40 nominal size
 }
+
+# Evidence-gated auto-scaling for MU's size/leverage -- added 2026-09-17 after
+# confirming this strategy was on a flat, never-tuned config with zero Hermes
+# visibility. Discrete ladder (not a continuous formula) so every step is a
+# concrete, auditable before/after: floor is today's real default, ceiling is
+# the user-approved $100 collateral cap paired with 50x -- Binance's real
+# bracket-1 max leverage for MUUSDT up to $50k notional (confirmed live via
+# /fapi/v1/leverageBracket; $100x50=$5,000 notional stays deep in that bracket).
+MU_SCALE_LADDER = [
+    {'amount': 40.0,  'leverage': 40},   # floor -- never scale below this
+    {'amount': 70.0,  'leverage': 45},   # step 1
+    {'amount': 100.0, 'leverage': 50},   # ceiling
+]
+MU_AUTO_SCALE_ENABLED      = True   # live -- enabled 2026-09-18 by user request, after dry-run
+                                      # confirmed real evidence tracking favorably (16 trades,
+                                      # 50% WR, $4.88 avg net -- both already past the up-bar,
+                                      # just short of the 20-trade minimum sample; that gate is
+                                      # left in place, not bypassed -- see run_weekly_mu_auto_tune()
+MU_MIN_TRADES_FIRST_SCALE  = 20     # ~4 weeks at MU's real ~5 trades/week cadence
+MU_ROLLBACK_MIN_TRADES     = 12     # re-check cadence for every level after the first
+MU_SCALE_UP_AVG_NET_PCT    = 0.075  # avg net/trade over the window >= 7.5% of that window's collateral
+MU_SCALE_UP_MIN_WIN_RATE   = 0.45
+MU_SCALE_DOWN_MIN_WIN_RATE = 0.35   # hysteresis gap below the up-bar, avoids flapping at the boundary
+MU_SCALE_DOWN_LOSE_STREAK  = 4
+MU_AUTO_TUNE_INTERVAL_DAYS = 3   # decision cadence, matches Apex's AUTO_TUNE_INTERVAL_DAYS -- data/
+                                  # reporting is daily (run_daily_hermes_sync), decisions stay slower
 
 # Major US market holidays (month, day) — 2026 dates. Shared by is_us_market_open()
 # and the MU overnight entry check — MUUSDT keeps trading on Binance 24/7 even when
@@ -145,7 +178,7 @@ SYMBOLS_CONFIG = {
         'base': 'CRCL',
         'dashboard_file': 'data_futures_crcl.json',
         'min_atr': 0.75,
-        'trade_amount': 50.0,
+        'trade_amount': 70.0,  # raised from 50 -- user request 2026-09-18, for the rest of the month
         'max_loss_pct': 0.35,
         'market_hours_only': True,
         'one_way': True,
@@ -164,7 +197,7 @@ SYMBOLS_CONFIG = {
         'base': 'SOXL',
         'dashboard_file': 'data_futures_soxl.json',
         'min_atr': 0.8,
-        'trade_amount': 40.0,
+        'trade_amount': 70.0,  # raised from 40 -- user request 2026-09-18, for the rest of the month
         'max_loss_pct': 0.35,
         'market_hours_only': True,
         'one_way': True,
@@ -294,6 +327,51 @@ def get_symbol_cfg(symbol: str, key: str, default):
         return override[key]
     return SYMBOLS_CONFIG.get(symbol, {}).get(key, default)
 
+# Same pattern as get_symbol_cfg(), but MUUSDT is deliberately absent from
+# SYMBOLS_CONFIG (it's a separate overnight strategy, not one of the 7
+# TRADING_SYMBOLS) -- calling get_symbol_cfg('MUUSDT', ...) directly would
+# silently always return the default. Falls back to OVERNIGHT_CFG instead.
+def get_mu_cfg(key: str, default):
+    override = state.get('runtime', {}).get('auto_tune_overrides', {}).get('MUUSDT', {})
+    if key in override:
+        return override[key]
+    return OVERNIGHT_CFG.get(key, default)
+
+# ── Hermes pre-trade veto check ─────────────────────────────────────────────
+# Asks a small LLM service (running on a separate droplet, private network
+# only -- see check_hermes_veto below) to sanity-check each proposed entry
+# against today's macro calendar/sentiment before it fires. Fails open by
+# design: any error, timeout, or malformed response is treated as approval,
+# so an outage on the Hermes side can never block a trade on its own.
+HERMES_VETO_ENABLED = True
+HERMES_VETO_URL     = 'http://10.122.0.3:8787/veto_check'
+HERMES_VETO_TIMEOUT = 15  # seconds -- matches the service's own internal LLM budget + margin
+
+def check_hermes_veto(symbol: str, dec: dict, price: float) -> Tuple[bool, str]:
+    """Ask the Hermes veto service whether to proceed with this entry.
+    Fails open (returns True) on any error, timeout, or bad response --
+    an outage or slow response on the Hermes side must never block a trade."""
+    if not HERMES_VETO_ENABLED:
+        return True, ''
+    try:
+        resp = requests.post(HERMES_VETO_URL, json={
+            'symbol':          symbol,
+            'action':          dec['action'],
+            'confidence':      dec['confidence'],
+            'regime':          dec['regime'],
+            'trend_direction': dec['trend_direction'],
+            'reason':          dec['reason'],
+            'price':           price,
+        }, timeout=HERMES_VETO_TIMEOUT)
+        resp.raise_for_status()
+        body     = resp.json()
+        decision = (body.get('decision') or 'APPROVE').upper()
+        reason   = body.get('reason', '')
+        return decision != 'VETO', reason
+    except Exception as e:
+        logger.info(f'[{symbol}] Hermes veto check unreachable/failed ({e}) — proceeding (fail-open)')
+        return True, ''
+
 # Correlated pairs — skip entry in symbol B if symbol A already has an open trade.
 # Add pairs here when you observe two symbols that move lockstep and you want to cap
 # sector concentration. Empty by default — all symbols trade independently.
@@ -302,6 +380,14 @@ CORR_GROUPS: list[set] = []
 # ── Strategy Parameters ───────────────────────────────────────────────────────
 ADX_MIN           = 25.0
 ADX_STRONG        = 30.0
+# Floor for the EMA-cross bypass entry below -- added 2026-09-18 after a real
+# live loss: NBIS SHORT entered at ADX 12.6 (barely above a flat line, not
+# just "not yet confirmed trending") and hit hard SL for -$26.39, the worst
+# trade of a 0-for-7 day. The bypass is meant to act a bit AHEAD of ADX_MIN
+# confirming (its own two prior live trades entered at ADX 24-25, right next
+# to the gate) -- 12.6 is a different case, a genuinely weak/choppy reading,
+# not an early one. This floor still lets it fire well before ADX_MIN.
+EMA_CROSS_MIN_ADX = 18.0
 PULLBACK_ZONE_PCT = 0.018
 RSI_LONG_MIN      = 30
 RSI_LONG_MAX      = 62
@@ -350,6 +436,9 @@ def _empty_sym_state() -> dict:
         'force_trail_stop_price': None,
         'closed_trades_log':      [],
         'last_hard_sl_ts':        0,
+        'consecutive_losses':     0,
+        'loss_streak_direction':  None,
+        'entry_trend_direction':  None,
     }
 
 state = {
@@ -362,6 +451,9 @@ state = {
     'manual_positions': {},
     'overnight_mu': {},
     'overnight_mu_trades': [],
+    'hermes_picks': {},
+    'hermes_picks_trades': [],
+    'hermes_picks_universe': {},
 }
 
 run_count       = 0
@@ -412,6 +504,12 @@ def load_state() -> None:
         state['overnight_mu'].update(loaded['overnight_mu'])
     if 'overnight_mu_trades' in loaded:
         state['overnight_mu_trades'] = loaded['overnight_mu_trades']
+    if 'hermes_picks' in loaded:
+        state['hermes_picks'].update(loaded['hermes_picks'])
+    if 'hermes_picks_trades' in loaded:
+        state['hermes_picks_trades'] = loaded['hermes_picks_trades']
+    if 'hermes_picks_universe' in loaded:
+        state['hermes_picks_universe'] = loaded['hermes_picks_universe']
 
 def save_state() -> None:
     write_json(BOT_STATE_FILE, state)
@@ -591,6 +689,40 @@ def set_futures_margin_type(symbol: str, margin_type: str = 'ISOLATED') -> None:
         if '-4046' not in str(e) and '-4168' not in str(e):
             logger.warning(f'set_futures_margin_type [{symbol}]: {e}')
 
+def _with_actual_fill(symbol: str, resp: dict) -> dict:
+    """Market-order POST responses usually carry no fill data (avgPrice and
+    cumQuote are 0), so get_fill_price() silently fell back to the PRE-ORDER
+    ticker quote -- recorded entry/exit prices were quotes, not fills. Found
+    2026-09-19: MU entry recorded $1009.98 but the real fill was $1015.17
+    (price jumped ~$5 in the same second) -- ~$8 of P&L the books never saw;
+    over 4 days the books ran ~$7.74 optimistic vs the exchange's own realized
+    P&L. This looks the order up after placement and merges in the real fill.
+
+    Strictly additive and fail-safe: by the time this runs the order has
+    ALREADY been placed, so any problem here returns the original response
+    unchanged (the old behavior) and never raises -- an exception here would
+    make callers believe an executed order had failed."""
+    try:
+        if float(resp.get('avgPrice') or 0) > 0 or float(resp.get('cumQuote') or 0) > 0:
+            return resp
+        order_id = resp.get('orderId')
+        if not order_id:
+            return resp
+        for attempt in range(4):
+            if attempt:
+                time.sleep(0.25)
+            o = binance_futures_private('GET', '/fapi/v1/order', {'symbol': symbol, 'orderId': order_id})
+            if o.get('status') == 'FILLED' and float(o.get('avgPrice') or 0) > 0:
+                merged = dict(resp)
+                for k in ('avgPrice', 'executedQty', 'cumQuote', 'status'):
+                    if k in o:
+                        merged[k] = o[k]
+                return merged
+        return resp
+    except Exception as e:
+        logger.warning(f'[{symbol}] actual-fill lookup failed (using order response as-is): {e}')
+        return resp
+
 def futures_market_order(symbol: str, side: str, quantity: float,
                          position_side: str = 'LONG', reduce_only: bool = False,
                          close_position: bool = False) -> dict:
@@ -606,7 +738,8 @@ def futures_market_order(symbol: str, side: str, quantity: float,
                 params['reduceOnly'] = 'true'
         else:
             params['positionSide'] = position_side
-    return binance_futures_private('POST', '/fapi/v1/order', params)
+    resp = binance_futures_private('POST', '/fapi/v1/order', params)
+    return _with_actual_fill(symbol, resp)
 
 def get_fill_price(resp: dict, fallback: float) -> float:
     """Binance futures market orders return avgPrice='0' — use cumQuote/executedQty instead."""
@@ -645,12 +778,27 @@ def round_step(qty: float, step: float) -> float:
     return round(qty - (qty % step), precision)
 
 def get_current_price(symbol: str) -> float:
+    # One quick retry on the futures endpoint, then the spot fallback, then a
+    # clear error. Added 2026-09-19 after a single 10s futures-API read
+    # timeout surfaced as a bare `KeyError: 'price'` and aborted a whole
+    # cycle: the spot fallback only works for symbols that ALSO list on spot
+    # (BTC/ETH-style) -- the tokenized-stock perps this bot trades don't, so
+    # spot returned an error body with no 'price' key, hiding the real cause.
+    last_err = None
+    for attempt in range(2):
+        try:
+            return float(binance_futures_public('/fapi/v1/ticker/price', {'symbol': symbol})['price'])
+        except Exception as e:
+            last_err = e
+            if attempt == 0:
+                time.sleep(1)
     try:
-        return float(binance_futures_public('/fapi/v1/ticker/price', {'symbol': symbol})['price'])
-    except Exception:
         r = requests.get(f'{SPOT_BASE_URL}/api/v3/ticker/price',
                          params={'symbol': symbol}, timeout=10)
         return float(r.json()['price'])
+    except Exception:
+        raise RuntimeError(f'price fetch failed for {symbol}: futures API '
+                           f'{type(last_err).__name__}: {last_err}') from None
 
 
 
@@ -1031,7 +1179,12 @@ ENTRY_TUNE_ENABLED            = False  # gate: entry-signal backtest currently o
                                          # live trading actually does (confirmed on CRCL: found only
                                          # 3 of 14 real signals). Flip True once upgraded to sample
                                          # within each hour, not just at the close.
-AUTO_TUNE_INTERVAL_DAYS       = 7
+AUTO_TUNE_INTERVAL_DAYS       = 3   # decision cadence -- deliberately slower than the daily data/
+                                     # report sync below, so one day's trades can't swing a real
+                                     # parameter change (changed from 7->3 on user's explicit request
+                                     # 2026-09-17, keeping decisions decoupled from daily reporting)
+HERMES_SYNC_INTERVAL_DAYS     = 1   # push snapshot + pull/log Hermes's narrative report daily --
+                                     # this is data/memory only, never applies a trading change itself
 AUTO_TUNE_MIN_TRADES          = 10   # lowered from 50 -- don't let a new ticker bleed for months untuned
 AUTO_TUNE_MIN_BUCKETS         = 3    # chronological chunks, NOT calendar months -- see _autotune_time_buckets
 AUTO_TUNE_MIN_IMPROVEMENT_USD = 10.0
@@ -1044,6 +1197,168 @@ AUTO_TUNE_CACHE_FILE          = os.path.join(
 HARD_SL_CANDIDATES       = [0.75, 0.90, 1.00, 1.10, 1.25, 1.50]
 TRAIL_ACTIVATE_CANDIDATES = [0.50, 0.60, 0.75, 0.90, 1.00, 1.15, 1.30, 1.50]
 TRAIL_DIST_CANDIDATES     = [0.15, 0.20, 0.25, 0.30, 0.40]
+
+# ── Hermes weekly bot-review: candidate suggestions, not direct config writes ──
+# Hermes analyzes trade history + config + its own veto-call history once a
+# week and proposes specific parameter values worth trying. Those proposals
+# are added to the candidate lists above/below, NOT applied directly -- they
+# still have to pass the exact same _autotune_qualifies() backtest-and-consistency
+# bar as every hardcoded candidate before anything reaches live config. This
+# is the whole point: an LLM's qualitative read can surface ideas the fixed
+# grid wouldn't have tried, but the existing statistical validation (and the
+# rollback gate after) stays the sole gate on what actually gets applied.
+HERMES_SUGGESTIONS_URL = 'http://10.122.0.3:8787/suggestions'
+HERMES_REPORT_URL      = 'http://10.122.0.3:8787/report'
+HERMES_SNAPSHOT_URL    = 'http://10.122.0.3:8787/ingest_snapshot'
+HERMES_REPORT_HISTORY_MAX = 60   # ~2 months of daily reports (analysis now runs daily, not weekly)
+VALID_TUNABLE_PARAMS = {  # param: (min, max) -- sanity bounds, reject anything outside
+    'hard_sl_atr':        (0.3, 3.0),
+    'trail_activate_atr': (0.3, 3.0),
+    'trail_dist_atr':     (0.1, 1.0),
+    'rsi_long_min':       (10, 50),
+    'rsi_long_max':       (50, 90),
+    'rsi_short_min':      (10, 50),
+    'rsi_short_max':      (50, 90),
+    'pullback_zone_pct':  (0.005, 0.05),
+}
+
+def push_hermes_snapshot() -> None:
+    """Best-effort push of pre-aggregated performance summaries (not raw trade
+    dumps) + current effective config + auto-tune history to the Hermes
+    droplet, so its weekly analysis has real data. Failure here must never
+    affect trading -- log and move on.
+
+    Sends SUMMARIES, not the full trade log: an earlier version pushed up to
+    300 raw trade records (~120KB) and the analysis failed outright --
+    "conversation context exceeded model limits" -- on the very first real
+    test. Reuses the same _apex_bucket_stats() aggregation the existing
+    weekly trade review already computes, which is both far smaller and
+    better signal than raw JSON for an LLM to reason about."""
+    try:
+        records = [t for t in load_trade_log() if not t.get('dust')]
+        symbols_snapshot = {}
+        for symbol in TRADING_SYMBOLS:
+            sym_records = [r for r in records if r.get('symbol') == symbol]
+            cfg = {param: get_symbol_cfg(symbol, param, None) for param in VALID_TUNABLE_PARAMS}
+            cfg.update({
+                'leverage':          SYMBOLS_CONFIG[symbol].get('leverage'),
+                'trade_amount':      SYMBOLS_CONFIG[symbol].get('trade_amount'),
+                'ema_cross_enabled': SYMBOLS_CONFIG[symbol].get('ema_cross_enabled', False),
+                'short_only':        SYMBOLS_CONFIG[symbol].get('short_only', False),
+                'long_only':         SYMBOLS_CONFIG[symbol].get('long_only', False),
+            })
+            symbols_snapshot[symbol] = {
+                'config': cfg,
+                'performance': summarize_performance(sym_records) if sym_records else None,
+                'by_entry_type': _apex_bucket_stats(sym_records, lambda r: r.get('entry_type')),
+                'by_exit_reason': _apex_bucket_stats(
+                    sym_records, lambda r: (r.get('exit_reason') or r.get('note') or '')[:20] or None),
+                'by_hour':  _apex_bucket_stats(sym_records, _apex_hour_bucket),
+                'by_hold':  _apex_bucket_stats(sym_records, _apex_hold_bucket),
+                # A handful of concrete recent examples, not the full log --
+                # trimmed to the fields actually useful for pattern-spotting.
+                'recent_trades': [
+                    {k: t.get(k) for k in ('opened_at', 'closed_at', 'side', 'entry_type',
+                                            'exit_reason', 'pnl', 'win', 'r_multiple')}
+                    for t in sorted(sym_records, key=lambda t: t.get('closed_at', ''), reverse=True)[:12]
+                ],
+            }
+        mu_trades = state.get('overnight_mu_trades', [])
+        payload = {
+            'generated_at':         now_utc_iso(),
+            'symbols':              symbols_snapshot,
+            'auto_tune_history':    state['runtime'].get('auto_tune_history', [])[-30:],
+            'auto_tune_overrides':  state['runtime'].get('auto_tune_overrides', {}),
+            'recent_market_sentiment': _summarize_apex_regime_sentiment(days=7),
+            'mu_overnight': {
+                'config': {
+                    'amount':   get_mu_cfg('amount', OVERNIGHT_CFG['amount']),
+                    'leverage': get_mu_cfg('leverage', OVERNIGHT_CFG['leverage']),
+                    'sl_pct':   OVERNIGHT_CFG['sl_pct'],
+                },
+                'performance': _overnight_mu_perf(mu_trades),
+                'recent_trades': [
+                    {k: t.get(k) for k in ('opened_at', 'closed_at', 'entry_price', 'exit_price',
+                                            'qty', 'net', 'reason')}
+                    for t in sorted(mu_trades, key=lambda t: t.get('closed_at', ''), reverse=True)[:12]
+                ],
+            },
+        }
+        resp = requests.post(HERMES_SNAPSHOT_URL, json=payload, timeout=15)
+        resp.raise_for_status()
+        logger.info(f'📤 Pushed snapshot to Hermes ({len(records)} trades summarized)')
+    except Exception as e:
+        logger.info(f'Hermes snapshot push failed (non-critical): {e}')
+
+def pull_hermes_suggestions() -> dict:
+    """Returns {symbol: [{'param', 'value', 'reasoning'}, ...]} from Hermes's most
+    recent weekly analysis. Empty dict on any failure, missing data, or a
+    suggestion that fails basic sanity checks -- fail-open, same as everywhere
+    else in this integration: a broken/unreachable Hermes just means the
+    auto-tuner runs exactly as it did before this feature existed."""
+    out: dict = {}
+    try:
+        resp = requests.get(HERMES_SUGGESTIONS_URL, timeout=10)
+        resp.raise_for_status()
+        for s in resp.json().get('suggestions', []):
+            symbol, param, value = s.get('symbol'), s.get('param'), s.get('value')
+            if symbol not in TRADING_SYMBOLS or param not in VALID_TUNABLE_PARAMS:
+                continue
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                continue
+            lo, hi = VALID_TUNABLE_PARAMS[param]
+            if not (lo <= value <= hi):
+                logger.info(f'🤖 [{symbol}] Hermes suggested {param}={value}, outside sane bounds '
+                            f'[{lo},{hi}] -- ignored')
+                continue
+            out.setdefault(symbol, []).append(
+                {'param': param, 'value': value, 'reasoning': s.get('reasoning', '')})
+    except Exception as e:
+        logger.info(f'Hermes suggestions pull failed (non-critical): {e}')
+    return out
+
+def pull_and_log_hermes_report() -> None:
+    """Pulls Hermes's plain-English weekly narrative (the same underlying
+    analysis pull_hermes_suggestions() already reads for structured
+    candidates, which has always discarded the narrative text). Appends to a
+    capped local history so the dashboard can show it -- dedup'd by
+    generated_at so re-polling the same not-yet-refreshed report doesn't
+    create duplicate log entries. Fail-open: any failure just means no new
+    entry this week, never a trading impact."""
+    try:
+        resp = requests.get(HERMES_REPORT_URL, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        report, generated_at = data.get('report_summary'), data.get('generated_at')
+        if not report:
+            return
+        history = state['runtime'].setdefault('hermes_report_history', [])
+        if history and history[-1].get('generated_at') == generated_at:
+            return  # already logged this exact report
+        history.append({'generated_at': generated_at, 'report_summary': report})
+        del history[:-HERMES_REPORT_HISTORY_MAX]
+        save_state()
+    except Exception as e:
+        logger.info(f'Hermes report pull failed (non-critical): {e}')
+
+def write_hermes_log_dashboard() -> None:
+    """What Hermes has analyzed and what it's changed, for the dashboard's
+    Hermes Log tab. 'changes' doubles as the health check the user asked
+    for: every 'applied' entry is auto-re-checked against new real trades
+    (see run_weekly_auto_tune's rollback logic) and shows up here as a
+    'validated' (held up) or 'reverted' (didn't, auto-corrected) follow-up
+    entry -- that before/after check IS the health check, just made visible."""
+    try:
+        write_json(os.path.join(WEB_ROOT, 'data_hermes_log.json'), {
+            'updated_at':        now_utc_iso(),
+            'report_history':    list(reversed(state['runtime'].get('hermes_report_history', []))),
+            'changes':           list(reversed(state['runtime'].get('auto_tune_history', [])[-40:])),
+            'current_overrides': state['runtime'].get('auto_tune_overrides', {}),
+        })
+    except Exception as e:
+        logger.warning(f'write_hermes_log_dashboard: {e}')
 
 def _autotune_fetch_klines(symbol: str, interval: str, start_ms: int, end_ms: int, limit: int = 1500) -> list:
     """Fetching a symbol's full trade history (dozens to 100+ trades, each
@@ -1466,6 +1781,32 @@ def _autotune_entry_candidate_pnl(trades: list) -> Tuple[float, dict]:
         buckets[b] = buckets.get(b, 0.0) + d['pnl']
     return total, buckets
 
+def run_daily_hermes_sync() -> None:
+    """Daily data/memory sync -- push a fresh snapshot and log whatever
+    narrative report Hermes's most recent (now-daily) analysis produced.
+    Deliberately never applies a trading change itself; that stays on
+    run_weekly_auto_tune()'s slower, evidence-gated cadence. Split out
+    2026-09-17 so 'Hermes remembers market sentiment/signal behavior daily'
+    doesn't also mean 'trading parameters change daily' -- those are
+    different risk profiles and were kept decoupled on purpose."""
+    last = state['runtime'].get('last_hermes_sync')
+    if last:
+        try:
+            age_days = (datetime.now(timezone.utc) -
+                        datetime.fromisoformat(last.replace('Z', '+00:00'))).days
+        except Exception:
+            age_days = HERMES_SYNC_INTERVAL_DAYS
+        if age_days < HERMES_SYNC_INTERVAL_DAYS:
+            return
+    state['runtime']['last_hermes_sync'] = now_utc_iso()
+    save_state()
+    try:
+        push_hermes_snapshot()
+        pull_and_log_hermes_report()
+        write_hermes_log_dashboard()
+    except Exception as e:
+        logger.warning(f'run_daily_hermes_sync failed (non-critical): {e}')
+
 def run_weekly_auto_tune() -> None:
     last = state['runtime'].get('last_auto_tune')
     if last:
@@ -1492,6 +1833,14 @@ def run_weekly_auto_tune() -> None:
     overrides = state['runtime'].setdefault('auto_tune_overrides', {})
     history    = state['runtime'].setdefault('auto_tune_history', [])
     save_state()
+
+    # Pull whatever Hermes's MOST RECENT analysis produced for use in THIS
+    # decision -- the snapshot push and narrative-report logging now happen
+    # daily via run_daily_hermes_sync(), decoupled from this slower decision
+    # cadence (see that function's docstring for why).
+    hermes_suggestions = pull_hermes_suggestions()
+    if hermes_suggestions:
+        logger.info(f'🤖 Hermes suggestions available for: {", ".join(hermes_suggestions)}')
 
     all_records = [t for t in load_trade_log() if not t.get('dust') and t.get('closed_at')
                    and t.get('opened_at') and t.get('entry_price') and t.get('side')]
@@ -1594,10 +1943,21 @@ def run_weekly_auto_tune() -> None:
             if icir is not None and icir >= MONTHLY_REVIEW_ICIR_WEAK:
                 continue  # not flagged -- profitable and consistent, leave it alone
 
+        sym_hermes_sugg = hermes_suggestions.get(symbol, [])
+        hermes_reasoning_by_key = {(s['param'], s['value']): s['reasoning'] for s in sym_hermes_sugg}
+        hermes_exit_extra = (
+            [('hard_sl_atr', s['value'], s['value'], cur_activate, cur_trail_dst)
+             for s in sym_hermes_sugg if s['param'] == 'hard_sl_atr' and s['value'] != cur_hard_sl] +
+            [('trail_activate_atr', s['value'], cur_hard_sl, s['value'], cur_trail_dst)
+             for s in sym_hermes_sugg if s['param'] == 'trail_activate_atr' and s['value'] != cur_activate] +
+            [('trail_dist_atr', s['value'], cur_hard_sl, cur_activate, s['value'])
+             for s in sym_hermes_sugg if s['param'] == 'trail_dist_atr' and s['value'] != cur_trail_dst]
+        )
         candidates = (
             [('hard_sl_atr', v, v, cur_activate, cur_trail_dst) for v in HARD_SL_CANDIDATES if v != cur_hard_sl] +
             [('trail_activate_atr', v, cur_hard_sl, v, cur_trail_dst) for v in TRAIL_ACTIVATE_CANDIDATES if v != cur_activate] +
-            [('trail_dist_atr', v, cur_hard_sl, cur_activate, v) for v in TRAIL_DIST_CANDIDATES if v != cur_trail_dst]
+            [('trail_dist_atr', v, cur_hard_sl, cur_activate, v) for v in TRAIL_DIST_CANDIDATES if v != cur_trail_dst] +
+            hermes_exit_extra
         )
         best = None
         for param_name, value, hs, ta, td in candidates:
@@ -1606,7 +1966,8 @@ def run_weekly_auto_tune() -> None:
                 improvement = cand_total - baseline_total
                 if best is None or improvement > best['improvement']:
                     best = {'param': param_name, 'value': value, 'improvement': improvement,
-                            'cand_total': cand_total, 'cand_buckets': cand_buckets}
+                            'cand_total': cand_total, 'cand_buckets': cand_buckets,
+                            'hermes_reasoning': hermes_reasoning_by_key.get((param_name, value))}
 
         entry_search_ran = False
         if best is None and ENTRY_TUNE_ENABLED:
@@ -1625,12 +1986,18 @@ def run_weekly_auto_tune() -> None:
                 symbol, klines_1h, klines_1m_by_hour, trend4h_series, {}, cur_hard_sl, cur_activate, cur_trail_dst)
             entry_baseline_total, entry_baseline_buckets = _autotune_entry_candidate_pnl(entry_baseline_trades)
             if len(entry_baseline_trades) >= AUTO_TUNE_MIN_TRADES and len(entry_baseline_buckets) >= AUTO_TUNE_MIN_BUCKETS:
+                hermes_entry_extra = [
+                    (s['param'], s['value'], {s['param']: s['value']}) for s in sym_hermes_sugg
+                    if s['param'] in ('rsi_long_min', 'rsi_long_max', 'rsi_short_min',
+                                      'rsi_short_max', 'pullback_zone_pct')
+                ]
                 entry_candidates = (
                     [('rsi_long_min', v, {'rsi_long_min': v}) for v in RSI_LONG_MIN_CANDIDATES if v != cur_rsi_lmin] +
                     [('rsi_long_max', v, {'rsi_long_max': v}) for v in RSI_LONG_MAX_CANDIDATES if v != cur_rsi_lmax] +
                     [('rsi_short_min', v, {'rsi_short_min': v}) for v in RSI_SHORT_MIN_CANDIDATES if v != cur_rsi_smin] +
                     [('rsi_short_max', v, {'rsi_short_max': v}) for v in RSI_SHORT_MAX_CANDIDATES if v != cur_rsi_smax] +
-                    [('pullback_zone_pct', v, {'pullback_zone_pct': v}) for v in PULLBACK_ZONE_CANDIDATES if v != cur_pullback]
+                    [('pullback_zone_pct', v, {'pullback_zone_pct': v}) for v in PULLBACK_ZONE_CANDIDATES if v != cur_pullback] +
+                    hermes_entry_extra
                 )
                 for param_name, value, ov in entry_candidates:
                     cand_trades = _autotune_replay_entries(
@@ -1642,7 +2009,8 @@ def run_weekly_auto_tune() -> None:
                             best = {'param': param_name, 'value': value, 'improvement': improvement,
                                     'cand_total': cand_total, 'cand_buckets': cand_buckets, 'is_entry': True,
                                     'baseline_total': entry_baseline_total, 'baseline_buckets': entry_baseline_buckets,
-                                    'n_trades': len(entry_baseline_trades)}
+                                    'n_trades': len(entry_baseline_trades),
+                                    'hermes_reasoning': hermes_reasoning_by_key.get((param_name, value))}
             else:
                 logger.info(f'🔧 [{base}] auto-tune: only {len(entry_baseline_trades)} hypothetical entries in '
                            f'backtest, not enough to evaluate entry-signal candidates')
@@ -1653,6 +2021,7 @@ def run_weekly_auto_tune() -> None:
             continue
 
         is_entry = best.get('is_entry', False)
+        is_hermes = bool(best.get('hermes_reasoning'))
         eff_baseline_total = best.get('baseline_total', baseline_total)
         eff_baseline_buckets = best.get('baseline_buckets', baseline_buckets)
         eff_n = best.get('n_trades', len(enriched))
@@ -1662,11 +2031,13 @@ def run_weekly_auto_tune() -> None:
         overrides[symbol] = {
             best['param']: best['value'],
             '_meta': {'param': best['param'], 'value': best['value'], 'applied_at': applied_at,
-                      'baseline_avg_pnl': baseline_avg_pnl, 'is_entry_param': is_entry},
+                      'baseline_avg_pnl': baseline_avg_pnl, 'is_entry_param': is_entry,
+                      'source': 'hermes' if is_hermes else 'grid'},
         }
         history.append({'symbol': symbol, 'action': 'applied', 'params': overrides[symbol],
                         'at': applied_at, 'baseline_total': round(eff_baseline_total, 2),
-                        'candidate_total': round(best['cand_total'], 2)})
+                        'candidate_total': round(best['cand_total'], 2),
+                        'source': 'hermes' if is_hermes else 'grid'})
         save_state()
 
         bucket_lines = '\n'.join(
@@ -1676,9 +2047,10 @@ def run_weekly_auto_tune() -> None:
             if eff_n < 50 else ''
         kind_note = '🎯 <b>Entry-signal change</b> (bigger overfitting risk than exit tuning)' if is_entry \
             else '🛑 Exit-parameter change'
+        hermes_note = f'\n🤖 <b>Hermes-suggested candidate</b> — {best["hermes_reasoning"]}\n' if is_hermes else ''
         send_telegram(
             f'🔧 <b>Auto-Tune Applied — {base}</b>{n_trades_note}\n\n'
-            f'{kind_note}\n'
+            f'{kind_note}{hermes_note}\n'
             f'Replayed {eff_n} {"hypothetical entries from a historical bar-by-bar re-run of the entry logic" if is_entry else "real trades"} '
             f'against actual price history. '
             f'Changing <b>{best["param"]}</b>: {cur_values.get(best["param"])} → <b>{best["value"]}</b>\n\n'
@@ -1689,7 +2061,10 @@ def run_weekly_auto_tune() -> None:
             f"doesn't hold up."
         )
         logger.info(f'🔧 [{base}] auto-tune applied: {best["param"]}={best["value"]} '
-                    f'(replayed +${best["improvement"]:.2f}, entry_param={is_entry})')
+                    f'(replayed +${best["improvement"]:.2f}, entry_param={is_entry}, '
+                    f'source={"hermes" if is_hermes else "grid"})')
+
+    write_hermes_log_dashboard()
 
 
 def get_decision(symbol: str, df: pd.DataFrame, trend4h_override: Optional[str] = None) -> dict:
@@ -1751,7 +2126,8 @@ def get_decision(symbol: str, df: pd.DataFrame, trend4h_override: Optional[str] 
     # move already gone) before ADX confirms what the EMA cross already
     # showed. This does NOT wait for that gate, but still requires the same
     # 4H trend filter and volume confirmation the other entry types use.
-    if cfg.get('ema_cross_enabled') and not pd.isna(p['ema21']) and not pd.isna(p['ema50']):
+    if cfg.get('ema_cross_enabled') and adx >= EMA_CROSS_MIN_ADX \
+            and not pd.isna(p['ema21']) and not pd.isna(p['ema50']):
         p_ema21, p_ema50 = float(p['ema21']), float(p['ema50'])
         crossed_up   = p_ema21 <= p_ema50 and ema21 > ema50
         crossed_down = p_ema21 >= p_ema50 and ema21 < ema50
@@ -2121,8 +2497,33 @@ def build_trail_info(symbol: str, position: Optional[str]) -> dict:
 
 # ── Trade Execution ───────────────────────────────────────────────────────────
 SAME_DIR_COOLDOWN = 600  # 10 minutes
+# Consecutive-loss circuit breaker -- added 2026-09-18 after a real incident:
+# SOXL re-entered LONG three times in one session (119.35 -> 118.81 -> 118.48),
+# losing every time, because the flat 10-minute cooldown above has no memory
+# of a losing streak -- it resets the instant the timer runs out, regardless
+# of what just happened. This tracks consecutive losses per symbol; once a
+# symbol hits the threshold, new entries are blocked NOT for a fixed duration
+# but until trend_direction actually reads differently than it did during the
+# losing streak -- tied to evidence the regime changed, not a guessed
+# cooldown length that might expire while the same stale trend read is still
+# in effect (which is exactly what let SOXL back in each time today).
+CONSECUTIVE_LOSS_FREEZE_THRESHOLD = 2
 
-def open_long(symbol: str, price: float, confidence: int, reason: str, indicators: dict = None) -> bool:
+def _update_loss_streak(ss: dict, symbol: str, net: float) -> None:
+    if net > 0:
+        if ss.get('consecutive_losses'):
+            logger.info(f'🧊 [{symbol}] Win — consecutive-loss streak reset (was {ss["consecutive_losses"]})')
+        ss['consecutive_losses']    = 0
+        ss['loss_streak_direction'] = None
+        return
+    ss['consecutive_losses'] = ss.get('consecutive_losses', 0) + 1
+    if ss['consecutive_losses'] >= CONSECUTIVE_LOSS_FREEZE_THRESHOLD:
+        ss['loss_streak_direction'] = ss.get('entry_trend_direction')
+        logger.info(f'🧊 [{symbol}] {ss["consecutive_losses"]} consecutive losses — standing down while '
+                    f'trend_direction stays {ss["loss_streak_direction"]}')
+
+def open_long(symbol: str, price: float, confidence: int, reason: str, indicators: dict = None,
+              trend_direction: str = None) -> bool:
     ss   = sym_state(symbol)
     base = SYMBOLS_CONFIG[symbol]['base']
     cfg  = SYMBOLS_CONFIG[symbol]
@@ -2133,6 +2534,12 @@ def open_long(symbol: str, price: float, confidence: int, reason: str, indicator
             remaining = int((SAME_DIR_COOLDOWN - elapsed) / 60)
             logger.info(f'⏳ [{symbol}] LONG cooldown — last LONG closed {int(elapsed/60)}m ago, waiting {remaining}m more')
             return False
+    # Consecutive-loss circuit breaker — see CONSECUTIVE_LOSS_FREEZE_THRESHOLD
+    if ss.get('consecutive_losses', 0) >= CONSECUTIVE_LOSS_FREEZE_THRESHOLD \
+            and trend_direction is not None and ss.get('loss_streak_direction') == trend_direction:
+        logger.info(f'🧊 [{symbol}] Circuit breaker — {ss["consecutive_losses"]} losses in a row while '
+                    f'trend_direction stayed {trend_direction}; standing down until this reads differently')
+        return False
     try:
         collateral = float(cfg.get('trade_amount') or state['runtime']['trade_amount_usdt'])
         leverage   = int(cfg.get('leverage') or state['runtime']['leverage'])
@@ -2168,11 +2575,12 @@ def open_long(symbol: str, price: float, confidence: int, reason: str, indicator
         # losing patterns can be analyzed later (which entry type, what the
         # indicators looked like, what time it was).
         now_ = datetime.now(timezone.utc)
-        ss['entry_reason']     = reason
-        ss['entry_confidence'] = confidence
-        ss['entry_indicators'] = indicators or {}
-        ss['entry_hour_utc']   = now_.hour
-        ss['entry_weekday']    = now_.strftime('%A')
+        ss['entry_reason']          = reason
+        ss['entry_confidence']      = confidence
+        ss['entry_indicators']      = indicators or {}
+        ss['entry_hour_utc']        = now_.hour
+        ss['entry_weekday']         = now_.strftime('%A')
+        ss['entry_trend_direction'] = trend_direction
 
         logger.info(f'✅ [{symbol}] LONG OPEN {qty_filled:.4f} {base} @ ${actual_price:.4f} fee=${fee_usdt:.4f}')
         send_telegram(
@@ -2219,6 +2627,7 @@ def close_long(symbol: str, price: float, reason: str) -> bool:
         record_closed_trade(symbol, 'LONG', entry_price, actual_close, quantity, reason, total_fee)
         gross = (actual_close - entry_price) * quantity
         net   = gross - total_fee
+        _update_loss_streak(ss, symbol, net)
         logger.info(f'✅ [{symbol}] LONG CLOSE {quantity:.4f} {base} @ ${actual_close:.4f} net={net:+.4f}')
         pnl_banner = f'🟢 +${net:.2f}' if net >= 0 else f'🔴 -${abs(net):.2f}'
         send_telegram(
@@ -2235,7 +2644,8 @@ def close_long(symbol: str, price: float, reason: str) -> bool:
         alert_error(f'close_long {symbol}: {e}')
         return False
 
-def open_short(symbol: str, price: float, confidence: int, reason: str, indicators: dict = None) -> bool:
+def open_short(symbol: str, price: float, confidence: int, reason: str, indicators: dict = None,
+               trend_direction: str = None) -> bool:
     ss   = sym_state(symbol)
     base = SYMBOLS_CONFIG[symbol]['base']
     cfg  = SYMBOLS_CONFIG[symbol]
@@ -2246,6 +2656,12 @@ def open_short(symbol: str, price: float, confidence: int, reason: str, indicato
             remaining = int((SAME_DIR_COOLDOWN - elapsed) / 60)
             logger.info(f'⏳ [{symbol}] SHORT cooldown — last SHORT closed {int(elapsed/60)}m ago, waiting {remaining}m more')
             return False
+    # Consecutive-loss circuit breaker — see CONSECUTIVE_LOSS_FREEZE_THRESHOLD
+    if ss.get('consecutive_losses', 0) >= CONSECUTIVE_LOSS_FREEZE_THRESHOLD \
+            and trend_direction is not None and ss.get('loss_streak_direction') == trend_direction:
+        logger.info(f'🧊 [{symbol}] Circuit breaker — {ss["consecutive_losses"]} losses in a row while '
+                    f'trend_direction stayed {trend_direction}; standing down until this reads differently')
+        return False
     try:
         collateral = float(cfg.get('trade_amount') or state['runtime']['trade_amount_usdt'])
         leverage   = int(cfg.get('leverage') or state['runtime']['leverage'])
@@ -2278,11 +2694,12 @@ def open_short(symbol: str, price: float, confidence: int, reason: str, indicato
         atr = safe_float(ss.get('trail_atr'), 0)
 
         now_ = datetime.now(timezone.utc)
-        ss['entry_reason']     = reason
-        ss['entry_confidence'] = confidence
-        ss['entry_indicators'] = indicators or {}
-        ss['entry_hour_utc']   = now_.hour
-        ss['entry_weekday']    = now_.strftime('%A')
+        ss['entry_reason']          = reason
+        ss['entry_confidence']      = confidence
+        ss['entry_indicators']      = indicators or {}
+        ss['entry_hour_utc']        = now_.hour
+        ss['entry_weekday']         = now_.strftime('%A')
+        ss['entry_trend_direction'] = trend_direction
 
         logger.info(f'✅ [{symbol}] SHORT OPEN {qty_filled:.4f} {base} @ ${actual_price:.4f} fee=${fee_usdt:.4f}')
         send_telegram(
@@ -2329,6 +2746,7 @@ def close_short(symbol: str, price: float, reason: str) -> bool:
         record_closed_trade(symbol, 'SHORT', entry_price, actual_close, quantity, reason, total_fee)
         gross = (entry_price - actual_close) * quantity
         net   = gross - total_fee
+        _update_loss_streak(ss, symbol, net)
         logger.info(f'✅ [{symbol}] SHORT CLOSE {quantity:.4f} {base} @ ${actual_close:.4f} net={net:+.4f}')
         pnl_banner = f'🟢 +${net:.2f}' if net >= 0 else f'🔴 -${abs(net):.2f}'
         send_telegram(
@@ -2383,6 +2801,8 @@ def fetch_dashboard_config() -> dict:
             'force_trail':        bool(cfg.get('futures_force_trail', False)),
             'force_trail_at':     cfg.get('futures_force_trail_at'),
             'force_trail_symbol': cfg.get('futures_force_trail_symbol'),
+            'mu_close_requested':    bool(cfg.get('futures_mu_close_requested', False)),
+            'mu_close_requested_at': cfg.get('futures_mu_close_requested_at'),
             'manual_trade':       cfg.get('manual_trade') if isinstance(cfg.get('manual_trade'), dict) else None,
             'updated_at':         cfg.get('updated_at'),
         }
@@ -2703,6 +3123,81 @@ def send_monthly_summary():
         logger.warning(f'send_monthly_summary: {e}')
 
 
+def _log_apex_regime_snapshot(symbol: str, ss: dict, dec: dict) -> None:
+    """Appends one regime/sentiment record per symbol, at most once per
+    APEX_REGIME_LOG_INTERVAL_HOURS -- gate lives on the symbol's own state
+    dict so a restart doesn't cause a burst of duplicate entries right at
+    the top of the hour. Never raises -- a logging failure must never
+    affect trading."""
+    try:
+        now_ts = time.time()
+        last_ts = ss.get('last_regime_log_ts', 0)
+        if now_ts - last_ts < APEX_REGIME_LOG_INTERVAL_HOURS * 3600:
+            return
+        ss['last_regime_log_ts'] = now_ts
+        record = {
+            'ts': now_utc_iso(), 'symbol': symbol, 'action': dec.get('action'),
+            'confidence': dec.get('confidence'), 'regime': dec.get('regime'),
+            'trend_direction': dec.get('trend_direction'),
+            'adx': (dec.get('indicators') or {}).get('adx'),
+        }
+        with open(APEX_REGIME_LOG_FILE, 'a') as f:
+            f.write(json.dumps(record) + '\n')
+    except Exception as e:
+        logger.warning(f'_log_apex_regime_snapshot: {e}')
+
+
+def _summarize_apex_regime_sentiment(days: int = 7) -> dict:
+    """Aggregates apex_regime_history.jsonl into a compact market-sentiment
+    summary -- the Apex-side counterpart to SPY's recent_market_sentiment
+    (added the same day, on request, for the same reason: give Hermes's now-
+    daily analysis a real memory of conditions, not just trade P&L)."""
+    try:
+        if not os.path.exists(APEX_REGIME_LOG_FILE):
+            return {}
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        records = []
+        with open(APEX_REGIME_LOG_FILE) as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except Exception:
+                    continue
+                if r.get('ts', '') >= cutoff:
+                    records.append(r)
+        if not records:
+            return {}
+        adx_vals = [r['adx'] for r in records if r.get('adx') is not None]
+        regimes, trends, actions = {}, {}, {}
+        for r in records:
+            for bucket, key in ((regimes, 'regime'), (trends, 'trend_direction'), (actions, 'action')):
+                v = r.get(key)
+                if v: bucket[v] = bucket.get(v, 0) + 1
+        by_symbol = {}
+        for sym in TRADING_SYMBOLS:
+            sym_records = [r for r in records if r.get('symbol') == sym]
+            if not sym_records:
+                continue
+            sym_trends = {}
+            for r in sym_records:
+                t = r.get('trend_direction')
+                if t: sym_trends[t] = sym_trends.get(t, 0) + 1
+            by_symbol[sym] = {'n_samples': len(sym_records), 'trend_counts': sym_trends}
+        return {
+            'window_days': days,
+            'n_samples': len(records),
+            'adx': {'min': round(min(adx_vals), 1), 'max': round(max(adx_vals), 1),
+                    'avg': round(sum(adx_vals) / len(adx_vals), 1)} if adx_vals else None,
+            'regime_counts': regimes,
+            'trend_counts': trends,
+            'action_counts': actions,
+            'by_symbol': by_symbol,
+        }
+    except Exception as e:
+        logger.info(f'_summarize_apex_regime_sentiment failed (non-critical): {e}')
+        return {}
+
+
 # ── Per-symbol cycle ──────────────────────────────────────────────────────────
 def run_symbol(symbol: str, cfg: dict, allow_new_entry: bool = True) -> dict:
     global last_hold_alert
@@ -2726,6 +3221,7 @@ def run_symbol(symbol: str, cfg: dict, allow_new_entry: bool = True) -> dict:
 
         logger.info(f'💰 [{symbol}] ${price:.4f} | signal={action}({confidence}%) | pos={position} | {regime}/{trend}')
 
+        _log_apex_regime_snapshot(symbol, ss, dec)
         run_paper_offhours(symbol, price, action, confidence, reason)
 
         # ── Dashboard close request ───────────────────────────────────────────
@@ -2838,14 +3334,22 @@ def run_symbol(symbol: str, cfg: dict, allow_new_entry: bool = True) -> dict:
                     status = 'HOLD — long only mode'
                 elif action == 'LONG' and SYMBOLS_CONFIG[symbol].get('short_only'):
                     status = 'HOLD — short only mode'
-                elif action == 'LONG':
-                    ok = open_long(symbol, price, confidence, reason, indicators)
-                    status = 'LONG OPENED ✅' if ok else 'LONG FAILED ❌'
-                    if ok: position = 'LONG'
                 else:
-                    ok = open_short(symbol, price, confidence, reason, indicators)
-                    status = 'SHORT OPENED ✅' if ok else 'SHORT FAILED ❌'
-                    if ok: position = 'SHORT'
+                    veto_ok, veto_reason = check_hermes_veto(symbol, dec, price)
+                    if not veto_ok:
+                        status = f'HOLD — Hermes veto: {veto_reason}'
+                        logger.info(f'🛑 [{symbol}] Hermes vetoed {action} entry: {veto_reason}')
+                        send_telegram(f'🛑 <b>Hermes Veto</b> {base}/USDT Futures\n'
+                                      f'Blocked {action} @ ${price:,.4f} (confidence {confidence}%)\n'
+                                      f'Technical reason: {reason}\nHermes: {veto_reason}')
+                    elif action == 'LONG':
+                        ok = open_long(symbol, price, confidence, reason, indicators, dec['trend_direction'])
+                        status = 'LONG OPENED ✅' if ok else 'LONG FAILED ❌'
+                        if ok: position = 'LONG'
+                    else:
+                        ok = open_short(symbol, price, confidence, reason, indicators, dec['trend_direction'])
+                        status = 'SHORT OPENED ✅' if ok else 'SHORT FAILED ❌'
+                        if ok: position = 'SHORT'
             elif position == 'LONG':
                 ind_ = dec.get('indicators', {})
                 trend4h_ = get_4h_trend(symbol)
@@ -2974,8 +3478,10 @@ def open_overnight_mu() -> bool:
     if on.get('position'):
         return False
     sym    = OVERNIGHT_CFG['symbol']
-    amount = OVERNIGHT_CFG['amount']
-    lev    = OVERNIGHT_CFG['leverage']
+    amount = get_mu_cfg('amount', OVERNIGHT_CFG['amount'])
+    lev    = get_mu_cfg('leverage', OVERNIGHT_CFG['leverage'])
+    override_active = 'MUUSDT' in state.get('runtime', {}).get('auto_tune_overrides', {})
+    logger.info(f'[OVERNIGHT] MU sizing this open: ${amount:.0f}/{lev}x (override_active={override_active})')
     try:
         price    = get_current_price(sym)
         set_futures_leverage(sym, lev)
@@ -3069,17 +3575,38 @@ def close_overnight_mu(reason: str) -> bool:
         alert_error(f'Overnight MU close: {e}')
         return False
 
-def write_overnight_dashboard() -> None:
+def _overnight_mu_perf(trades: list) -> dict:
+    wins   = [t for t in trades if t.get('net', 0) > 0]
+    losses = [t for t in trades if t.get('net', 0) <= 0]
+    total  = len(trades)
+    return {
+        'total':      total,
+        'wins':       len(wins),
+        'losses':     len(losses),
+        'win_rate':   round(len(wins) / total * 100, 1) if total else 0,
+        'win_pnl':    round(sum(t['net'] for t in wins), 2),
+        'loss_pnl':   round(sum(t['net'] for t in losses), 2),
+        'total_fees': round(sum(t.get('fee', 0) for t in trades), 2),
+        'net_pnl':    round(sum(t.get('net', 0) for t in trades), 2),
+    }
+
+def write_overnight_dashboard(price: float = None) -> None:
     on     = state.get('overnight_mu', {})
     trades = state.get('overnight_mu_trades', [])
-    wins   = [t for t in trades if t['net'] > 0]
-    losses = [t for t in trades if t['net'] <= 0]
-    total  = len(trades)
     current_price = unrealized_pnl = None
     if on.get('position'):
         try:
-            current_price  = get_current_price(OVERNIGHT_CFG['symbol'])
+            current_price  = price if price is not None else get_current_price(OVERNIGHT_CFG['symbol'])
             unrealized_pnl = round((current_price - on['entry_price']) * on.get('qty', 0), 4)
+        except Exception:
+            pass
+        # Prefer Binance's own unrealized P&L (marked at the exchange's mark
+        # price) so this matches what the trader sees in the Binance app --
+        # same source the 7 futures symbols' dashboards already use.
+        try:
+            ex = get_position_details(OVERNIGHT_CFG['symbol'])
+            if ex.get('side') and ex.get('unrealized_pnl') is not None:
+                unrealized_pnl = round(ex['unrealized_pnl'], 4)
         except Exception:
             pass
     payload = {
@@ -3091,19 +3618,440 @@ def write_overnight_dashboard() -> None:
         'opened_at':     on.get('opened_at'),
         'current_price': current_price,
         'unrealized_pnl': unrealized_pnl,
-        'performance': {
-            'total':      total,
-            'wins':       len(wins),
-            'losses':     len(losses),
-            'win_rate':   round(len(wins) / total * 100, 1) if total else 0,
-            'win_pnl':    round(sum(t['net'] for t in wins), 2),
-            'loss_pnl':   round(sum(t['net'] for t in losses), 2),
-            'total_fees': round(sum(t['fee'] for t in trades), 2),
-            'net_pnl':    round(sum(t['net'] for t in trades), 2),
-        },
+        # Current per-trade stake -- the base the dashboard's "% return" is
+        # measured against (same base the auto-scaler's avg-net bar uses).
+        'amount':        get_mu_cfg('amount', OVERNIGHT_CFG['amount']),
+        'leverage':      get_mu_cfg('leverage', OVERNIGHT_CFG['leverage']),
+        'performance':   _overnight_mu_perf(trades),
         'trades': list(reversed(trades)),
     }
     write_json(os.path.join(WEB_ROOT, 'data_overnight_mu.json'), payload)
+
+
+def run_weekly_mu_auto_tune() -> None:
+    """Evidence-gated size/leverage scaling for the MU overnight strategy,
+    mirroring run_weekly_auto_tune()'s gate -> evaluate -> apply -> log ->
+    notify shape -- but deterministic and self-contained, not a price-replay
+    backtest (size/leverage don't change which trades win or lose, just the
+    dollar/notional scale, so a live rolling-window check on real trades is
+    the right tool here, not a kline replay)."""
+    last = state['runtime'].get('last_mu_auto_tune')
+    if last:
+        try:
+            age_days = (datetime.now(timezone.utc) -
+                        datetime.fromisoformat(last.replace('Z', '+00:00'))).days
+        except Exception:
+            age_days = MU_AUTO_TUNE_INTERVAL_DAYS
+        if age_days < MU_AUTO_TUNE_INTERVAL_DAYS:
+            return
+    if state.get('overnight_mu', {}).get('position'):
+        logger.info('🔧 MU auto-scale: deferred -- position open, retry next cycle')
+        return
+
+    state['runtime']['last_mu_auto_tune'] = now_utc_iso()
+    overrides = state['runtime'].setdefault('auto_tune_overrides', {})
+    history   = state['runtime'].setdefault('auto_tune_history', [])
+    save_state()
+
+    try:
+        trades = [t for t in state.get('overnight_mu_trades', [])
+                  if t.get('opened_at') and t.get('net') is not None]
+        cur_amount = get_mu_cfg('amount', OVERNIGHT_CFG['amount'])
+        cur_lev    = get_mu_cfg('leverage', OVERNIGHT_CFG['leverage'])
+        cur_idx = next((i for i, lvl in enumerate(MU_SCALE_LADDER)
+                         if lvl['amount'] == cur_amount and lvl['leverage'] == cur_lev), 0)
+
+        existing   = overrides.get('MUUSDT')
+        applied_at = existing.get('_meta', {}).get('applied_at') if existing else None
+        window     = [t for t in trades if not applied_at or t['opened_at'] > applied_at]
+        min_needed = MU_MIN_TRADES_FIRST_SCALE if not applied_at else MU_ROLLBACK_MIN_TRADES
+        if len(window) < min_needed:
+            logger.info(f'🔧 MU auto-scale: {len(window)}/{min_needed} trades since last check -- not enough yet')
+            return
+
+        wins     = [t for t in window if t['net'] > 0]
+        win_rate = len(wins) / len(window)
+        avg_net  = sum(t['net'] for t in window) / len(window)
+        streak = 0
+        for t in sorted(window, key=lambda t: t['opened_at'], reverse=True):
+            if t['net'] <= 0: streak += 1
+            else: break
+
+        decision = None
+        if (win_rate < MU_SCALE_DOWN_MIN_WIN_RATE or avg_net < 0
+                or streak >= MU_SCALE_DOWN_LOSE_STREAK) and cur_idx > 0:
+            decision = 'down'
+        elif (win_rate >= MU_SCALE_UP_MIN_WIN_RATE
+                and avg_net >= MU_SCALE_UP_AVG_NET_PCT * cur_amount) and cur_idx < len(MU_SCALE_LADDER) - 1:
+            decision = 'up'
+
+        reason = (f'{len(window)} trades at ${cur_amount:.0f}/{cur_lev}x averaged ${avg_net:+.2f}/trade '
+                  f'({win_rate*100:.0f}% WR, {streak}-loss streak)')
+
+        if decision is None:
+            history.append({'symbol': 'MUUSDT', 'action': 'validated',
+                             'params': overrides.get('MUUSDT', {}), 'at': now_utc_iso(), 'note': reason})
+            save_state()
+            write_hermes_log_dashboard()
+            logger.info(f'🔧 MU auto-scale: no change -- {reason}')
+            return
+
+        new_idx = cur_idx + (1 if decision == 'up' else -1)
+        new_lvl = MU_SCALE_LADDER[new_idx]
+
+        if not MU_AUTO_SCALE_ENABLED:
+            send_telegram(
+                f'🧪 <b>MU Auto-Scale DRY RUN</b>\n\n'
+                f'Would {"scale UP" if decision=="up" else "scale DOWN"} '
+                f'${cur_amount:.0f}/{cur_lev}x → ${new_lvl["amount"]:.0f}/{new_lvl["leverage"]}x\n\n'
+                f'{reason}\n\nNot applied — dry-run mode.'
+            )
+            logger.info(f'🧪 [MU] auto-scale dry-run: → ${new_lvl["amount"]:.0f}/{new_lvl["leverage"]}x — {reason}')
+            return  # dry-run: deliberately not written to auto_tune_history/overrides
+
+        if new_idx == 0:
+            overrides.pop('MUUSDT', None)
+        else:
+            overrides['MUUSDT'] = {
+                'amount': new_lvl['amount'], 'leverage': new_lvl['leverage'],
+                '_meta': {'param': 'mu_scale', 'value': f'${new_lvl["amount"]:.0f}/{new_lvl["leverage"]}x',
+                          'applied_at': now_utc_iso(), 'baseline_avg_pnl': avg_net,
+                          'step_index': new_idx, 'source': 'mu_auto_scale'},
+            }
+        # 'reverted' means back at the floor with no override active; a scale-
+        # down that lands on an intermediate rung is still an elevated
+        # override, not a reversion to baseline -- distinct action so the
+        # dashboard badge doesn't overstate how conservative it went.
+        if decision == 'up':
+            mu_action = 'applied'
+        elif new_idx == 0:
+            mu_action = 'reverted'
+        else:
+            mu_action = 'scaled_down'
+        history.append({
+            'symbol': 'MUUSDT', 'action': mu_action,
+            'params': overrides.get('MUUSDT', {'amount': new_lvl['amount'], 'leverage': new_lvl['leverage']}),
+            'at': now_utc_iso(), 'baseline_total': round(avg_net * len(window), 2),
+            'reason': reason, 'source': 'mu_auto_scale',
+        })
+        save_state()
+        send_telegram(
+            f'{"⬆️" if decision=="up" else "⬇️"} <b>MU Auto-Scale {"Up" if decision=="up" else "Down"}</b>\n\n'
+            f'${cur_amount:.0f}/{cur_lev}x → ${new_lvl["amount"]:.0f}/{new_lvl["leverage"]}x\n\n{reason}'
+        )
+        write_hermes_log_dashboard()
+        logger.info(f'🔧 MU auto-scale {decision}: ${cur_amount:.0f}/{cur_lev}x → '
+                    f'${new_lvl["amount"]:.0f}/{new_lvl["leverage"]}x -- {reason}')
+    except Exception as e:
+        logger.warning(f'run_weekly_mu_auto_tune failed (non-critical, MU keeps trading at current size): {e}')
+
+
+# ── Hermes Daily Picks (paper only) ────────────────────────────────────────────
+# Added 2026-09-18, on explicit request: let Hermes scan Binance's real
+# tokenized-stock/ETF perpetuals daily, pick its own trade, enter/manage/close
+# it with zero human involvement, and explain its reasoning at both ends --
+# but PAPER ONLY, no real orders anywhere in this feature, so a genuine track
+# record can build before any real capital is ever considered. This is
+# deliberately a separate universe/pool from MU's off-hours pilot and from
+# TRADING_SYMBOLS -- it includes the 8 real-money tickers too (on purpose, so
+# a Hermes pick landing on one of them is an implicit, free comparison).
+HERMES_PICK_TOP_N                 = 8
+HERMES_PICK_CHECK_INTERVAL_HOURS  = 1
+HERMES_PICK_DISCOVERY_ET_HOUR     = 10   # ~30 min after US market open, past opening-auction noise
+HERMES_PICK_MAX_HOLD_MULTIPLIER   = 3    # deterministic backstop: force-close at 3x expected_hold_days
+                                          # even if /pick_checkin stays unreachable -- mirrors MU's hard-SL backstop
+HERMES_PICK_URL    = 'http://10.122.0.3:8787/pick_trade'
+HERMES_CHECKIN_URL = 'http://10.122.0.3:8787/pick_checkin'
+EQUITY_UNIVERSE_CACHE_TTL_HOURS   = 24
+
+def discover_equity_perpetuals(force: bool = False) -> list:
+    """USDT-margined tokenized-equity perpetuals (underlyingType == 'EQUITY',
+    status TRADING) -- confirmed live against Binance's real exchangeInfo,
+    ~155 real stock/ETF tickers (AAPL, NVDA, TSLA, SPY, QQQ, the 8 this bot
+    already trades, and many more), not a guessed/curated list. Cached in
+    state for 24h since the roster doesn't change daily. Fail-open: any
+    error returns the last good cache (even stale), or [] if never cached --
+    caller treats [] as 'skip discovery this cycle', never raises."""
+    cached = state.get('hermes_picks_universe', {})
+    if not force and cached.get('symbols'):
+        try:
+            age_h = (datetime.now(timezone.utc) -
+                      datetime.fromisoformat(cached['discovered_at'].replace('Z', '+00:00'))).total_seconds() / 3600
+            if age_h < EQUITY_UNIVERSE_CACHE_TTL_HOURS:
+                return cached['symbols']
+        except Exception:
+            pass
+    try:
+        info = binance_futures_public('/fapi/v1/exchangeInfo')
+        symbols = [s['symbol'] for s in info.get('symbols', [])
+                   if s.get('underlyingType') == 'EQUITY'
+                   and s.get('quoteAsset') == 'USDT'
+                   and s.get('status') == 'TRADING']
+        state['hermes_picks_universe'] = {'symbols': symbols, 'discovered_at': now_utc_iso()}
+        save_state()
+        return symbols
+    except Exception as e:
+        logger.warning(f'discover_equity_perpetuals failed: {e}')
+        return cached.get('symbols', [])
+
+def score_equity_candidate(symbol: str) -> Optional[dict]:
+    """Cheap momentum/breakout score, 0-100, from the SAME indicators
+    get_decision() already uses for real trading (get_market_data() ->
+    _build_1h_indicators()) -- no separate indicator math to keep in sync.
+    Returns None on any fetch/compute failure (thin data, newly-listed
+    symbol) -- caller just drops it, never raises."""
+    try:
+        df = get_market_data(symbol)
+        p = df.iloc[-1]
+        adx, adx_pos, adx_neg = float(p['adx']), float(p['adx_pos']), float(p['adx_neg'])
+        ema21, ema50, rsi, atr = float(p['ema21']), float(p['ema50']), float(p['rsi']), float(p['atr'])
+        price, vol, vol_ma = float(p['close']), float(p['volume']), float(p['vol_ma'])
+        if pd.isna(adx) or pd.isna(ema21) or pd.isna(vol_ma) or vol_ma <= 0:
+            return None
+        trend = 'BULLISH' if (adx_pos > adx_neg and ema21 > ema50) else \
+                'BEARISH' if (adx_neg > adx_pos and ema21 < ema50) else 'NEUTRAL'
+        vol_ratio = vol / vol_ma
+        dc_upper, dc_lower = p.get('dc_upper'), p.get('dc_lower')
+        breakout = 'UP'   if (dc_upper is not None and not pd.isna(dc_upper) and price > dc_upper) else \
+                   'DOWN' if (dc_lower is not None and not pd.isna(dc_lower) and price < dc_lower) else None
+        score = min(adx, 60) / 60 * 40 + min(vol_ratio, 2.5) / 2.5 * 25 + \
+                (25 if breakout else 0) + (10 if trend != 'NEUTRAL' else 0)
+        return {'symbol': symbol, 'score': round(score, 2), 'price': price, 'adx': round(adx, 2),
+                'trend': trend, 'rsi': round(rsi, 2), 'atr': round(atr, 4),
+                'breakout': breakout, 'vol_ratio': round(vol_ratio, 2)}
+    except Exception:
+        return None
+
+def rank_hermes_candidates(top_n: int = HERMES_PICK_TOP_N) -> list:
+    scored = []
+    for sym in discover_equity_perpetuals():
+        s = score_equity_candidate(sym)
+        if s:
+            scored.append(s)
+    scored.sort(key=lambda x: x['score'], reverse=True)
+    return scored[:top_n]
+
+def get_max_bracket_leverage(symbol: str, notional: float = 50.0) -> int:
+    """Real bracket max leverage for a given notional, queried live (same
+    /fapi/v1/leverageBracket API already confirmed for MUUSDT tonight --
+    bracket 1 = 50x up to $50k). Used ONLY for simulated paper-trade sizing
+    math here -- never to set leverage on a real order. Fails to a
+    conservative 5x on any error."""
+    try:
+        for entry in binance_futures_private('GET', '/fapi/v1/leverageBracket', {'symbol': symbol}):
+            if entry.get('symbol') != symbol:
+                continue
+            for b in entry.get('brackets', []):
+                if notional <= float(b.get('notionalCap', 0)):
+                    return int(b['initialLeverage'])
+            return int(entry['brackets'][0]['initialLeverage'])
+    except Exception as e:
+        logger.warning(f'get_max_bracket_leverage[{symbol}]: {e}')
+    return 5
+
+def log_hermes_pick_event(action: str, record: dict) -> None:
+    """Reuses the SAME auto_tune_history feed the Hermes Log dashboard tab
+    already reads, tagged source='hermes_pick' -- proven escape hatch
+    (renderHermesLog() already special-cases non-Apex sources for MU's
+    ladder). Also means push_hermes_snapshot() gives Hermes automatic memory
+    of its own past picks, with zero extra plumbing."""
+    try:
+        history = state['runtime'].setdefault('auto_tune_history', [])
+        history.append({
+            'symbol': record.get('symbol'), 'action': action, 'source': 'hermes_pick',
+            'at': now_utc_iso(), 'reason': record.get('exit_reasoning') or record.get('reasoning'),
+            'params': {k: record.get(k) for k in
+                       ('direction', 'entry_price', 'target', 'stop', 'exit_price', 'pnl_usdt')},
+        })
+        save_state()
+        write_hermes_log_dashboard()
+    except Exception as e:
+        logger.warning(f'log_hermes_pick_event failed: {e}')
+
+def write_hermes_picks_dashboard() -> None:
+    try:
+        trades = state.get('hermes_picks_trades', [])
+        wins = [t for t in trades if t.get('win')]
+        write_json(os.path.join(WEB_ROOT, 'data_hermes_picks.json'), {
+            'generated_at': now_utc_iso(),
+            'position': state.get('hermes_picks') or None,
+            'performance': {
+                'total': len(trades), 'wins': len(wins),
+                'win_rate': round(len(wins) / len(trades) * 100, 1) if trades else 0,
+                'net_pnl': round(sum(t.get('pnl_usdt', 0) for t in trades), 2),
+            },
+            'trades': list(reversed(trades[-30:])),
+        })
+    except Exception as e:
+        logger.warning(f'write_hermes_picks_dashboard: {e}')
+
+def open_hermes_pick(pick: dict, candidates: list) -> bool:
+    if state.get('hermes_picks', {}).get('symbol'):
+        return False   # one open pick at a time -- simplest, safest
+    try:
+        symbol = pick['symbol']
+        price  = get_current_price(symbol)
+        lev    = get_max_bracket_leverage(symbol)
+        qty    = 50.0 * lev * 0.995 / price
+        snapshot = next((c for c in candidates if c['symbol'] == symbol), {})
+        record = {
+            'symbol': symbol, 'direction': pick['direction'], 'entry_price': price,
+            'entry_zone': [pick['entry_low'], pick['entry_high']], 'target': pick['target'],
+            'stop': pick['stop'], 'expected_hold_days': pick['expected_hold_days'],
+            'collateral_usdt': 50.0, 'leverage': lev, 'qty': qty,
+            'reasoning': pick['reasoning'], 'candidate_snapshot': snapshot,
+            'opened_at': now_utc_iso(), 'provider': pick.get('provider'), 'checkins': [],
+        }
+        state['hermes_picks'] = record
+        save_state()
+        base = symbol.replace('USDT', '')
+        is_apex_ticker = base in {SYMBOLS_CONFIG[s]['base'] for s in SYMBOLS_CONFIG} or symbol == OVERNIGHT_CFG['symbol']
+        note = ('\n\n📌 Note: this is one of Apex\'s own live-traded tickers — an implicit comparison.'
+                 if is_apex_ticker else '')
+        send_telegram(
+            f"🔮 <b>Hermes Daily Pick — {pick['direction']} {base}/USDT (PAPER)</b>\n\n"
+            f"💰 Entry: ${price:,.4f} (LLM zone ${pick['entry_low']:.4f}-${pick['entry_high']:.4f})\n"
+            f"🎯 Target: ${pick['target']:,.4f} | 🛑 Stop: ${pick['stop']:,.4f}\n"
+            f"⏱ Expected hold: {pick['expected_hold_days']} days\n"
+            f"💵 $50 @ {lev}x (simulated — no real funds)\n\n"
+            f"📊 {pick['reasoning']}{note}"
+        )
+        log_hermes_pick_event('opened', record)
+        write_hermes_picks_dashboard()
+        return True
+    except Exception as e:
+        logger.warning(f'open_hermes_pick failed: {e}')
+        return False
+
+def close_hermes_pick(exit_price: float, exit_reason: str, exit_reasoning: str) -> bool:
+    pick = state.get('hermes_picks') or {}
+    if not pick.get('symbol'):
+        return False
+    try:
+        entry, qty, is_long = pick['entry_price'], pick['qty'], pick['direction'] == 'LONG'
+        gross = (exit_price - entry) * qty if is_long else (entry - exit_price) * qty
+        fee   = qty * (entry + exit_price) * FEE_RATE
+        net   = gross - fee
+        days_held = (datetime.now(timezone.utc) -
+                     datetime.fromisoformat(pick['opened_at'].replace('Z', '+00:00'))).total_seconds() / 86400
+        trade = {**pick, 'exit_price': exit_price, 'closed_at': now_utc_iso(), 'exit_reason': exit_reason,
+                  'exit_reasoning': exit_reasoning, 'pnl_usdt': round(net, 4),
+                  'pnl_pct': round(net / pick['collateral_usdt'] * 100, 2), 'win': net > 0,
+                  'days_held': round(days_held, 1)}
+        state.setdefault('hermes_picks_trades', []).append(trade)
+        state['hermes_picks'] = {}
+        save_state()
+        base, emoji = pick['symbol'].replace('USDT', ''), ('🟢' if net >= 0 else '🔴')
+        label = {'target_hit': 'Target Hit ✅', 'stop_hit': 'Stop Hit 🛑',
+                 'time_exit': 'Time Exit ⏰', 'time_exit_forced': 'Forced Time Exit ⚠️'}[exit_reason]
+        send_telegram(
+            f"{emoji} <b>Hermes Daily Pick CLOSED — {label} ({base}/USDT)</b>\n\n"
+            f"Entry: ${entry:,.4f} → Exit: ${exit_price:,.4f} | Held {days_held:.1f}d\n"
+            f"Net P&L: {net:+.2f} USDT ({trade['pnl_pct']:+.1f}%) (simulated — no real funds)\n\n"
+            f"📊 {exit_reasoning}"
+        )
+        log_hermes_pick_event(f'closed_{exit_reason}', trade)
+        write_hermes_picks_dashboard()
+        return True
+    except Exception as e:
+        logger.warning(f'close_hermes_pick failed: {e}')
+        return False
+
+def _ask_hermes_checkin(pick: dict, price: float, days_held: float) -> Optional[dict]:
+    try:
+        resp = requests.post(HERMES_CHECKIN_URL, json={
+            'symbol': pick['symbol'], 'direction': pick['direction'], 'entry_price': pick['entry_price'],
+            'target': pick['target'], 'stop': pick['stop'], 'entry_reasoning': pick['reasoning'],
+            'opened_at': pick['opened_at'], 'expected_hold_days': pick['expected_hold_days'],
+            'days_held': round(days_held, 1), 'current_price': price,
+        }, timeout=30)
+        resp.raise_for_status()
+        body = resp.json()
+        if body.get('decision') in ('HOLD', 'EXIT'):
+            return {'decision': body['decision'], 'reasoning': body.get('reasoning', '')}
+    except Exception as e:
+        logger.info(f'[HERMES-PICK] check-in unreachable (non-critical): {e}')
+    return None
+
+def _monitor_open_hermes_pick(pick: dict) -> None:
+    try:
+        price = get_current_price(pick['symbol'])
+        is_long = pick['direction'] == 'LONG'
+        if (is_long and price >= pick['target']) or (not is_long and price <= pick['target']):
+            close_hermes_pick(price, 'target_hit', pick['reasoning'] + ' — hit target as expected.')
+            return
+        if (is_long and price <= pick['stop']) or (not is_long and price >= pick['stop']):
+            close_hermes_pick(price, 'stop_hit', pick['reasoning'] + ' — hit stop; setup invalidated.')
+            return
+        days_held = (datetime.now(timezone.utc) -
+                     datetime.fromisoformat(pick['opened_at'].replace('Z', '+00:00'))).total_seconds() / 86400
+        if days_held <= pick['expected_hold_days']:
+            return
+        if days_held > pick['expected_hold_days'] * HERMES_PICK_MAX_HOLD_MULTIPLIER:
+            close_hermes_pick(price, 'time_exit_forced',
+                               'Exceeded max hold safety window with no usable check-in response — closing defensively.')
+            return
+        checkin = _ask_hermes_checkin(pick, price, days_held)
+        if checkin is None:
+            return   # try again next hourly tick -- no forced action on a single failed call
+        pick.setdefault('checkins', []).append(
+            {'at': now_utc_iso(), 'decision': checkin['decision'], 'reasoning': checkin['reasoning'],
+             'days_held': round(days_held, 1)})
+        save_state()
+        if checkin['decision'] == 'EXIT':
+            close_hermes_pick(price, 'time_exit', checkin['reasoning'])
+    except Exception as e:
+        logger.warning(f'_monitor_open_hermes_pick failed: {e}')
+
+def _run_daily_hermes_pick_discovery() -> None:
+    candidates = rank_hermes_candidates()
+    if not candidates:
+        logger.info('[HERMES-PICK] No candidates today -- skipping')
+        return
+    payload = [dict(c, max_leverage=get_max_bracket_leverage(c['symbol'])) for c in candidates]
+    try:
+        resp = requests.post(HERMES_PICK_URL, json={'candidates': payload}, timeout=30)
+        resp.raise_for_status()
+        result = resp.json()
+    except Exception as e:
+        logger.info(f'[HERMES-PICK] pick_trade unreachable (non-critical): {e}')
+        return
+    if result.get('decision') == 'TRADE':
+        open_hermes_pick(result, candidates)
+    else:
+        reason = result.get('reasoning') or result.get('reason') or 'No reason given'
+        logger.info(f'[HERMES-PICK] No trade today: {reason}')
+        send_telegram(f"🔮 <b>Hermes Daily Pick — No Trade Today</b>\n\n{reason}")
+
+def run_hermes_picks_cycle() -> None:
+    """Self-gated hourly check, same pattern as run_weekly_mu_auto_tune --
+    safe to call every main-loop cycle. If a pick is already open, monitors
+    it; otherwise runs discovery once/day after US market open. Fail-open at
+    every layer: never raises into run_once(), never blocks real trading."""
+    try:
+        last = state['runtime'].get('last_hermes_pick_check')
+        if last:
+            age_h = (datetime.now(timezone.utc) -
+                      datetime.fromisoformat(last.replace('Z', '+00:00'))).total_seconds() / 3600
+            if age_h < HERMES_PICK_CHECK_INTERVAL_HOURS:
+                return
+        state['runtime']['last_hermes_pick_check'] = now_utc_iso()
+        save_state()
+
+        pick = state.get('hermes_picks') or {}
+        if pick.get('symbol'):
+            _monitor_open_hermes_pick(pick)
+            return
+
+        today = _et_now().date().isoformat()
+        if state['runtime'].get('last_hermes_pick_attempt_date') == today or \
+           _et_now().hour < HERMES_PICK_DISCOVERY_ET_HOUR:
+            return
+        state['runtime']['last_hermes_pick_attempt_date'] = today
+        save_state()
+        _run_daily_hermes_pick_discovery()
+    except Exception as e:
+        logger.warning(f'run_hermes_picks_cycle failed (non-critical): {e}')
 
 
 # ── Off-hours/weekend PAPER trading (test ticker only) ────────────────────────
@@ -3114,9 +4062,13 @@ def write_overnight_dashboard() -> None:
 # execution risk is unverified. This runs the SAME live strategy signal
 # during off-hours as a PAPER position (no real order, fully separate state
 # from the real position) so we can validate against real live quotes before
-# ever considering real money here. During real market hours NBIS trades
-# exactly as before, unaffected by any of this.
-PAPER_OFFHOURS_SYMBOLS = {'NBISUSDT'}
+# ever considering real money here. During real market hours every symbol
+# trades exactly as before, unaffected by any of this.
+# Expanded from NBIS-only to all 7 symbols 2026-09-17, on Hermes's recommendation
+# (asked whether to relax market_hours_only; verdict was "no real off-hours
+# evidence yet for any symbol -- expand this same paper pilot to all symbols,
+# run 4-6 weeks / ~30-50 signals each, then revisit with real data").
+PAPER_OFFHOURS_SYMBOLS = set(TRADING_SYMBOLS)
 
 def paper_state(symbol: str) -> dict:
     state.setdefault('paper', {})
@@ -3277,6 +4229,34 @@ def run_overnight_strategy() -> None:
             logger.info(f'[OVERNIGHT] SL hit @ ${price:.4f} (sl={sl_price:.4f})')
             close_overnight_mu('Stop Loss')
             return
+        # Keep the dashboard's live P&L fresh while a position is open. This
+        # file used to be written only on open/close, so a weekend hold showed
+        # the entry-moment P&L for ~2 days (found 2026-09-19: +$3.25 displayed
+        # vs ~-$9 real). Never lets a display write affect trading.
+        try:
+            write_overnight_dashboard(price)
+        except Exception as e:
+            logger.warning(f'[OVERNIGHT] dashboard refresh failed (non-critical): {e}')
+
+    # Manual close — dashboard "Close" button
+    if has_pos:
+        cfg = fetch_dashboard_config()
+        if cfg.get('mu_close_requested'):
+            req_at = cfg.get('mu_close_requested_at')
+            try:
+                age = (datetime.now(timezone.utc) - datetime.fromisoformat(
+                    req_at.replace('Z', '+00:00'))).total_seconds() if req_at else 999
+            except Exception:
+                age = 999
+            if age < 300:
+                logger.info('[OVERNIGHT] Manual close requested from dashboard')
+                send_telegram('📱 <b>Dashboard Close</b>\nClosing MU overnight position at market')
+                closed = close_overnight_mu('Dashboard Close')
+                if closed:
+                    clear_flag('futures_mu_close_requested')
+                    return
+            else:
+                clear_flag('futures_mu_close_requested')
 
     # Entry: 3:55–4:05 PM ET, Mon–Fri (Friday included — backtested holding
     # through the weekend to Monday's real market open: 22 trades, 63.6% WR,
@@ -3388,7 +4368,10 @@ def run_once():
         run_weekly_atr_health_check()
         run_weekly_trade_review()
         run_monthly_strategy_review()
+        run_daily_hermes_sync()
         run_weekly_auto_tune()
+        run_weekly_mu_auto_tune()
+        run_hermes_picks_cycle()
 
         # ── Find which symbols already have open positions ────────────────────
         open_syms = set()
@@ -3404,7 +4387,15 @@ def run_once():
         for symbol in TRADING_SYMBOLS:
             was_in_trade = symbol in open_syms
             allow_entry  = True  # both BTC and ETH always allowed to enter independently
-            result       = run_symbol(symbol, cfg, allow_new_entry=allow_entry)
+            # Per-symbol isolation (added 2026-09-19): one symbol's failure used
+            # to abort the cycle for ALL symbols -- including trail/SL checks on
+            # any other open position. Now it's logged/alerted and skipped.
+            try:
+                result = run_symbol(symbol, cfg, allow_new_entry=allow_entry)
+            except Exception as e:
+                logger.error(f'[{symbol}] run_symbol error (other symbols unaffected): {e}', exc_info=True)
+                alert_error(f'{symbol}: {e}')
+                continue
             if was_in_trade and result and not result.get('position'):
                 closed_this_cycle.add(symbol)
 
@@ -3448,6 +4439,9 @@ def main():
 
     startup_cfg = fetch_dashboard_config()
     apply_runtime_settings(startup_cfg)
+    pull_and_log_hermes_report()  # capture whatever report already exists, don't wait for next weekly run
+    write_hermes_log_dashboard()
+    write_hermes_picks_dashboard()
 
     roster_line = ' | '.join(
         f"{SYMBOLS_CONFIG[sym]['base']}=${SYMBOLS_CONFIG[sym].get('trade_amount', DEFAULT_TRADE_AMOUNT_USDT)}"
