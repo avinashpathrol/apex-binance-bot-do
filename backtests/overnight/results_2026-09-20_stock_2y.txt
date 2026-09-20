@@ -1,0 +1,50 @@
+====================================================================================================
+A) IS MY BINANCE CALCULATION FLAWED?  actual STOCK overnight move vs the PERP's, same nights (perp window only)
+   (perp = buy 16:00 ET -> sell 9:30 ET, no stop, before costs; stock = official close -> next official open)
+  MU    n=114 nights | STOCK avg overnight +0.840% | PERP avg overnight +0.888% | avg difference +0.048% | correlation 0.999 | same direction 98% | typical gap between them +/-+0.08%
+  NVDA  n=121 nights | STOCK avg overnight +0.226% | PERP avg overnight +0.239% | avg difference +0.013% | correlation 0.998 | same direction 98% | typical gap between them +/-+0.04%
+  SPY   n=115 nights | STOCK avg overnight +0.102% | PERP avg overnight +0.108% | avg difference +0.006% | correlation 0.997 | same direction 99% | typical gap between them +/-+0.03%
+
+====================================================================================================
+B) TWO-YEAR STOCK BACKTEST  2024-09-19 -> 2026-09-17   (buy the official close, sell the next official open; 1x notional)
+   costs = 0.10% round-trip Binance fees + measured funding per night (MU +0.043%, NVDA +0.013%, SPY -0.022%)
+        nights avg night   median    win%  t-stat |   NET avg    net t | overnight-only 2y  daytime-only 2y    buy & hold    
+  MU      500  +0.392%  +0.195%     55%    2.86 |   +0.249%     1.82 | +463% gross        +96%               +1002%        
+        after costs, compounded 1x every night for 2 years: +176%   |  avg net per night +0.249%   |  costs eat 36% of the gross edge
+  NVDA    500  +0.182%  +0.236%     58%    2.35 |   +0.069%     0.89 | +130% gross        -19%               +87%          
+        after costs, compounded 1x every night for 2 years: +31%   |  avg net per night +0.069%   |  costs eat 62% of the gross edge
+  SPY     500  +0.041%  +0.071%     58%    1.43 |   -0.037%    -1.27 | +22% gross         +10%               +33%          
+        after costs, compounded 1x every night for 2 years: -18%   |  avg net per night -0.037%   |  costs eat 189% of the gross edge
+
+====================================================================================================
+C) IS IT CONSISTENT?  average overnight return per night, by quarter (gross)
+  quarter                 MU (n)              NVDA (n)               SPY (n)
+  2024-Q3              +2.43% (8)            +0.16% (8)            +0.06% (8)
+  2024-Q4             -0.07% (64)           +0.35% (64)           +0.08% (64)
+  2025-Q1             +0.11% (60)           +0.00% (60)           -0.04% (60)
+  2025-Q2             +0.10% (62)           +0.04% (62)           -0.03% (62)
+  2025-Q3             +0.22% (64)           +0.12% (64)           +0.07% (64)
+  2025-Q4             +0.90% (64)           +0.35% (64)           +0.11% (64)
+  2026-Q1             +0.12% (61)           +0.15% (61)           -0.04% (61)
+  2026-Q2             +1.32% (62)           +0.10% (62)           +0.10% (62)
+  2026-Q3             +0.14% (55)           +0.35% (55)           +0.07% (55)
+  MU    positive in 8 of 9 quarters
+  NVDA  positive in 9 of 9 quarters
+  SPY   positive in 6 of 9 quarters
+
+====================================================================================================
+D) MU, ROLLING 57-NIGHT WINDOWS (net of costs) -- was the recent flat stretch unusual within these 2 years?
+  windows: 444 | best +1.64% | worst -0.58% | median +0.13% | share of windows with avg <= 0: 37% | latest window -0.11% (rank: worse than 75% of windows)
+  MU full two years, NET: avg +0.249% per night, t-stat 1.82 (n=500)
+
+====================================================================================================
+E) WEEKNIGHTS vs WEEKENDS (Fri->Mon or holiday), gross overnight, two years
+  MU    weeknights n=388 avg +0.274% (t=1.76) | weekends n=104 avg +0.809% (t=2.62)
+  NVDA  weeknights n=388 avg +0.260% (t=3.23) | weekends n=104 avg -0.114% (t=-0.53)
+  SPY   weeknights n=388 avg +0.036% (t=1.19) | weekends n=104 avg +0.056% (t=0.71)
+
+====================================================================================================
+F) THE BIGGEST SINGLE NIGHTS -- how much of the 2-year profit is just a few lucky gaps?  (gross overnight)
+  MU    total +196% | 5 best nights +69% (35% of total) | avg WITHOUT the 5 best nights +0.258% | 5 worst nights -47%
+  NVDA  total +91% | 5 best nights +29% (32% of total) | avg WITHOUT the 5 best nights +0.125% | 5 worst nights -37%
+  SPY   total +21% | 5 best nights +14% (67% of total) | avg WITHOUT the 5 best nights +0.014% | 5 worst nights -14%

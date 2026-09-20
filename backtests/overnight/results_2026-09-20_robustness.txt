@@ -1,0 +1,35 @@
+================================================================================================
+1) HOW CONCENTRATED IS THE PROFIT?  (buy 16:00 close -> sell 9:30 open, 3.5%% stop, net of fees+funding)
+  MUUSDT    mean +0.67% | MEDIAN night +0.58% | mean WITHOUT the 3 best nights +0.36% | share of total profit from 3 best nights: 47%
+  NVDAUSDT  mean +0.12% | MEDIAN night +0.16% | mean WITHOUT the 3 best nights +0.03% | share of total profit from 3 best nights: 78%
+  SPYUSDT   mean +0.03% | MEDIAN night -0.01% | mean WITHOUT the 3 best nights -0.01% | share of total profit from 3 best nights: 143%
+
+================================================================================================
+2) IS THE EDGE STILL THERE?  net avg per trade in consecutive blocks of ~19 nights (buy 16:00 -> 9:30)
+  MUUSDT    04-07..05-01 +0.88% | 05-04..05-29 +1.92% | 06-01..06-26 +1.42% | 06-29..07-24 -0.36% | 07-27..08-20 +0.14% | 08-21..09-17 +0.01%
+            most recent 57 nights: avg -0.07%, t-stat -0.17  (n=57)
+  NVDAUSDT  03-26..04-23 +0.18% | 04-24..05-21 -0.06% | 05-22..06-22 +0.02% | 06-23..07-21 -0.23% | 07-22..08-18 +0.41% | 08-19..09-17 +0.42%
+            most recent 57 nights: avg +0.22%, t-stat 1.11  (n=57)
+  SPYUSDT   04-06..04-30 +0.27% | 05-01..05-28 -0.06% | 05-29..06-25 +0.01% | 06-26..07-23 -0.11% | 07-24..08-19 +0.12% | 08-20..09-17 -0.06%
+            most recent 57 nights: avg -0.03%, t-stat -0.56  (n=57)
+
+================================================================================================
+3) DOES THE 3.5% STOP HELP?  MU, buy 16:00 -> 9:30
+  with 3.5% stop  avg +0.67% | median +0.58% | t=1.90 | worst night -3.70% | nights down more than 3.5%: 28 of 114 | stopped: 29
+  no stop         avg +0.74% | median +0.89% | t=1.88 | worst night -10.79% | nights down more than 3.5%: 17 of 114 | stopped: 0
+  stop-outs by month: 04: 3/18 | 05: 3/20 | 06: 8/21 | 07: 11/22 | 08: 3/21 | 09: 1/12
+  typical stop-out cost at the LIVE size ($1,600 notional): about $59 per stop-out
+
+================================================================================================
+4) IS BUYING 1-5 MINUTES AFTER THE CLOSE *SIGNIFICANTLY* BETTER?  paired, night by night, vs buying at 16:00
+   (same nights, same exit at 9:30 open; positive = waiting was better)
+  MUUSDT    16:01: +0.031%/trade (t=1.9, better on 55 of 114 nights) | 16:02: -0.003%/trade (t=-0.1, better on 53 of 114 nights) | 16:05: +0.068%/trade (t=0.6, better on 46 of 114 nights)
+  NVDAUSDT  16:01: +0.005%/trade (t=0.5, better on 67 of 121 nights) | 16:02: +0.012%/trade (t=1.1, better on 71 of 121 nights) | 16:05: +0.012%/trade (t=0.9, better on 64 of 121 nights)
+  SPYUSDT   16:01: +0.002%/trade (t=0.5, better on 69 of 115 nights) | 16:02: -0.001%/trade (t=-0.1, better on 66 of 115 nights) | 16:05: -0.004%/trade (t=-0.5, better on 60 of 115 nights)
+   For scale: round-trip fees alone are 0.100% per trade.
+
+================================================================================================
+5) REALISTIC EXECUTION HAIRCUT  (validation on MU's 4 real trades: live fills averaged ~0.06%% worse than bar-open prices)
+  MUUSDT    backtest net +0.67%  ->  after a 0.06% execution haircut +0.61%  ->  after a harsher 0.10% haircut +0.57%
+  NVDAUSDT  backtest net +0.12%  ->  after a 0.06% execution haircut +0.06%  ->  after a harsher 0.10% haircut +0.02%
+  SPYUSDT   backtest net +0.03%  ->  after a 0.06% execution haircut -0.03%  ->  after a harsher 0.10% haircut -0.07%

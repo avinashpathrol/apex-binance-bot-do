@@ -1,0 +1,17 @@
+==============================================================================================================
+REPLAY of the real Sentinel engine on MUUSDT 1-min data vs analyze.run_night (same nights, buy 15:55 / sell 9:28 ET, 3.5% stop, 0.10% fees, real funding)
+==============================================================================================================
+
+mode=open  (165596 polls, 46s)   nights: engine 113 | backtest 113 | matched 113
+  nights with NO stop in either:  83   max |net diff| = 0.009944% of notional   (0 = identical P&L math)
+  stop-outs: engine 29 | backtest 30 | both 29
+  on nights both stopped: engine exit is worse than the backtest by avg 0.134% of notional (poll/gap slippage the backtest ignores)
+  mean net per night:  engine +0.603%   backtest +0.605%   (difference -0.002%)
+  late exits: 0 | reasons: {'Stop Loss': 29, 'Market Open': 84}
+
+mode=wick  (328842 polls, 95s)   nights: engine 113 | backtest 113 | matched 113
+  nights with NO stop in either:  83   max |net diff| = 0.009944% of notional   (0 = identical P&L math)
+  stop-outs: engine 30 | backtest 30 | both 30
+  on nights both stopped: engine exit is worse than the backtest by avg 0.214% of notional (poll/gap slippage the backtest ignores)
+  mean net per night:  engine +0.547%   backtest +0.605%   (difference -0.058%)
+  late exits: 0 | reasons: {'Stop Loss': 30, 'Market Open': 83}

@@ -1,0 +1,110 @@
+====================================================================================================
+DATA COVERAGE
+  MUUSDT     238617 1-min bars from 2026-04-07 | 503 funding records | ~114 completed overnight nights
+  NVDAUSDT   255826 1-min bars from 2026-03-26 | 549 funding records | ~121 completed overnight nights
+  SPYUSDT    240046 1-min bars from 2026-04-06 | 516 funding records | ~115 completed overnight nights
+
+====================================================================================================
+VALIDATION: engine vs MU's last 4 LIVE trades (real exchange fills), live timing 15:55 -> 9:28
+  night            live fills  backtest bars
+  09-14->09-15         +1.08%         +1.32%   (gross)
+  09-15->09-16         +1.04%         +1.21%   (gross)
+  09-16->09-17         +3.17%         +3.12%   (gross)
+  09-17->09-18         +0.63%         +0.52%   (gross)
+
+====================================================================================================
+MAIN RESULTS  (per trade, % of notional; net = after 0.10% round-trip fees + real funding; 3.5% stop applied)
+
+--- MUUSDT ---
+  entry                    exit                        n   win%    gross  funding  NET avg  t-stat   95% CI of net avg    worst  $/trade*
+  15:55 (live bot timing)  9:30 = the open           114    53%   +0.81%  +0.043%   +0.67%    1.87    [-0.00%, +1.35%]   -3.78%     10.74
+  15:55 (live bot timing)  9:28 (live bot timing)    114    53%   +0.83%  +0.043%   +0.69%    1.91    [+0.02%, +1.39%]   -3.78%     11.05
+  16:00 = at the close     9:30 = the open           114    54%   +0.81%  +0.043%   +0.67%    1.90    [+0.01%, +1.33%]   -3.70%     10.71
+  16:00 = at the close     9:28 (live bot timing)    114    56%   +0.82%  +0.043%   +0.68%    1.91    [+0.00%, +1.35%]   -3.70%     10.85
+  16:01 = +1 min           9:30 = the open           114    54%   +0.84%  +0.043%   +0.70%    1.99    [+0.03%, +1.38%]   -3.70%     11.22
+  16:02 = +2 min           9:30 = the open           114    53%   +0.81%  +0.043%   +0.67%    1.97    [+0.02%, +1.31%]   -3.70%     10.66
+  16:05 = +5 min           9:30 = the open           114    55%   +0.88%  +0.045%   +0.74%    2.18    [+0.08%, +1.38%]   -3.66%     11.80
+  (* $ per trade on the live MU size: $40 stake x 40x = $1,600 notional)
+
+--- NVDAUSDT ---
+  entry                    exit                        n   win%    gross  funding  NET avg  t-stat   95% CI of net avg    worst  $/trade*
+  15:55 (live bot timing)  9:30 = the open           121    55%   +0.23%  +0.013%   +0.12%    0.96    [-0.12%, +0.37%]   -3.65%      1.94
+  15:55 (live bot timing)  9:28 (live bot timing)    121    55%   +0.21%  +0.013%   +0.10%    0.76    [-0.15%, +0.35%]   -3.65%      1.57
+  16:00 = at the close     9:30 = the open           121    56%   +0.24%  +0.013%   +0.12%    0.98    [-0.12%, +0.37%]   -3.69%      1.98
+  16:00 = at the close     9:28 (live bot timing)    121    57%   +0.22%  +0.013%   +0.10%    0.80    [-0.15%, +0.36%]   -3.69%      1.65
+  16:01 = +1 min           9:30 = the open           121    57%   +0.24%  +0.013%   +0.13%    1.02    [-0.12%, +0.38%]   -3.69%      2.06
+  16:02 = +2 min           9:30 = the open           121    56%   +0.25%  +0.013%   +0.14%    1.07    [-0.11%, +0.38%]   -3.69%      2.18
+  16:05 = +5 min           9:30 = the open           121    55%   +0.25%  +0.013%   +0.14%    1.08    [-0.11%, +0.38%]   -3.69%      2.18
+  (* $ per trade on the live MU size: $40 stake x 40x = $1,600 notional)
+
+--- SPYUSDT ---
+  entry                    exit                        n   win%    gross  funding  NET avg  t-stat   95% CI of net avg    worst  $/trade*
+  15:55 (live bot timing)  9:30 = the open           115    53%   +0.10%  -0.022%   +0.02%    0.45    [-0.07%, +0.12%]   -1.55%      0.36
+  15:55 (live bot timing)  9:28 (live bot timing)    115    53%   +0.10%  -0.022%   +0.02%    0.34    [-0.08%, +0.12%]   -1.59%      0.28
+  16:00 = at the close     9:30 = the open           115    50%   +0.11%  -0.022%   +0.03%    0.60    [-0.07%, +0.13%]   -1.52%      0.48
+  16:00 = at the close     9:28 (live bot timing)    115    50%   +0.10%  -0.022%   +0.02%    0.48    [-0.07%, +0.12%]   -1.56%      0.39
+  16:01 = +1 min           9:30 = the open           115    54%   +0.11%  -0.022%   +0.03%    0.64    [-0.06%, +0.13%]   -1.55%      0.52
+  16:02 = +2 min           9:30 = the open           115    54%   +0.11%  -0.022%   +0.03%    0.58    [-0.07%, +0.13%]   -1.58%      0.47
+  16:05 = +5 min           9:30 = the open           115    54%   +0.10%  -0.022%   +0.03%    0.53    [-0.07%, +0.13%]   -1.58%      0.42
+  (* $ per trade on the live MU size: $40 stake x 40x = $1,600 notional)
+
+====================================================================================================
+THE "DIP AFTER THE CLOSE" QUESTION -- average price path, weeknights only, relative to the 16:00 close price
+  time ET           MUUSDT      NVDAUSDT       SPYUSDT
+  15:55            -0.067%       -0.020%       -0.005%
+  15:59            -0.010%       +0.008%       -0.001%
+  16:00            +0.000%       +0.000%       +0.000%
+  16:01            -0.023%       -0.010%       -0.005%
+  16:02            +0.015%       -0.012%       +0.001%
+  16:05            +0.047%       -0.010%       +0.007%
+  16:10            +0.081%       -0.012%       +0.006%
+  16:30            +0.169%       -0.014%       +0.005%
+  17:00            +0.170%       -0.014%       -0.001%
+  18:00            +0.242%       +0.005%       +0.007%
+  20:00            +0.280%       +0.071%       +0.053%
+  22:00            +0.177%       +0.067%       +0.054%
+  00:00            +0.140%       +0.057%       +0.049%
+  04:00            +0.372%       +0.164%       +0.066%
+  08:00            +0.571%       +0.168%       +0.083%
+  09:00            +0.512%       +0.145%       +0.089%
+  09:28            +0.649%       +0.196%       +0.085%
+  09:30 open       +0.636%       +0.212%       +0.091%
+
+  Best-case bound: if you could buy at the LOWEST price inside the first minute / first 5 minutes after 16:00
+    MUUSDT    avg dip to the lowest print: within 1 min -0.164% | within 5 min -0.299%   (n=114)   vs. 0.10% round-trip fees
+    NVDAUSDT  avg dip to the lowest print: within 1 min -0.071% | within 5 min -0.129%   (n=121)   vs. 0.10% round-trip fees
+    SPYUSDT   avg dip to the lowest print: within 1 min -0.026% | within 5 min -0.044%   (n=115)   vs. 0.10% round-trip fees
+
+====================================================================================================
+STABILITY CHECKS -- variant: buy at 16:00 close, sell at 9:30 open (net avg per trade)
+
+  MUUSDT
+    weeknights (Mon-Thu -> next day): n= 91  avg +0.51%  win 52%
+    weekends/holidays (Fri -> Mon):   n= 23  avg +1.29%  win 65%
+    first half of history:            n= 57  avg +1.41%   |  second half: n= 57  avg -0.07%
+    by month: 04 +0.82% (n=18) | 05 +1.92% (n=20) | 06 +1.11% (n=21) | 07 -0.57% (n=22) | 08 +0.44% (n=21) | 09 +0.24% (n=12)
+    stopped out by the 3.5% stop: 29 of 114 nights
+    worst 3 nights: 06-05 -3.70%, 07-31 -3.66%, 04-27 -3.64%  | best 3: 05-22 +8.72%, 04-07 +10.11%, 06-24 +17.43%
+
+  NVDAUSDT
+    weeknights (Mon-Thu -> next day): n= 96  avg +0.09%  win 53%
+    weekends/holidays (Fri -> Mon):   n= 25  avg +0.26%  win 68%
+    first half of history:            n= 60  avg +0.04%   |  second half: n= 61  avg +0.20%
+    by month: 03 +0.38% (n=4) | 04 -0.06% (n=21) | 05 +0.15% (n=20) | 06 -0.09% (n=21) | 07 -0.22% (n=22) | 08 +0.75% (n=21) | 09 +0.22% (n=12)
+    stopped out by the 3.5% stop: 1 of 121 nights
+    worst 3 nights: 04-27 -3.69%, 09-11 -3.32%, 06-22 -3.26%  | best 3: 06-05 +2.27%, 04-07 +3.41%, 08-26 +6.05%
+
+  SPYUSDT
+    weeknights (Mon-Thu -> next day): n= 92  avg -0.00%  win 51%
+    weekends/holidays (Fri -> Mon):   n= 23  avg +0.16%  win 43%
+    first half of history:            n= 57  avg +0.08%   |  second half: n= 58  avg -0.02%
+    by month: 04 +0.27% (n=19) | 05 -0.07% (n=20) | 06 +0.06% (n=21) | 07 -0.04% (n=22) | 08 -0.01% (n=21) | 09 -0.03% (n=12)
+    stopped out by the 3.5% stop: 0 of 115 nights
+    worst 3 nights: 06-22 -1.52%, 07-16 -1.25%, 07-22 -1.19%  | best 3: 06-17 +1.12%, 06-12 +1.32%, 04-07 +2.46%
+
+====================================================================================================
+WHERE DOES THE RETURN COME FROM? average gross return, by part of the day (no fees)
+            overnight 16:00->9:30    daytime 9:30->16:00   buy&hold total (sum)
+  MUUSDT          +0.805% (n=113)           +0.118% (n=113) overnight +91.0% / day +13.3%
+  NVDAUSDT        +0.247% (n=120)           -0.005% (n=120) overnight +29.7% / day -0.6%
+  SPYUSDT         +0.111% (n=114)           +0.023% (n=114) overnight +12.7% / day +2.6%

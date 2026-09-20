@@ -1,0 +1,36 @@
+========================================================================================================
+SANDISK (SNDKUSDT) ON THE REAL BINANCE PERP  vs  MU, same engine, same nights  (fees 0.10% + real funding, live 3.5% stop)
+========================================================================================================
+
+FIDELITY: SNDK perp vs the real stock overnight move (114 nights): stock avg +0.620% | perp avg +0.664% | correlation 1.000
+
+         entry                      exit                      n  win%    gross  NET avg  t-stat   95% CI of net avg    worst  $/trade* stopped
+SNDK     15:55 (live timing)        9:30 open               114   55%   +0.78%   +0.66%    1.83    [-0.03%, +1.36%]   -3.73%     10.54 32
+SNDK     15:55 (live timing)        9:28 (live timing)      114   57%   +0.82%   +0.71%    1.96    [+0.02%, +1.40%]   -3.73%     11.33 31
+SNDK     16:00 at the close         9:30 open               114   54%   +0.55%   +0.43%    1.20    [-0.27%, +1.13%]   -3.73%      6.88 37
+SNDK     16:00 at the close         9:28 (live timing)      114   55%   +0.59%   +0.48%    1.32    [-0.23%, +1.17%]   -3.73%      7.61 37
+SNDK     16:01 (+1 min)             9:30 open               114   54%   +0.55%   +0.43%    1.20    [-0.26%, +1.13%]   -3.73%      6.88 37
+SNDK     16:05 (+5 min)             9:30 open               114   54%   +0.60%   +0.48%    1.41    [-0.17%, +1.16%]   -3.70%      7.75 35
+MU       15:55 (live timing)        9:30 open               114   53%   +0.81%   +0.67%    1.87    [-0.00%, +1.35%]   -3.78%     10.74 30
+MU       15:55 (live timing)        9:28 (live timing)      114   53%   +0.83%   +0.69%    1.91    [+0.02%, +1.39%]   -3.78%     11.05 30
+MU       16:00 at the close         9:30 open               114   54%   +0.81%   +0.67%    1.90    [+0.01%, +1.33%]   -3.70%     10.71 29
+MU       16:00 at the close         9:28 (live timing)      114   56%   +0.82%   +0.68%    1.91    [+0.00%, +1.35%]   -3.70%     10.85 29
+MU       16:01 (+1 min)             9:30 open               114   54%   +0.84%   +0.70%    1.99    [+0.03%, +1.38%]   -3.70%     11.22 29
+MU       16:05 (+5 min)             9:30 open               114   55%   +0.88%   +0.74%    2.18    [+0.08%, +1.38%]   -3.66%     11.80 29
+  (* $ per trade at the live MU size: $1,600 notional)
+
+========================================================================================================
+STABILITY (buy 16:00 -> sell 9:30, net):
+
+  SNDK
+    first half +0.98% | second half -0.12% | weeknights +0.31% (n=91) | weekends +0.92% (n=23)
+    by month: 04 +1.71% (n=18) | 05 +0.16% (n=20) | 06 +1.00% (n=21) | 07 -0.91% (n=22) | 08 +0.47% (n=21) | 09 +0.36% (n=12)
+    stop-outs 37 of 114 nights | worst 3: -3.73%, -3.70%, -3.70% | best 3: +8.61%, +10.34%, +16.52%
+
+  MU
+    first half +1.41% | second half -0.07% | weeknights +0.51% (n=91) | weekends +1.29% (n=23)
+    by month: 04 +0.82% (n=18) | 05 +1.92% (n=20) | 06 +1.11% (n=21) | 07 -0.57% (n=22) | 08 +0.44% (n=21) | 09 +0.24% (n=12)
+    stop-outs 29 of 114 nights | worst 3: -3.70%, -3.66%, -3.64% | best 3: +8.72%, +10.11%, +17.43%
+
+HOW MUCH WOULD SNDK ADD ON TOP OF MU?  overnight correlation (perp, 114 nights): 0.91 | both up 64 / both down 39 of 114 nights (90% same direction)
+  nights where SNDK fell 3.5%+ overnight: 21 -- MU also fell on 21 of them

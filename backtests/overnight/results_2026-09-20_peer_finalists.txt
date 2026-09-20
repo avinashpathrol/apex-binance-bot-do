@@ -1,0 +1,29 @@
+======================================================================================================================
+1) THE ACTUAL BINANCE PERPS  (listing, liquidity, real funding cost per overnight hold)
+         symbol      listed     avg $ volume/day funding/weeknight  funding/weekend  funding/event
+  MU     MUUSDT      2026-04-07          $392.6M          +0.028%          +0.133%       +0.0152%
+  SNDK   SNDKUSDT    2026-04-07         $1623.5M          +0.034%          +0.022%       +0.0101%
+  WDC    WDCUSDT     2026-05-26           $11.3M          +0.030%          -0.005%       +0.0056%
+  LITE   LITEUSDT    2026-05-15           $35.5M          +0.029%          +0.111%       +0.0135%
+  CRDO   CRDOUSDT    2026-06-08            $5.6M          +0.014%          +0.025%       +0.0049%
+  MRVL   MRVLUSDT    2026-05-15           $77.8M          +0.027%          +0.054%       +0.0105%
+
+======================================================================================================================
+2) EDGE WITH REAL FUNDING, EARNINGS NIGHTS SEPARATED  (stock data, 2 years or since listing; net = 0.10% fees + real funding)
+         nights | gross avg     t   NET avg     t |  #earn   earn avg % of profit | NET ex-earn t ex-earn
+  MU        500 |   +0.392%   2.9   +0.241%   1.8 |      8      +3.1%         12% |    +0.197%       1.6
+  SNDK      400 |   +0.549%   2.9   +0.418%   2.2 |      6      -0.5%         -1% |    +0.434%       2.4
+  WDC       500 |   +0.344%   2.8   +0.222%   1.8 |      8      +1.2%          6% |    +0.208%       1.8
+  LITE      500 |   +0.501%   3.6   +0.353%   2.5 |      8      +6.5%         21% |    +0.256%       1.9
+  CRDO      500 |   +0.473%   2.8   +0.357%   2.1 |      8      +5.4%         18% |    +0.277%       1.9
+  MRVL      500 |   +0.360%   2.5   +0.227%   1.6 |      8      -1.1%         -5% |    +0.250%       1.9
+
+======================================================================================================================
+3) TAIL RISK OVERNIGHT (stock close -> next open)  and  "do they move together with MU?"
+         nights <= -3.5% nights >= +3.5%             worst 3 nights on the 8 MU-earnings nights: avg move / same direction as MU
+  MU                  7%             11%  -13.3%, -10.8%, -8.1%      (the reference)
+  SNDK               12%             18%  -13.1%, -11.7%, -9.1%      +3.1% avg | same direction on 6 of 6
+  WDC                 6%              9%  -17.4%, -9.2%, -7.8%       +2.2% avg | same direction on 7 of 8
+  LITE                9%             15%  -8.1%, -7.3%, -7.2%        +1.1% avg | same direction on 7 of 8
+  CRDO                9%             13%  -15.2%, -13.1%, -11.6%     +1.6% avg | same direction on 7 of 8
+  MRVL                7%             11%  -17.8%, -16.4%, -12.9%     +2.2% avg | same direction on 6 of 8

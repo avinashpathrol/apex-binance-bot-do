@@ -1,0 +1,87 @@
+==========================================================================================================================
+BINANCE SPYUSDT perp (S&P 500 ETF), Apr-Sep 2026, real Binance data   |   115 usable trading days   2026-04-07 -> 2026-09-18   (years: 2026)
+average first-candle range (= stop distance): 0.172% of price | EMA12 says long on 49% of days
+
+--- round-trip cost: gross 0% ------------------------------------------------------------
+signal                   exit     n   win%  avg/trade      t    avg R     PF
+EMA12 (the ad)           V0     115  51.3%    -0.001%  -0.01        -   1.00
+EMA12 (the ad)           V1     115  16.5%    -0.036%  -1.61   -0.278   0.65
+EMA12 (the ad)           V2     115  25.2%    -0.009%  -0.50   +0.059   1.11
+EMA12 (the ad)           V3     115  32.2%    +0.002%   0.19   +0.018   1.05
+candle colour (paper)    V0     114  51.8%    +0.008%   0.17        -   1.04
+candle colour (paper)    V1     114  18.4%    -0.036%  -1.51   -0.294   0.63
+always long              V0     115  55.7%    +0.032%   0.66        -   1.18
+always long              V1     115  13.9%    -0.003%  -0.13   -0.139   0.79
+always short             V0     115  44.3%    -0.032%  -0.66        -   0.85
+always short             V1     115  10.4%    -0.029%  -1.32   +0.174   1.25
+reversed EMA12           V0     115  48.7%    +0.001%   0.01        -   1.00
+reversed EMA12           V1     115   7.8%    +0.004%   0.20   +0.313   1.55
+random direction         V0     115           -0.001%   (95% of random-direction draws land in -0.098% .. +0.094%)
+random direction         V1     115           -0.016%   (95% of random-direction draws land in -0.046% .. +0.014%)
+
+--- round-trip cost: 0.02% (futures/QQQ-like) ------------------------------------------------------------
+signal                   exit     n   win%  avg/trade      t    avg R     PF
+EMA12 (the ad)           V0     115  47.8%    -0.021%  -0.42        -   0.90
+EMA12 (the ad)           V1     115  16.5%    -0.056%  -2.50   -0.513   0.49
+EMA12 (the ad)           V2     115  22.6%    -0.029%  -1.59   -0.175   0.76
+EMA12 (the ad)           V3     115  27.8%    -0.018%  -1.50   -0.216   0.58
+candle colour (paper)    V0     114  50.0%    -0.012%  -0.23        -   0.94
+candle colour (paper)    V1     114  17.5%    -0.056%  -2.35   -0.497   0.49
+always long              V0     115  52.2%    +0.012%   0.25        -   1.07
+always long              V1     115  13.0%    -0.023%  -1.06   -0.508   0.49
+always short             V0     115  42.6%    -0.052%  -1.06        -   0.77
+always short             V1     115  10.4%    -0.049%  -2.23   -0.211   0.80
+reversed EMA12           V0     115  47.0%    -0.019%  -0.39        -   0.91
+reversed EMA12           V1     115   7.0%    -0.016%  -0.76   -0.206   0.81
+random direction         V0     115           -0.021%   (95% of random-direction draws land in -0.118% .. +0.074%)
+random direction         V1     115           -0.036%   (95% of random-direction draws land in -0.066% .. -0.006%)
+
+--- round-trip cost: 0.10% (Binance fees) ------------------------------------------------------------
+signal                   exit     n   win%  avg/trade      t    avg R     PF
+EMA12 (the ad)           V0     115  40.0%    -0.101%  -2.04        -   0.61
+EMA12 (the ad)           V1     115  13.9%    -0.136%  -6.05   -1.449   0.22
+EMA12 (the ad)           V2     115  12.2%    -0.109%  -5.93   -1.112   0.28
+EMA12 (the ad)           V3     115  13.0%    -0.098%  -8.28   -1.153   0.11
+candle colour (paper)    V0     114  41.2%    -0.092%  -1.85        -   0.63
+candle colour (paper)    V1     114  14.9%    -0.136%  -5.69   -1.312   0.23
+always long              V0     115  45.2%    -0.068%  -1.37        -   0.71
+always long              V1     115  11.3%    -0.103%  -4.80   -1.985   0.17
+always short             V0     115  35.7%    -0.132%  -2.69        -   0.52
+always short             V1     115   8.7%    -0.129%  -5.85   -1.748   0.30
+reversed EMA12           V0     115  40.9%    -0.099%  -2.01        -   0.61
+reversed EMA12           V1     115   6.1%    -0.096%  -4.59   -2.283   0.25
+random direction         V0     115           -0.101%   (95% of random-direction draws land in -0.198% .. -0.006%)
+random direction         V1     115           -0.116%   (95% of random-direction draws land in -0.146% .. -0.086%)
+
+--- does the EMA12 signal add anything beyond simply being long a rising market?  (paired per-day difference vs 'always long', gross) ---
+V0: EMA12 mean -0.001% | always-long mean +0.032% | signal adds -0.033% per trade (paired t = -0.49, n=115) -> long-bias explains nan% of the gross edge
+V1: EMA12 mean -0.036% | always-long mean -0.003% | signal adds -0.033% per trade (paired t = -2.10, n=115) -> long-bias explains nan% of the gross edge
+
+--- the ad's signal by year (net of 0.02%% costs)   V1 = candle stop, V2 = EMA-trail ---
+V1: 2026 n=115 -0.056% R-0.51
+V2: 2026 n=115 -0.029% R-0.18
+
+--- bootstrap to the ad's 1,448 trades from THIS data's R-multiples (0.02%% cost).  Ad claims +982%% and ~-20%% max drawdown ---
+V1 avg R -0.513 | 0.5%/trade -> median -98%, DD 98%, P(>=982%) 0% || 1.0%/trade -> median -100%, DD 100%, P(>=982%) 0% || 2.0%/trade -> median -100%, DD 100%, P(>=982%) 0%
+V2 avg R -0.175 | 0.5%/trade -> median -77%, DD 80%, P(>=982%) 0% || 1.0%/trade -> median -96%, DD 97%, P(>=982%) 0% || 2.0%/trade -> median -100%, DD 100%, P(>=982%) 0%
+V3 avg R -0.216 | 0.5%/trade -> median -80%, DD 80%, P(>=982%) 0% || 1.0%/trade -> median -96%, DD 96%, P(>=982%) 0% || 2.0%/trade -> median -100%, DD 100%, P(>=982%) 0%
+
+==========================================================================================================================
+ROBUSTNESS (the ad's EMA12 signal, costs 0.02%)
+V1 R-multiples: median -1.15 | 5th pct -1.51 | 95th pct +3.32 | max +10.2 | best 2% of trades (n=3) contribute -43% of total R; avg R without them -0.751
+V0 (enter 9:35, hold to the close, no stop): avg -0.021%/trade, daily sd 0.53%, win 47.8%
+  bootstrap to 1,448 trades at a fixed leverage on V0 (no dependence on R tails):
+    1.0x leverage: median total return -27%, median max drawdown 34%, 10th-90th pct of total return -44% .. -5%, P(>=+982%) = 0%
+    1.5x leverage: median total return -41%, median max drawdown 48%, 10th-90th pct of total return -58% .. -11%, P(>=+982%) = 0%
+    2.0x leverage: median total return -50%, median max drawdown 59%, 10th-90th pct of total return -70% .. -17%, P(>=+982%) = 0%
+    3.0x leverage: median total return -66%, median max drawdown 73%, 10th-90th pct of total return -85% .. -20%, P(>=+982%) = 0%
+  by year (V0 avg per trade / win%, net 0.02%):
+   2026: -0.021% (48%, n=115)
+Traceback (most recent call last):
+  File "orb_backtest.py", line 286, in <module>
+    main()
+  File "orb_backtest.py", line 239, in main
+    extra(days, both, sig)
+  File "orb_backtest.py", line 279, in extra
+    print('  2019-2022: %+.3f%%/trade (t=%.2f, n=%d)  |  2023-2026: %+.3f%%/trade (t=%.2f, n=%d)' % (100 * sum(a) / len(a), tstat(a), len(a), 100 * sum(b) / len(b), tstat(b), len(b)))
+ZeroDivisionError: division by zero

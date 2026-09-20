@@ -1,0 +1,17 @@
+==============================================================================================================
+REPLAY of the real Sentinel engine on SNDKUSDT 1-min data vs analyze.run_night (same nights, buy 15:55 / sell 9:28 ET, 3.5% stop, 0.10% fees, real funding)
+==============================================================================================================
+
+mode=open  (165700 polls, 46s)   nights: engine 113 | backtest 113 | matched 113
+  nights with NO stop in either:  82   max |net diff| = 0.008246% of notional   (0 = identical P&L math)
+  stop-outs: engine 30 | backtest 31 | both 30
+  on nights both stopped: engine exit is worse than the backtest by avg 0.206% of notional (poll/gap slippage the backtest ignores)
+  mean net per night:  engine +0.566%   backtest +0.622%   (difference -0.056%)
+  late exits: 0 | reasons: {'Market Open': 83, 'Stop Loss': 30}
+
+mode=wick  (329852 polls, 91s)   nights: engine 113 | backtest 113 | matched 113
+  nights with NO stop in either:  82   max |net diff| = 0.008246% of notional   (0 = identical P&L math)
+  stop-outs: engine 31 | backtest 31 | both 31
+  on nights both stopped: engine exit is worse than the backtest by avg 0.294% of notional (poll/gap slippage the backtest ignores)
+  mean net per night:  engine +0.540%   backtest +0.622%   (difference -0.081%)
+  late exits: 0 | reasons: {'Market Open': 82, 'Stop Loss': 31}
