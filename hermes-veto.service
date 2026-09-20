@@ -1,0 +1,15 @@
+[Unit]
+Description=Hermes veto-check service for Apex pre-trade gating
+After=network.target hermes-gateway.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/lib/hermes-agent/venv/bin/python3 /root/hermes_veto_service.py
+WorkingDirectory=/root
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/root/.hermes/logs/veto-service.log
+StandardError=append:/root/.hermes/logs/veto-service.err.log
+
+[Install]
+WantedBy=multi-user.target
