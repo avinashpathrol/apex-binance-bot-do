@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Sentinel">
+<title>Sentinel</title>
+<style>
+:root{
+  --bg:#0b0e14; --card:#141822; --card2:#1b202c; --border:#262c3a;
+  --text:#e8eaf0; --muted:#8a90a3; --accent:#6366f1;
+  --green:#22c55e; --red:#ef4444; --yellow:#f59e0b;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;padding-bottom:40px}
+.wrap{max-width:900px;margin:0 auto}
+#header{padding:16px 16px 12px;padding-top:max(16px,env(safe-area-inset-top));border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg);z-index:10}
+.hdr-top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.hdr-title{font-size:16px;font-weight:800;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.live-dot{width:7px;height:7px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.paper-tag{font-size:10px;font-weight:800;letter-spacing:.6px;padding:2px 8px;border-radius:10px;background:rgba(245,158,11,.15);color:var(--yellow)}
+.sub{font-size:11px;color:var(--muted);margin-top:6px}
+.btn{background:var(--card2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:5px 10px;font-size:13px;cursor:pointer}
+.tabs{display:flex;gap:8px;margin-top:10px;overflow-x:auto}
+.tab{flex:1;min-width:64px;background:var(--card2);border:1px solid var(--border);color:var(--muted);border-radius:10px;padding:8px 0;text-align:center;font-size:12px;font-weight:700;cursor:pointer}
+.tab.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.card{background:var(--card);border:1px solid var(--border);border-radius:14px;margin:12px 16px;padding:16px}
+.card-title{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:10px}
+.badge{display:inline-flex;align-items:center;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:800}
+.badge.long{background:rgba(34,197,94,.15);color:var(--green)}
+.badge.flat{background:rgba(138,144,163,.15);color:var(--muted)}
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-top:12px}
+.metric{background:var(--card2);border-radius:10px;padding:10px}
+.metric .label{font-size:10px;color:var(--muted);text-transform:uppercase;margin-bottom:3px}
+.metric .val{font-size:16px;font-weight:700}
+.stats-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px}
+.stat{background:var(--card2);border-radius:10px;padding:12px 8px;text-align:center}
+.stat .num{font-size:19px;font-weight:800}
+.stat .lbl{font-size:10px;color:var(--muted);margin-top:2px}
+.pos{color:var(--green)} .neg{color:var(--red)} .mut{color:var(--muted)}
+.poshead{display:flex;justify-content:space-between;align-items:center}
+.poshead b{font-size:15px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{font-size:10px;color:var(--muted);text-transform:uppercase;text-align:right;padding:6px 6px;border-bottom:1px solid var(--border);font-weight:700}
+td{text-align:right;padding:8px 6px;border-bottom:1px solid var(--border);white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+tr:last-child td{border-bottom:none}
+.tscroll{overflow-x:auto}
+.cal-nav{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
+.cal-dow{font-size:9px;color:var(--muted);text-align:center;padding-bottom:4px;font-weight:700}
+.cal-day{background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:6px 4px;min-height:52px}
+.cal-day.profit{border-color:rgba(34,197,94,.4);background:rgba(34,197,94,.08)}
+.cal-day.loss{border-color:rgba(239,68,68,.4);background:rgba(239,68,68,.08)}
+.cal-day.empty{background:transparent;border-color:transparent}
+.cal-num{font-size:9px;font-weight:700;color:var(--muted)}
+.cal-pnl{font-size:10px;font-weight:800;margin-top:4px;white-space:nowrap}
+@media (max-width:480px){
+  .cal-pnl{font-size:9px} .cal-day{padding:5px 2px;min-height:46px}
+  th,td{padding-left:4px;padding-right:4px} table{font-size:11px} .card{margin:12px 12px;padding:14px}
+  .hide-sm{display:none}
+}
+.note{font-size:11px;color:var(--muted);line-height:1.55}
+.note b{color:var(--text)}
+.err{font-size:11px;color:var(--yellow);margin-top:8px}
+.empty-msg{text-align:center;padding:16px;color:var(--muted);font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div id="header">
+  <div class="hdr-top">
+    <div class="hdr-title">📝 Sentinel <span class="paper-tag">PAPER — NO REAL ORDERS</span><div class="live-dot" id="live-dot"></div></div>
+    <button class="btn" onclick="loadAll()">🔄</button>
+  </div>
+  <div class="sub" id="hdr-sub">Overnight hold · MU's rules · $100 stake at each ticker's max leverage</div>
+  <div class="tabs" id="tabs"></div>
+</div>
+
+<div id="content"><div class="empty-msg" id="loading">Loading…</div></div>
+</div>
+
+<script>
+const SD = '/data_sentinel.json', MUD = '/data_overnight_mu.json';
+// net avg per night after fees+funding, 2 years of stock data (2026-09-20 backtest) -- reference only
+const BACKTEST = {SNDK: 0.42, WDC: 0.22, LITE: 0.35, MU: 0.24};
+let S = null, MU = null, tab = 'ALL', calY, calM;
+
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const num = (x, d = 2) => x == null || isNaN(x) ? '—' : Number(x).toLocaleString('en-US', {minimumFractionDigits: d, maximumFractionDigits: d});
+// sign is dropped when the value rounds to zero, so a -$0.30 day never shows as "−$0"
+const sgn = (x, d) => Number(Math.abs(x).toFixed(d)) === 0 ? '' : (x < 0 ? '−' : '+');
+const usd = (x, d = 2) => x == null || isNaN(x) ? '—' : (x < 0 ? '−$' : '$') + num(Math.abs(x), d);
+const pnl = (x, d = 2) => x == null || isNaN(x) ? '—' : sgn(x, d) + '$' + num(Math.abs(x), d);
+const pct = (x, d = 2) => x == null || isNaN(x) ? '—' : sgn(x, d) + num(Math.abs(x), d) + '%';
+const cls = x => x == null ? 'mut' : (x >= 0 ? 'pos' : 'neg');
+const ago = iso => { if (!iso) return '—'; const s = (Date.now() - new Date(iso).getTime()) / 1000; if (s < 90) return 'just now'; if (s < 5400) return Math.round(s / 60) + ' min ago'; if (s < 172800) return Math.round(s / 3600) + ' h ago'; return Math.round(s / 86400) + ' d ago'; };
+const et = iso => iso ? new Date(iso).toLocaleString('en-US', {timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'}) + ' ET' : '—';
+
+async function getJSON(u) { const r = await fetch(u + '?t=' + Date.now(), {cache: 'no-store'}); if (!r.ok) throw new Error(u + ' ' + r.status); return r.json(); }
+
+async function loadAll() {
+  try {
+    S = await getJSON(SD);
+    document.getElementById('live-dot').style.background = 'var(--green)';
+  } catch (e) { document.getElementById('live-dot').style.background = 'var(--red)'; document.getElementById('loading').textContent = 'Sentinel data not available yet (' + e.message + ')'; return; }
+  try { MU = await getJSON(MUD); } catch (e) { MU = null; }
+  render();
+}
+
+// ---- stats helpers (same math for paper and MU so the comparison is apples to apples) ----
+function statsOf(trades) {
+  const n = trades.length;
+  if (!n) return {n: 0};
+  const pcts = trades.map(t => t.p), nets = trades.map(t => t.net);
+  const wins = nets.filter(x => x > 0).length;
+  return {n, win: wins / n * 100, avgPct: pcts.reduce((a, b) => a + b, 0) / n, net: nets.reduce((a, b) => a + b, 0), stops: trades.filter(t => t.stop).length};
+}
+const paperTrades = sym => (sym === 'ALL' ? Object.values(S.symbols).flatMap(v => v.trades) : (S.symbols[sym] || {trades: []}).trades)
+  .map(t => Object.assign({}, t, {p: t.net_pct_notional, stop: t.stopped}));
+const muTrades = () => (MU && MU.trades ? MU.trades : []).map(t => ({net: t.net, p: t.net / (t.entry_price * t.qty) * 100, stop: /stop/i.test(t.reason || ''), closed_at: t.closed_at, reason: t.reason,
+  base: 'MU', entry_price: t.entry_price, exit_price: t.exit_price}));
+
+function render() {
+  const syms = Object.keys(S.symbols);
+  document.getElementById('tabs').innerHTML = ['ALL'].concat(syms).map(k => {
+    const label = k === 'ALL' ? 'All' : S.symbols[k].base;
+    return `<div class="tab ${k === tab ? 'active' : ''}" onclick="setTab('${k}')">${esc(label)}</div>`;
+  }).join('');
+  const nx = S.next_entry_at ? 'Next entry window: ' + et(S.next_entry_at) : '';
+  document.getElementById('hdr-sub').textContent = `Overnight hold · MU's rules · $${S.rules.stake} stake at each ticker's max leverage · updated ${ago(S.generated_at)}` + (nx ? ' · ' + nx : '');
+  const list = tab === 'ALL' ? syms : [tab];
+  let h = '';
+  h += list.map(posCard).join('');
+  h += perfCard();
+  if (tab === 'ALL') h += compareCard();
+  h += calendarCard();
+  h += tradesCard();
+  h += rulesCard();
+  document.getElementById('content').innerHTML = h;
+  buildCalendar();
+}
+
+function setTab(k) { tab = k; render(); }
+
+function posCard(sym) {
+  const v = S.symbols[sym], p = v.position;
+  const head = `<div class="poshead"><b>${esc(v.base)} <span class="mut" style="font-weight:500;font-size:12px">${esc(v.name)}</span></b>` +
+    (p ? '<span class="badge long">LONG (paper)</span>' : '<span class="badge flat">FLAT</span>') + '</div>';
+  let body;
+  if (p) {
+    const stopDist = p.current_bid ? (p.current_bid / p.sl_price - 1) * 100 : null;
+    body = `<div class="metrics">
+      <div class="metric"><div class="label">Unrealized</div><div class="val ${cls(p.unrealized_pnl)}">${pnl(p.unrealized_pnl)}</div><div class="${cls(p.unrealized_pct_notional)}" style="font-size:11px">${pct(p.unrealized_pct_notional)} of notional</div></div>
+      <div class="metric"><div class="label">Entry → now (bid)</div><div class="val">${usd(p.entry_price)}</div><div class="mut" style="font-size:11px">now ${usd(p.current_bid)}</div></div>
+      <div class="metric"><div class="label">Stop (3.5%)</div><div class="val" style="color:var(--red)">${usd(p.sl_price)}</div><div class="mut" style="font-size:11px">${stopDist == null ? '' : num(stopDist, 1) + '% above stop'}</div></div>
+      <div class="metric"><div class="label">Size</div><div class="val">${usd(p.notional, 0)}</div><div class="mut" style="font-size:11px">$${num(p.stake, 0)} × ${p.leverage}x</div></div>
+    </div>
+    <div class="note" style="margin-top:10px">Opened ${et(p.opened_at)} at a simulated fill (${esc(p.entry_fill_source)}, slippage ${num(p.entry_slip_bps, 1)} bp). Exits at the next US open (~9:28 AM ET). Worst/best since entry: ${pct((p.low_bid / p.entry_price - 1) * 100)} / ${pct((p.high_bid / p.entry_price - 1) * 100)}.</div>`;
+  } else {
+    body = `<div class="note" style="margin-top:10px">No open paper position. Max leverage now <b>${v.leverage ? v.leverage + 'x' : '—'}</b> → notional <b>${v.notional_target ? usd(v.notional_target, 0) : '—'}</b> per trade. ${esc(v.note)}.</div>`;
+  }
+  return `<div class="card"><div class="card-title">${tab === 'ALL' ? 'Position' : 'Current position'}</div>${head}${body}${v.error ? `<div class="err">⚠ feed issue: ${esc(v.error)}</div>` : ''}</div>`;
+}
+
+function perfCard() {
+  const st = statsOf(paperTrades(tab));
+  const title = tab === 'ALL' ? 'Performance — all three (paper)' : `Performance — ${esc(S.symbols[tab].base)} (paper)`;
+  if (!st.n) return `<div class="card"><div class="card-title">${title}</div><div class="empty-msg">No completed paper trades yet. First entry is at the next 3:55 PM ET window; the result lands after the next open.</div></div>`;
+  const bt = tab === 'ALL' ? null : BACKTEST[S.symbols[tab].base];
+  return `<div class="card"><div class="card-title">${title}</div><div class="stats-row">
+    <div class="stat"><div class="num">${st.n}</div><div class="lbl">Trades</div></div>
+    <div class="stat"><div class="num">${num(st.win, 0)}%</div><div class="lbl">Win rate</div></div>
+    <div class="stat"><div class="num ${cls(st.net)}">${pnl(st.net, 0)}</div><div class="lbl">Net P&amp;L (paper $)</div></div>
+    <div class="stat"><div class="num ${cls(st.avgPct)}">${pct(st.avgPct, 2)}</div><div class="lbl">Avg / night (% of notional)</div></div>
+    <div class="stat"><div class="num">${st.stops}</div><div class="lbl">Stop-outs</div></div>
+  </div>${bt != null ? `<div class="note" style="margin-top:10px">Backtest expectation for ${esc(S.symbols[tab].base)}: <b>${pct(bt)}</b> avg net per night (2 yrs of stock data). Judge this page in % of notional, not dollars — the dollar figures are sized for $100 at max leverage, far larger than the live account.</div>` : ''}</div>`;
+}
+
+function compareCard() {
+  const rows = [];
+  const mu = statsOf(muTrades());
+  if (mu.n) rows.push(['MU (LIVE)', mu, BACKTEST.MU, true]);
+  Object.keys(S.symbols).forEach(k => { const st = statsOf(paperTrades(k)); rows.push([S.symbols[k].base + ' (paper)', st, BACKTEST[S.symbols[k].base], false]); });
+  return `<div class="card"><div class="card-title">Paper vs MU live — same rules, apples to apples</div><div class="tscroll"><table>
+    <tr><th>Ticker</th><th>Trades</th><th>Win %</th><th>Avg/night</th><th>Backtest</th><th>Stops</th></tr>
+    ${rows.map(([name, st, bt, live]) => `<tr><td><b>${esc(name)}</b>${live ? ' <span class="mut hide-sm">real money</span>' : ''}</td><td>${st.n || 0}</td><td>${st.n ? num(st.win, 0) + '%' : '—'}</td>
+      <td class="${cls(st.avgPct)}">${st.n ? pct(st.avgPct) : '—'}</td><td class="mut">${pct(bt)}</td><td>${st.n ? st.stops : '—'}</td></tr>`).join('')}
+  </table></div><div class="note" style="margin-top:8px">Avg/night = mean net result per trade as % of position size (after fees + funding), so tickers with different leverage compare fairly. With only a handful of nights this is mostly noise — a few weeks of trades are needed before it means anything (MU's own results swing a lot night to night).</div></div>`;
+}
+
+function calendarCard() {
+  return `<div class="card"><div class="card-title">Daily paper P&amp;L</div>
+    <div class="cal-nav"><button class="btn" onclick="calShift(-1)">‹</button><div id="cal-label" style="font-size:13px;font-weight:700"></div><button class="btn" onclick="calShift(1)">›</button></div>
+    <div class="cal-grid" id="cal-dow"></div><div class="cal-grid" id="cal-grid" style="margin-top:4px"></div></div>`;
+}
+function calShift(d) { calM += d; if (calM < 0) { calM = 11; calY--; } if (calM > 11) { calM = 0; calY++; } buildCalendar(); }
+function buildCalendar() {
+  const g = document.getElementById('cal-grid'); if (!g) return;
+  if (calY === undefined) { const n = new Date(); calY = n.getFullYear(); calM = n.getMonth(); }
+  const daily = {};
+  paperTrades(tab).forEach(t => { if (t.exit_day) daily[t.exit_day] = (daily[t.exit_day] || 0) + t.net; });
+  const names = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  document.getElementById('cal-label').textContent = names[calM] + ' ' + calY;
+  document.getElementById('cal-dow').innerHTML = ['S','M','T','W','T','F','S'].map(d => `<div class="cal-dow">${d}</div>`).join('');
+  const first = new Date(calY, calM, 1).getDay(), dim = new Date(calY, calM + 1, 0).getDate();
+  let h = '';
+  for (let i = 0; i < first; i++) h += '<div class="cal-day empty"></div>';
+  for (let d = 1; d <= dim; d++) {
+    const key = `${calY}-${String(calM + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`, v = daily[key];
+    h += `<div class="cal-day ${v === undefined ? '' : (v >= 0 ? 'profit' : 'loss')}"><div class="cal-num">${d}</div>${v === undefined ? '' : `<div class="cal-pnl ${cls(v)}">${pnl(v, 0)}</div>`}</div>`;
+  }
+  g.innerHTML = h;
+}
+
+function tradesCard() {
+  const ts = paperTrades(tab).sort((a, b) => (b.closed_at || '').localeCompare(a.closed_at || '')).slice(0, 40);
+  if (!ts.length) return `<div class="card"><div class="card-title">Recent paper trades</div><div class="empty-msg">No trades yet</div></div>`;
+  return `<div class="card"><div class="card-title">Recent paper trades</div><div class="tscroll"><table>
+    <tr><th>Closed</th><th>Ticker</th><th>Entry → Exit</th><th>Net $</th><th>% notional</th><th>Why</th></tr>
+    ${ts.map(t => `<tr><td>${esc((t.closed_at || '').slice(0, 10))}</td><td><b>${esc(t.base)}</b> <span class="mut">${t.leverage}x</span></td>
+      <td>${num(t.entry_price)} → ${num(t.exit_price)}</td><td class="${cls(t.net)}">${pnl(t.net)}</td><td class="${cls(t.p)}">${pct(t.p)}</td>
+      <td class="mut">${esc(t.reason)}${t.late ? ' ⚠' : ''}</td></tr>`).join('')}
+  </table></div></div>`;
+}
+
+function rulesCard() {
+  const r = S.rules;
+  return `<div class="card"><div class="card-title">How this paper account works</div><div class="note">
+    <b>Same rules as MU:</b> buy at market ${esc(r.entry)}; hard stop <b>${num(r.sl_pct, 1)}%</b> below the fill checked every ~30 s in software (no exchange stop); sell at the open (${esc(r.exit)}); no trailing stop.<br>
+    <b>Costs:</b> ${num(r.fee_per_side_pct, 2)}% fee per side + real Binance funding while held. Fills are simulated by walking the live order book, so thin tickers pay realistic slippage.<br>
+    <b>Not modeled:</b> liquidation. Like MU's live cross-margin account, P&amp;L = position size × return, so a stop-out can lose more than the $100 stake.<br>
+    <b>No real orders</b> are ever placed by Sentinel — it only reads prices. Ticker choice comes from the 2026-09-20 peer screen (SNDK closest to MU; WDC and LITE alternates).
+  </div>${(S.skips && S.skips.length) ? `<div class="note" style="margin-top:8px">Recent skips: ${S.skips.slice(-4).map(s => esc(s.day + ' ' + s.symbol.replace('USDT', '') + ' — ' + s.why)).join('; ')}</div>` : ''}</div>`;
+}
+
+loadAll();
+setInterval(loadAll, 15000);
+</script>
+</body>
+</html>

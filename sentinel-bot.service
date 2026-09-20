@@ -1,0 +1,22 @@
+[Unit]
+Description=Sentinel overnight PAPER trader (SNDK/WDC/LITE) - places no orders
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/binance-bot/apex-binance-bot-do
+ExecStart=/usr/bin/python3 sentinel_bot.py
+Restart=always
+RestartSec=15
+EnvironmentFile=/root/binance-bot/apex-binance-bot-do/.env
+# keep it from ever starving the live bots on this 1GB box
+MemoryMax=150M
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
