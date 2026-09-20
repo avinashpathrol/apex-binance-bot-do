@@ -71,6 +71,17 @@ body {
   text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px;
 }
 
+/* Hermes Log page */
+.hlog-entry{background:var(--card2);border:1px solid var(--border);border-radius:12px;padding:12px;margin-bottom:8px}
+.hlog-entry-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;gap:8px}
+.hlog-badge{font-size:10px;font-weight:700;padding:3px 9px;border-radius:20px;white-space:nowrap}
+.hlog-badge.applied{background:rgba(96,165,250,.18);color:#60a5fa}
+.hlog-badge.validated{background:rgba(34,197,94,.18);color:var(--green)}
+.hlog-badge.reverted{background:rgba(239,68,68,.18);color:var(--red)}
+.hlog-entry-date{font-size:11px;color:var(--muted)}
+.hlog-entry-body{font-size:12px;color:var(--text);line-height:1.5}
+.hlog-empty{font-size:12px;color:var(--muted);text-align:center;padding:20px 0}
+
 /* Signal card */
 .signal-badge {
   display: inline-flex; align-items: center; gap: 6px;
@@ -294,6 +305,7 @@ body {
   <button class="tab" onclick="showPage('pnl')">P&amp;L</button>
   <button class="tab" onclick="showPage('gex')">GEX</button>
   <button class="tab" onclick="showPage('crypto')">🪙 Crypto 0DTE</button>
+  <button class="tab" onclick="showPage('hermes');loadHermesLog()">🧠 Hermes Log</button>
 </div>
 
 <div class="next-banner" id="next-banner">
@@ -588,6 +600,27 @@ body {
   </div>
 </div>
 
+<!-- ═══ HERMES LOG PAGE ═══ -->
+<div class="page" id="page-hermes">
+  <div class="card" style="padding:12px 16px">
+    <div style="font-size:11px;color:var(--muted);line-height:1.6">
+      Hermes reviews SPY signals and BTC/ETH paper trades weekly and writes a plain-English
+      analysis below. It doesn't change anything automatically yet for SPY/crypto (unlike Apex) —
+      this section is ready and will show real changes + a health check once that's live.
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Changes &amp; Health Check</div>
+    <div id="hlog-changes"><div class="hlog-empty">Loading…</div></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Weekly Analysis</div>
+    <div id="hlog-reports"><div class="hlog-empty">Loading…</div></div>
+  </div>
+</div>
+
 <!-- ═══ REGISTER MODAL ═══ -->
 <div class="modal-bg" id="register-modal" onclick="closeModalIfBg(event)">
   <div class="modal">
@@ -654,6 +687,39 @@ body {
 
 <script>
 const API = '/spy-api';  // nginx will proxy to localhost:5001
+
+// ── Authenticated write requests ────────────────────────────────────────────
+// nginx requires login (Basic Auth) on POST/PUT to this API, added 2026-09-18
+// -- reads stay open. Never hardcode the password here: anyone could view
+// this file's source and read it out, which would defeat the whole point of
+// requiring login. Instead: try the request, and if the server says 401,
+// prompt for credentials once, remember them for next time (only if they
+// actually worked), and retry. Standard browser Basic Auth caching would
+// normally handle this on its own, but that only reliably kicks in for
+// top-level navigation, not fetch() calls -- so this does it explicitly.
+function getStoredAuth() {
+  try { return localStorage.getItem('apex_dash_auth') || ''; } catch (e) { return ''; }
+}
+function setStoredAuth(v) {
+  try { localStorage.setItem('apex_dash_auth', v); } catch (e) {}
+}
+async function authedFetch(url, options = {}) {
+  options.headers = Object.assign({}, options.headers);
+  let auth = getStoredAuth();
+  if (auth) options.headers['Authorization'] = 'Basic ' + auth;
+  let res = await fetch(url, options);
+  if (res.status === 401) {
+    const user = prompt('Dashboard login required — username:', 'apex');
+    if (user === null) return res;
+    const pass = prompt('Password:');
+    if (pass === null) return res;
+    auth = btoa(user + ':' + pass);
+    options.headers['Authorization'] = 'Basic ' + auth;
+    res = await fetch(url, options);
+    if (res.ok) setStoredAuth(auth);  // only remember credentials that actually worked
+  }
+  return res;
+}
 
 let _signal = null;
 let _state  = null;
@@ -1456,11 +1522,16 @@ async function calcNow() {
 
   const prevTs = _signal?.generated_at || '';
   try {
-    await fetch(`${API}/api/signal`, {
+    const res = await authedFetch(`${API}/api/signal`, {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({action:'calculate'}),
     });
+    if (!res.ok) {
+      if (btn) { btn.textContent = '🔄 Calculate Now'; btn.disabled = false; }
+      showToast(res.status === 401 ? 'Login required or incorrect' : 'Error: server ' + res.status);
+      return;
+    }
 
     // Poll until generated_at changes (signal updated) — up to 45s
     let attempts = 0;
@@ -1569,12 +1640,14 @@ async function submitTrade() {
     showToast('Fill in all fields'); return;
   }
   try {
+    let res;
     if (_editMode) {
-      await fetch(`${API}/api/signal`, {
+      res = await authedFetch(`${API}/api/signal`, {
         method: 'POST',
         headers: {'Content-Type':'application/json'},
         body: JSON.stringify({action:'edit_trade', trade_id: _openTradeId, trade}),
       });
+      if (!res.ok) { showToast(res.status === 401 ? 'Login required or incorrect' : 'Error: server ' + res.status); return; }
       closeModal();
       showToast('✅ Trade corrected!');
     } else {
@@ -1582,11 +1655,12 @@ async function submitTrade() {
       const src = isSPX ? _signal?.spx : _signal;
       trade.ticker    = _regTicker || 'SPY';
       trade.direction = src?.direction || _signal?.direction || 'BULL_PUT';
-      await fetch(`${API}/api/signal`, {
+      res = await authedFetch(`${API}/api/signal`, {
         method: 'POST',
         headers: {'Content-Type':'application/json'},
         body: JSON.stringify({action:'register_trade', trade}),
       });
+      if (!res.ok) { showToast(res.status === 401 ? 'Login required or incorrect' : 'Error: server ' + res.status); return; }
       closeModal();
       showToast('✅ Trade registered!');
     }
@@ -1600,11 +1674,12 @@ async function submitClose() {
   const pnl = parseFloat(document.getElementById('close-pnl').value);
   if (isNaN(pnl)) { showToast('Enter P&L amount'); return; }
   try {
-    await fetch(`${API}/api/signal`, {
+    const res = await authedFetch(`${API}/api/signal`, {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({action:'close_trade', trade_id: _openTradeId, pnl}),
     });
+    if (!res.ok) { showToast(res.status === 401 ? 'Login required or incorrect' : 'Error: server ' + res.status); return; }
     closeModal();
     showToast('Trade closed!');
     setTimeout(loadAll, 1000);
@@ -1614,6 +1689,54 @@ async function submitClose() {
 }
 
 // ── Utils ─────────────────────────────────────────────────────────────────────
+// ── Hermes Log — separate static file, own fetch (same pattern as loadCrypto) ──
+async function loadHermesLog() {
+  try {
+    const d = await Promise.race([
+      fetch('/data_spy_hermes_log.json?t=' + Date.now(), {cache:'no-store'}).then(r => r.json()),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000)),
+    ]);
+    renderHermesLog(d);
+  } catch (e) {
+    console.error('loadHermesLog failed', e);
+  }
+}
+
+function renderHermesLog(d) {
+  if (!d) return;
+  const esc = s => String(s == null ? '' : s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  const dateStr = iso => { try { return new Date(iso).toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'}); } catch(e) { return iso || '—'; } };
+
+  const chEl = document.getElementById('hlog-changes');
+  const changes = d.changes || [];
+  if (changes.length === 0) {
+    chEl.innerHTML = `<div class="hlog-empty">${esc(d.changes_note || 'No changes yet')}</div>`;
+  } else {
+    chEl.innerHTML = changes.map(c => {
+      const action = c.action || 'applied';
+      const label  = action === 'applied' ? 'Applied' : action === 'validated' ? 'Validated ✅' : 'Reverted ↩️';
+      return `<div class="hlog-entry">
+        <div class="hlog-entry-hdr">
+          <span><b>${esc(c.symbol || c.ticker || '')}</b> <span class="hlog-badge ${action}">${label}</span></span>
+          <span class="hlog-entry-date">${dateStr(c.at)}</span>
+        </div>
+        <div class="hlog-entry-body">${esc(c.note || c.reason || '')}</div>
+      </div>`;
+    }).join('');
+  }
+
+  const repEl = document.getElementById('hlog-reports');
+  const reports = d.report_history || [];
+  if (reports.length === 0) {
+    repEl.innerHTML = '<div class="hlog-empty">No weekly analysis yet</div>';
+  } else {
+    repEl.innerHTML = reports.map(r => `<div class="hlog-entry">
+        <div class="hlog-entry-hdr"><span></span><span class="hlog-entry-date">${dateStr(r.generated_at)}</span></div>
+        <div class="hlog-entry-body">${esc(r.report_summary)}</div>
+      </div>`).join('');
+  }
+}
+
 function showPage(name) {
   _page = name;
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));

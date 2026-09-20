@@ -16,11 +16,27 @@ except Exception:
 
 import requests
 
+# ── Hermes weekly review (read-only -- no auto-tune/override system here to
+# feed candidates into, unlike Apex; this delivers a plain-English report over
+# Telegram, same as any other alert). ───────────────────────────────────────
+HERMES_SPY_SNAPSHOT_URL   = 'http://10.122.0.3:8787/spy/ingest_snapshot'
+HERMES_SPY_REPORT_URL     = 'http://10.122.0.3:8787/spy/report'
+HERMES_REVIEW_INTERVAL_DAYS = 1   # daily -- SPY has no auto-tune/decision component today (unlike
+                                   # Apex/MU), so this is purely data-push + narrative-report logging,
+                                   # safe to run daily with no separate decision-cadence to protect
+
 # ── Config ────────────────────────────────────────────────────────────────────
 WEB_ROOT     = os.getenv('WEB_ROOT', '/var/www/apex')
 SIGNAL_FILE  = os.path.join(WEB_ROOT, 'spy_signal.json')
 STATE_FILE   = os.path.join(WEB_ROOT, 'spy_state.json')
 TRIGGER_FILE = os.path.join(WEB_ROOT, 'spy_trigger.json')
+# Shadow-signal simulation -- permanent record of EVERY signal generated (all
+# 3 variants), plus a live simulation of what each would be worth if traded.
+# Fully separate from STATE_FILE/state['trades'] (real, manually-executed
+# trades only) -- never merged, never pushed through notify()/Discord/
+# Telegram, so simulated money can never be mistaken for real money.
+SPY_SIGNAL_HISTORY_FILE = os.path.join(WEB_ROOT, 'spy_signal_history.jsonl')
+SPY_SHADOW_STATE_FILE   = os.path.join(WEB_ROOT, 'spy_shadow_state.json')
 API_PORT          = 5001
 SPREAD_WIDTH      = 2       # SPY spread width ($)
 SPX_SPREAD_WIDTH  = 10      # SPX spread width ($) — $10 wide is standard 0DTE
@@ -154,6 +170,20 @@ def save_signal(sig: dict):
         json.dump(sig, open(SIGNAL_FILE, 'w'), indent=2, default=str)
     except Exception as e:
         logger.warning(f'save_signal: {e}')
+
+def load_shadow_state() -> dict:
+    try:
+        if os.path.exists(SPY_SHADOW_STATE_FILE):
+            return json.load(open(SPY_SHADOW_STATE_FILE))
+    except Exception:
+        pass
+    return {'shadows': []}
+
+def save_shadow_state(st: dict):
+    try:
+        json.dump(st, open(SPY_SHADOW_STATE_FILE, 'w'), indent=2, default=str)
+    except Exception as e:
+        logger.warning(f'save_shadow_state: {e}')
 
 def load_crypto_state() -> dict:
     try:
@@ -1017,7 +1047,53 @@ LOSS_WARN_PCT     = -20                 # early heads-up when loss exceeds this
 STOP_LOSS_MULT    = 2.5                 # firm stop: cost to close has grown to this many x the credit received
 UPDATE_INTERVAL   = 900                 # send regular P&L update every 15 min
 
-def check_trades(state: dict) -> list:
+# Shadow variants use the SAME exit discipline as real trades (STOP_LOSS_MULT
+# above) plus these two extra rules, so simulated P&L is a fair, apples-to-
+# apples comparison -- never a naive hold-to-expiry number, which would badly
+# overstate how well the riskier "Aggressive" tier actually does in practice.
+SHADOW_CLOSE_MILESTONE_PCT = 65   # matches the "solid profit secured" real-trade milestone
+SHADOW_EOD_CLOSE_HOUR      = 15
+SHADOW_EOD_CLOSE_MINUTE    = 55   # mark near close, while quotes are still live (market closes 16:00 ET)
+
+def _get_option_chain_cached(yf_ticker, expiry: str, chain_cache: Optional[dict] = None):
+    """yfinance's option_chain() returns the full chain (every strike) in one
+    call. Real-trade monitoring and shadow-variant monitoring usually want
+    the same ticker+expiry in the same tick -- sharing one cache across both
+    avoids a redundant network call without changing what's fetched.
+
+    Keyed by the ticker SYMBOL, not id(yf_ticker) -- check_trades() and
+    check_shadow_trades() each construct their own yf.Ticker('SPY') instance,
+    so keying by object identity meant this cache never actually hit across
+    the two functions (found during a post-deploy review): every tick with
+    both a real open trade and pending shadows was silently making 2 network
+    calls instead of the 1 this was designed for. Same symbol -> same key,
+    regardless of how many separate Ticker objects reference it."""
+    if chain_cache is None:
+        return yf_ticker.option_chain(expiry)
+    key = (getattr(yf_ticker, 'ticker', None) or id(yf_ticker), expiry)
+    chain = chain_cache.get(key)
+    if chain is None:
+        chain = yf_ticker.option_chain(expiry)
+        chain_cache[key] = chain
+    return chain
+
+def _quote_spread_debit(chain, direction: str, short_s: float, long_s: float) -> Optional[float]:
+    """Cost to close a credit spread right now, from a chain's live bid/ask --
+    the same math used for both real-trade monitoring and shadow simulation."""
+    try:
+        if direction == 'BULL_PUT':
+            pm        = {float(r['strike']): r for _, r in chain.puts.iterrows()}
+            short_ask = _safe_float(pm.get(short_s, {}).get('ask'))
+            long_bid  = _safe_float(pm.get(long_s,  {}).get('bid'))
+        else:
+            cm        = {float(r['strike']): r for _, r in chain.calls.iterrows()}
+            short_ask = _safe_float(cm.get(short_s, {}).get('ask'))
+            long_bid  = _safe_float(cm.get(long_s,  {}).get('bid'))
+        return round(short_ask - long_bid, 2)
+    except Exception:
+        return None
+
+def check_trades(state: dict, chain_cache: Optional[dict] = None) -> list:
     open_trades = [t for t in state.get('trades', []) if t.get('status') == 'open']
     if not open_trades:
         return []
@@ -1058,17 +1134,10 @@ def check_trades(state: dict) -> list:
             dir_name   = 'Bull Put' if isBull else 'Bear Call'
 
             try:
-                chain = yf_ticker.option_chain(expiry)
-                if isBull:
-                    pm        = {float(r['strike']): r for _, r in chain.puts.iterrows()}
-                    short_ask = _safe_float(pm.get(short_s, {}).get('ask'))
-                    long_bid  = _safe_float(pm.get(long_s,  {}).get('bid'))
-                else:
-                    cm        = {float(r['strike']): r for _, r in chain.calls.iterrows()}
-                    short_ask = _safe_float(cm.get(short_s, {}).get('ask'))
-                    long_bid  = _safe_float(cm.get(long_s,  {}).get('bid'))
-
-                cur_debit  = round(short_ask - long_bid, 2)
+                chain = _get_option_chain_cached(yf_ticker, expiry, chain_cache)
+                cur_debit = _quote_spread_debit(chain, direction, short_s, long_s)
+                if cur_debit is None:
+                    continue
                 profit_pct = round((credit - cur_debit) / credit * 100, 1) if credit else 0
                 pnl_now    = round((credit - cur_debit) * 100 * contracts, 2)
 
@@ -1171,6 +1240,157 @@ def check_trades(state: dict) -> list:
 
     return alerts
 
+# ── Shadow-signal simulation ───────────────────────────────────────────────────
+def append_signal_history(sig: dict) -> None:
+    """Permanent, append-only record of EVERY signal ever generated -- all 3
+    variants, whether or not any got traded. Separate from SIGNAL_FILE (which
+    only ever holds the latest one) and from state['trades'] (which only ever
+    holds what got manually executed) -- this is what eventually lets us tell
+    which tier actually makes money, not just which one happened to get traded."""
+    try:
+        record = {
+            'logged_at':  datetime.now(timezone.utc).isoformat(),
+            'label':      sig.get('label'),
+            'direction':  sig.get('direction'),
+            'expiry':     sig.get('expiry'),
+            'vix':        sig.get('vix'),
+            'confidence': sig.get('confidence'),
+            'gex_regime': sig.get('gex_regime'),
+            'spy_price':  sig.get('spy_price'),
+            'vix_gate_skipped': sig.get('vix_gate_skipped', False),
+            'spreads':     sig.get('spreads', []),
+            'spx_spreads': (sig.get('spx') or {}).get('spreads', []),
+        }
+        with open(SPY_SIGNAL_HISTORY_FILE, 'a') as f:
+            f.write(json.dumps(record, default=str) + '\n')
+    except Exception as e:
+        logger.warning(f'append_signal_history: {e}')
+
+def open_shadow_variants(sig: dict, shadow_state: dict) -> None:
+    """One shadow record per spread variant (Conservative/Suggested/
+    Aggressive) for BOTH SPY and, when present, its SPX parallel spread --
+    tracked and closed by check_shadow_trades() using the same milestone/
+    stop-loss rule real trades use, so the simulated P&L is a fair
+    comparison rather than a naive held-to-expiry number. SPX isn't traded
+    yet, but tracking it now means real evidence on how its signals would
+    have performed is already accumulating by the time that starts."""
+    try:
+        today   = et_now().strftime('%Y-%m-%d')
+        shadows = shadow_state.setdefault('shadows', [])
+        # Distinguishes repeated on-demand calls (dashboard "Recalculate") on
+        # the same day, which always share label='on_demand' and would
+        # otherwise produce identical, non-unique shadow_ids -- one timestamp
+        # per call, shared by every shadow this call opens.
+        call_ts = et_now().strftime('%H%M%S%f')
+
+        def _open(ticker, direction, expiry, spreads):
+            for sp in spreads:
+                shadows.append({
+                    'shadow_id':     f"{today}-{sig.get('label')}-{ticker}-{sp.get('label')}-{call_ts}",
+                    'date':          today,
+                    'signal_label':  sig.get('label'),
+                    'ticker':        ticker,
+                    'variant':       sp.get('label'),
+                    'direction':     direction,
+                    'short_strike':  sp.get('short_strike'),
+                    'long_strike':   sp.get('long_strike'),
+                    'credit':        sp.get('net_credit'),
+                    'expiry':        expiry,
+                    'vix_gate_skipped': sig.get('vix_gate_skipped', False),
+                    'status':        'open',
+                    'opened_at':     et_now().isoformat(),
+                    'debit_path':    [],
+                    'close_reason':  None,
+                    'closed_at':     None,
+                    'final_pnl_per_contract': None,
+                })
+
+        _open('SPY', sig.get('direction'), sig.get('expiry'), sig.get('spreads', []))
+        spx = sig.get('spx')
+        if spx and spx.get('spreads'):
+            _open('SPX', spx.get('direction', sig.get('direction')), spx.get('expiry'), spx.get('spreads', []))
+
+        save_shadow_state(shadow_state)
+    except Exception as e:
+        logger.warning(f'open_shadow_variants: {e}')
+
+def check_shadow_trades(shadow_state: dict, chain_cache: Optional[dict] = None) -> None:
+    """Silent counterpart to check_trades() -- applies the same milestone/
+    stop-loss exit rule to every pending shadow variant. Never calls
+    notify()/discord(): this is simulated money, never real, and must never
+    be mistaken for a real alert."""
+    shadows      = shadow_state.get('shadows', [])
+    open_shadows = [s for s in shadows if s.get('status') == 'open']
+    if not open_shadows:
+        return
+    try:
+        now_et  = et_now()
+        today   = now_et.strftime('%Y-%m-%d')
+        changed = False
+
+        # Anything still open from a prior day (bot restart, missed EOD tick)
+        # never got a final quote -- close as unknown rather than fetching a
+        # dead/expired option chain.
+        for sh in open_shadows:
+            if sh.get('date') != today:
+                sh['status']       = 'closed'
+                sh['close_reason'] = 'stale_expired'
+                sh['closed_at']    = now_et.isoformat()
+                changed = True
+        open_shadows = [s for s in open_shadows if s.get('status') == 'open']
+
+        if open_shadows:
+            import yfinance as yf
+            _yf_tickers: dict = {}
+            for sh in open_shadows:
+                tk = sh.get('ticker', 'SPY')
+                if tk not in _yf_tickers:
+                    _yf_tickers[tk] = yf.Ticker('^SPX' if tk == 'SPX' else 'SPY')
+
+            for sh in open_shadows:
+                yf_ticker = _yf_tickers[sh.get('ticker', 'SPY')]
+                direction = sh.get('direction')
+                short_s   = float(sh.get('short_strike', 0))
+                long_s    = float(sh.get('long_strike', 0))
+                credit    = float(sh.get('credit', 0))
+                expiry    = sh.get('expiry') or today
+                try:
+                    chain     = _get_option_chain_cached(yf_ticker, expiry, chain_cache)
+                    cur_debit = _quote_spread_debit(chain, direction, short_s, long_s)
+                    if cur_debit is None or not credit:
+                        continue
+
+                    profit_pct = round((credit - cur_debit) / credit * 100, 1)
+                    sh['debit_path'].append({
+                        't': now_et.isoformat(), 'debit': cur_debit, 'profit_pct': profit_pct,
+                    })
+                    changed = True
+
+                    close_reason = None
+                    if cur_debit >= credit * STOP_LOSS_MULT:
+                        close_reason = 'stop_loss'
+                    elif profit_pct >= SHADOW_CLOSE_MILESTONE_PCT:
+                        close_reason = f'profit_{SHADOW_CLOSE_MILESTONE_PCT}'
+                    elif (now_et.hour > SHADOW_EOD_CLOSE_HOUR or
+                          (now_et.hour == SHADOW_EOD_CLOSE_HOUR and now_et.minute >= SHADOW_EOD_CLOSE_MINUTE)):
+                        close_reason = 'eod_mark'
+
+                    if close_reason:
+                        sh['status']       = 'closed'
+                        sh['close_reason'] = close_reason
+                        sh['closed_at']    = now_et.isoformat()
+                        # Per-contract -- shadows don't imply a position size,
+                        # unlike real trades' 'pnl' which is actual $ across
+                        # whatever contracts were used. Never compare directly.
+                        sh['final_pnl_per_contract'] = round((credit - cur_debit) * 100, 2)
+                except Exception as e:
+                    logger.warning(f'shadow monitor {sh.get("shadow_id")}: {e}')
+
+        if changed:
+            save_shadow_state(shadow_state)
+    except Exception as e:
+        logger.warning(f'check_shadow_trades: {e}')
+
 # ── Health ping ───────────────────────────────────────────────────────────────
 def send_health_ping(state: dict) -> None:
     """9:25 AM ET pre-market ping — confirms bot is live and shows today's schedule."""
@@ -1203,6 +1423,27 @@ def send_health_ping(state: dict) -> None:
 
 
 # ── Signal runner ─────────────────────────────────────────────────────────────
+def _shadow_track_vix_skip(label: str, vix: float, state: dict) -> None:
+    """A VIX-gate skip means today's signal never gets built or pushed -- but
+    that also leaves zero evidence about whether the gate itself is too
+    tight/loose. Build and shadow-track the signal that WOULD have gone out
+    anyway, fully isolated from the real return path: never touches
+    SIGNAL_FILE, never pushed to Discord, never becomes a registerable
+    signal. Any failure here is silent and can never affect the real skip."""
+    try:
+        data = fetch_spy_chain()
+        if not data:
+            return
+        spy_trend = fetch_spy_daily_trend()
+        sig = build_signal(data, label, vix=vix, spy_trend=spy_trend)
+        if not sig:
+            return
+        sig['vix_gate_skipped'] = True
+        append_signal_history(sig)
+        open_shadow_variants(sig, load_shadow_state())
+    except Exception as e:
+        logger.warning(f'_shadow_track_vix_skip: {e}')
+
 def run_signal(label: str, state: dict) -> dict:
     # ── VIX go/no-go ─────────────────────────────────────────────────────────
     vix = fetch_vix()
@@ -1214,6 +1455,7 @@ def run_signal(label: str, state: dict) -> dict:
                    f"Waiting for higher vol before selling premium.")
             discord(msg)
             logger.info(f'[{label}] Skipped — VIX too low ({vix:.1f} < {VIX_MIN})')
+            _shadow_track_vix_skip(label, vix, state)
             return state
         if vix > VIX_MAX:
             msg = (f"⏭️ **SPY Skipped — {label}**\n"
@@ -1221,6 +1463,7 @@ def run_signal(label: str, state: dict) -> dict:
                    f"Max 1 contract if you trade manually today.")
             discord(msg)
             logger.info(f'[{label}] Skipped — VIX too high ({vix:.1f} > {VIX_MAX})')
+            _shadow_track_vix_skip(label, vix, state)
             return state
 
     # ── Daily loss limit ─────────────────────────────────────────────────────
@@ -1256,6 +1499,11 @@ def run_signal(label: str, state: dict) -> dict:
     open_trade = next((t for t in state.get('trades', []) if t.get('status') == 'open'), None)
     sig['open_trade'] = open_trade
     save_signal(sig)
+    try:
+        append_signal_history(sig)
+        open_shadow_variants(sig, load_shadow_state())
+    except Exception as e:
+        logger.warning(f'shadow tracking on new signal failed (non-critical): {e}')
     discord(format_discord(sig))
 
     s = sig['suggested']
@@ -1448,9 +1696,12 @@ def crypto_get_klines(symbol: str, interval='1h', limit=200) -> list:
     return [{'time': k[0], 'open': float(k[1]), 'high': float(k[2]), 'low': float(k[3]),
               'close': float(k[4]), 'volume': float(k[5])} for k in raw]
 
-def crypto_get_trend(symbol: str) -> str:
+def crypto_get_trend(symbol: str, return_detail: bool = False):
     """Same ADX/EMA trend logic Apex uses live, hand-rolled here to avoid
-    adding a pandas/ta dependency to this file."""
+    adding a pandas/ta dependency to this file. return_detail=True additionally
+    returns the raw adx/pdi/mdi values (used to record adx_at_entry so
+    CRYPTO_ADX_MIN becomes backtestable later) -- default return type/value is
+    unchanged for the existing dashboard call site."""
     try:
         candles = crypto_get_klines(symbol, '1h', 200)
         closes = [c['close'] for c in candles]; highs = [c['high'] for c in candles]; lows = [c['low'] for c in candles]
@@ -1475,13 +1726,17 @@ def crypto_get_trend(symbol: str) -> str:
         adx = _crypto_wilder(dx_clean,14)[-1]
         ema21 = _crypto_ema(closes,21)[-1]; ema50 = _crypto_ema(closes,50)[-1]
         if adx is not None and adx >= CRYPTO_ADX_MIN and pdi > mdi and ema21 > ema50:
-            return 'BULLISH'
-        if adx is not None and adx >= CRYPTO_ADX_MIN and mdi > pdi and ema21 < ema50:
-            return 'BEARISH'
-        return 'CHOPPY'
+            label = 'BULLISH'
+        elif adx is not None and adx >= CRYPTO_ADX_MIN and mdi > pdi and ema21 < ema50:
+            label = 'BEARISH'
+        else:
+            label = 'CHOPPY'
+        if return_detail:
+            return {'trend': label, 'adx': adx, 'pdi': pdi, 'mdi': mdi}
+        return label
     except Exception as e:
         logger.warning(f'crypto_get_trend[{symbol}] failed: {e}, defaulting to CHOPPY')
-        return 'CHOPPY'
+        return {'trend': 'CHOPPY', 'adx': None, 'pdi': None, 'mdi': None} if return_detail else 'CHOPPY'
 
 def crypto_get_index_price(underlying: str) -> float:
     d = _crypto_get(OPTIONS_BASE_URL, '/eapi/v1/index', {'underlying': underlying})
@@ -1605,7 +1860,8 @@ def crypto_open_new_positions(symbol, cfg, sym_state, chain):
     base = cfg['base']
     try:
         spot = crypto_get_index_price(symbol)
-        trend = crypto_get_trend(symbol)
+        trend_detail = crypto_get_trend(symbol, return_detail=True)
+        trend = trend_detail['trend']
         if not chain['strikes']['C']:
             logger.warning(f'[Crypto0DTE:{base}] no call strikes listed, skipping'); return
         atm_strike = _crypto_nearest_strike(chain['strikes']['C'], spot)
@@ -1627,6 +1883,17 @@ def crypto_open_new_positions(symbol, cfg, sym_state, chain):
             spread['opened_at'] = datetime.now(timezone.utc).isoformat()
             spread['expiry_ms'] = chain['expiry_ms']
             spread['trend'] = trend
+            # Entry context -- discarded before this change, so "how far OTM
+            # was the short strike" / "did the ADX gate matter" couldn't be
+            # reconstructed from history. Flows through to the closed-trade
+            # record automatically since settle_open_positions carries the
+            # whole position dict forward.
+            spread['spot_at_entry']       = spot
+            spread['iv_at_entry']         = iv
+            spread['sigma_move_at_entry'] = sigma_move
+            spread['adx_at_entry']        = trend_detail.get('adx')
+            spread['pdi_at_entry']        = trend_detail.get('pdi')
+            spread['mdi_at_entry']        = trend_detail.get('mdi')
             sym_state.setdefault('open_positions', []).append(spread)
             notify(
                 f'🎯 **Crypto 0DTE Paper [{base}] — {direction} OPENED**\n\n'
@@ -1785,6 +2052,417 @@ def start_api():
             logger.error(f'API server crashed: {e} — restarting in 5s')
             time.sleep(5)
 
+# ── Hermes weekly review ──────────────────────────────────────────────────────
+def _summarize_trades(closed: list, recent_cap: int = 40) -> dict:
+    recent = sorted(closed, key=lambda t: t.get('closed_at', ''), reverse=True)[:recent_cap]
+    wins = [t for t in recent if float(t.get('pnl', 0)) > 0]
+    return {
+        'summary': {
+            'total_closed_trades': len(closed),
+            'net_pnl': round(sum(float(t.get('pnl', 0)) for t in closed), 2),
+            'win_rate_pct': round(len(wins) / len(recent) * 100, 1) if recent else None,
+            'by_direction': {
+                d: {
+                    'n': len([t for t in closed if t.get('direction') == d]),
+                    'net_pnl': round(sum(float(t.get('pnl', 0)) for t in closed if t.get('direction') == d), 2),
+                }
+                for d in ('BULL_PUT', 'BEAR_CALL')
+            },
+        },
+        'recent_trades': recent,
+    }
+
+
+def _crypto_bucket_stats(records: list, key_fn, min_n: int = 3) -> dict:
+    """Same shape as Apex's bucket-stats pattern (win rate + net P&L per
+    bucket). min_n=3 (vs Apex's 5) -- crypto trades far less often
+    (~1-2/symbol/day), so a higher bar would starve every bucket."""
+    buckets: dict = {}
+    for t in records:
+        k = key_fn(t)
+        if k is None:
+            continue
+        buckets.setdefault(k, []).append(t)
+    out = {}
+    for k, rows in buckets.items():
+        if len(rows) < min_n:
+            continue
+        wins = [t for t in rows if float(t.get('pnl', 0)) > 0]
+        out[k] = {
+            'n': len(rows),
+            'win_rate_pct': round(len(wins) / len(rows) * 100, 1),
+            'net_pnl': round(sum(float(t.get('pnl', 0)) for t in rows), 2),
+        }
+    return out
+
+def _crypto_weekday_bucket(t: dict):
+    ts = t.get('closed_at') or t.get('date')
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(str(ts).replace('Z', '+00:00')).strftime('%A')
+    except Exception:
+        return None
+
+def _crypto_otm_bucket(t: dict):
+    """Requires spot_at_entry -- only present on trades opened after this
+    field was added; older trades are simply excluded (key_fn returns None)."""
+    spot, short_s = t.get('spot_at_entry'), t.get('short_strike')
+    if not spot or not short_s:
+        return None
+    pct = abs(float(short_s) - float(spot)) / float(spot) * 100
+    if pct < 1: return '<1%'
+    if pct < 2: return '1-2%'
+    if pct < 3: return '2-3%'
+    return '3%+'
+
+def _crypto_streak_stats(trades: list) -> dict:
+    """Chronological win/loss run-length scan -- surfaces 'one losing streak
+    is dragging the total' directly, rather than leaving it implicit in an
+    aggregate win rate."""
+    ordered = sorted(trades, key=lambda t: t.get('closed_at') or t.get('date') or '')
+    streaks = []
+    run_is_loss, run_len = None, 0
+    for t in ordered:
+        is_loss = not (float(t.get('pnl', 0)) > 0)
+        if run_len and is_loss == run_is_loss:
+            run_len += 1
+        else:
+            if run_len:
+                streaks.append((run_is_loss, run_len))
+            run_is_loss, run_len = is_loss, 1
+    if run_len:
+        streaks.append((run_is_loss, run_len))
+    max_consecutive_losses = max((n for loss, n in streaks if loss), default=0)
+    last_type, last_len = (None, 0)
+    if streaks:
+        last_loss, last_len = streaks[-1]
+        last_type = 'loss' if last_loss else 'win'
+    return {
+        'max_consecutive_losses': max_consecutive_losses,
+        'current_streak_type':    last_type,
+        'current_streak_len':     last_len,
+        'loss_streaks_3plus_count': len([n for loss, n in streaks if loss and n >= 3]),
+    }
+
+def _summarize_crypto_diagnostics(trades: list) -> dict:
+    """Beyond win-rate/net-P&L: pinpoint WHERE losses cluster, so Hermes can
+    cite specifics instead of 'win rate looks concerning.'"""
+    return {
+        'by_weekday':              _crypto_bucket_stats(trades, _crypto_weekday_bucket),
+        'by_trend_regime':         _crypto_bucket_stats(trades, lambda t: t.get('trend')),
+        'by_short_strike_otm_pct': _crypto_bucket_stats(trades, _crypto_otm_bucket),
+        'streaks':                 _crypto_streak_stats(trades),
+    }
+
+
+def _summarize_shadow_variants(shadow_state: dict) -> dict:
+    """Per-tier (Conservative/Suggested/Aggressive) win rate + simulated P&L
+    across every signal ever generated -- the direct answer to 'which tier
+    actually makes money,' not just whichever one happened to get traded.
+    Broken down separately for SPY (currently traded) and SPX (not traded
+    yet -- this is pure preparation so real evidence exists by the time it
+    is). Simulated/per-contract only -- see check_shadow_trades()."""
+    closed = [s for s in shadow_state.get('shadows', [])
+              if s.get('status') == 'closed' and s.get('final_pnl_per_contract') is not None]
+
+    def _by_variant(rows: list) -> dict:
+        out = {}
+        for variant in ('Conservative', 'Suggested', 'Aggressive'):
+            vrows = [s for s in rows if s.get('variant') == variant]
+            wins  = [s for s in vrows if s['final_pnl_per_contract'] > 0]
+            out[variant] = {
+                'n': len(vrows),
+                'win_rate_pct': round(len(wins) / len(vrows) * 100, 1) if vrows else None,
+                'total_simulated_pnl_per_contract':
+                    round(sum(s['final_pnl_per_contract'] for s in vrows), 2) if vrows else None,
+                'avg_simulated_pnl_per_contract':
+                    round(sum(s['final_pnl_per_contract'] for s in vrows) / len(vrows), 2) if vrows else None,
+                'stop_loss_hits': len([s for s in vrows if s.get('close_reason') == 'stop_loss']),
+            }
+        return out
+
+    return {
+        'note': ('Simulated -- what each tier would have made per contract if actually traded and '
+                 'managed with the same exit rule real trades use (stop-loss / profit-milestone / '
+                 'EOD mark). Not real money. Includes VIX-gate-skip days, tagged separately. SPX is '
+                 'NOT currently traded -- its section is pure preparation for a future go-live decision.'),
+        'SPY': {'by_variant': _by_variant([s for s in closed if s.get('ticker', 'SPY') == 'SPY'])},
+        'SPX': {'by_variant': _by_variant([s for s in closed if s.get('ticker') == 'SPX'])},
+    }
+
+
+def _summarize_recent_sentiment(days: int = 7) -> dict:
+    """Aggregates spy_signal_history.jsonl (VIX/confidence/GEX-regime/direction
+    per signal, already logged by append_signal_history on every run_signal()
+    call) into a compact market-sentiment summary -- added 2026-09-17 so
+    Hermes's now-daily analysis has something to actually remember about
+    market conditions day over day, not just trade P&L. Reads the whole file
+    (small -- ~5 signals/day, grows ~1MB/year) and filters by date rather
+    than tailing, since there's no cheap way to know how many lines cover N
+    days without reading them."""
+    try:
+        if not os.path.exists(SPY_SIGNAL_HISTORY_FILE):
+            return {}
+        cutoff = (et_now() - timedelta(days=days)).strftime('%Y-%m-%dT')
+        records = []
+        with open(SPY_SIGNAL_HISTORY_FILE) as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except Exception:
+                    continue
+                if r.get('logged_at', '') >= cutoff:
+                    records.append(r)
+        if not records:
+            return {}
+        vix_vals = [r['vix'] for r in records if r.get('vix') is not None]
+        conf_vals = [r['confidence'] for r in records if r.get('confidence') is not None]
+        regimes = {}
+        directions = {}
+        for r in records:
+            g = r.get('gex_regime')
+            if g: regimes[g] = regimes.get(g, 0) + 1
+            d = r.get('direction')
+            if d: directions[d] = directions.get(d, 0) + 1
+        return {
+            'window_days': days,
+            'n_signals': len(records),
+            'n_vix_gate_skipped': len([r for r in records if r.get('vix_gate_skipped')]),
+            'vix': {
+                'min': round(min(vix_vals), 1), 'max': round(max(vix_vals), 1),
+                'avg': round(sum(vix_vals) / len(vix_vals), 1),
+            } if vix_vals else None,
+            'avg_confidence': round(sum(conf_vals) / len(conf_vals), 1) if conf_vals else None,
+            'gex_regime_counts': regimes,
+            'direction_counts': directions,
+        }
+    except Exception as e:
+        logger.info(f'_summarize_recent_sentiment failed (non-critical): {e}')
+        return {}
+
+
+def _summarize_signal_timing(days: int = 14) -> dict:
+    """Per-time-slot confidence + within-day direction-flip tracking --
+    added 2026-09-18 after a real, confirmed incident: on 2026-09-17 the
+    signal flipped BULL_PUT -> BEAR_CALL -> BULL_PUT across three
+    consecutive slots, and a trade taken on the middle (BEAR_CALL) signal
+    lost money once the next slot reversed back. Gives Hermes real,
+    structured per-slot data to reason about signal timing reliability
+    with, instead of just a narrative prompt with nothing to back it."""
+    try:
+        if not os.path.exists(SPY_SIGNAL_HISTORY_FILE):
+            return {}
+        cutoff = (et_now() - timedelta(days=days)).strftime('%Y-%m-%dT')
+        records = []
+        with open(SPY_SIGNAL_HISTORY_FILE) as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except Exception:
+                    continue
+                if r.get('logged_at', '') >= cutoff and not r.get('vix_gate_skipped'):
+                    records.append(r)
+        if not records:
+            return {}
+
+        by_label: dict = {}
+        for r in records:
+            lbl = r.get('label')
+            if not lbl:
+                continue
+            b = by_label.setdefault(lbl, {'n': 0, 'conf_sum': 0, 'directions': {}})
+            b['n'] += 1
+            conf = r.get('confidence')
+            if conf is not None:
+                b['conf_sum'] += conf
+            d = r.get('direction')
+            if d:
+                b['directions'][d] = b['directions'].get(d, 0) + 1
+        label_stats = {
+            lbl: {
+                'n': b['n'],
+                'avg_confidence': round(b['conf_sum'] / b['n'], 1) if b['n'] else None,
+                'direction_counts': b['directions'],
+            }
+            for lbl, b in by_label.items()
+        }
+
+        # Within-day direction-flip tracking. Grouped by the UTC calendar date
+        # in logged_at -- close enough since every signal fires within one US
+        # trading day anyway, never spanning midnight UTC during market hours.
+        by_day: dict = {}
+        for r in records:
+            by_day.setdefault(r.get('logged_at', '')[:10], []).append(r)
+        total_multi_signal_days = 0
+        flip_days = 0
+        early_slot_total = 0
+        early_slot_later_reversed = 0
+        for day_records in by_day.values():
+            day_records.sort(key=lambda r: r.get('logged_at', ''))
+            directions = [r.get('direction') for r in day_records if r.get('direction')]
+            if len(directions) < 2:
+                continue
+            total_multi_signal_days += 1
+            if any(directions[i] != directions[i - 1] for i in range(1, len(directions))):
+                flip_days += 1
+            first = day_records[0]
+            if first.get('label') in ('market-open', 'mid-morning') and first.get('direction'):
+                early_slot_total += 1
+                later = [r.get('direction') for r in day_records[1:] if r.get('direction')]
+                if any(d != first['direction'] for d in later):
+                    early_slot_later_reversed += 1
+
+        return {
+            'window_days': days,
+            'by_label': label_stats,
+            'days_with_2plus_signals': total_multi_signal_days,
+            'days_direction_flipped': flip_days,
+            'early_slot_signals_checked': early_slot_total,
+            'early_slot_later_reversed': early_slot_later_reversed,
+        }
+    except Exception as e:
+        logger.info(f'_summarize_signal_timing failed (non-critical): {e}')
+        return {}
+
+
+def push_hermes_spy_snapshot(state: dict) -> None:
+    """Best-effort push of closed-trade summary + current config to the Hermes
+    droplet, so its weekly analysis has real data. Failure here must never
+    affect trading -- log and move on. Push, not pull: Hermes never needs
+    credentials to reach into this droplet.
+
+    Includes the BTC/ETH 0DTE crypto paper-trading data alongside SPY --
+    currently paper-only, meant to go live after a few weeks of validation,
+    so the same weekly review doubles as a readiness check for that."""
+    try:
+        closed = [t for t in state.get('trades', []) if t.get('status') == 'closed']
+        spy_data = _summarize_trades(closed)
+
+        shadow_summary = {}
+        try:
+            shadow_summary = _summarize_shadow_variants(load_shadow_state())
+        except Exception as e:
+            logger.info(f'Hermes snapshot: shadow section skipped ({e})')
+
+        crypto_summary = {}
+        try:
+            crypto_state = load_crypto_state()
+            for sym, sd in crypto_state.get('symbols', {}).items():
+                c_closed = [t for t in sd.get('trades', []) if t.get('pnl') is not None]
+                crypto_summary[sym] = _summarize_trades(c_closed, recent_cap=20)
+                try:
+                    crypto_summary[sym]['diagnostics'] = _summarize_crypto_diagnostics(c_closed)
+                except Exception as e:
+                    logger.info(f'Hermes snapshot: crypto diagnostics skipped for {sym} ({e})')
+        except Exception as e:
+            logger.info(f'Hermes snapshot: crypto section skipped ({e})')
+
+        sentiment_7d = {}
+        try:
+            sentiment_7d = _summarize_recent_sentiment(days=7)
+        except Exception as e:
+            logger.info(f'Hermes snapshot: sentiment section skipped ({e})')
+
+        signal_timing = {}
+        try:
+            signal_timing = _summarize_signal_timing(days=14)
+        except Exception as e:
+            logger.info(f'Hermes snapshot: signal timing section skipped ({e})')
+
+        payload = {
+            'generated_at': datetime.now(timezone.utc).isoformat(),
+            'spy': {
+                'config': {'spread_width': SPREAD_WIDTH},
+                'shadow_simulation': shadow_summary,
+                'recent_market_sentiment': sentiment_7d,
+                'signal_timing_stability': signal_timing,
+                **spy_data,
+            },
+            'crypto_paper_trading': {
+                'note': 'PAPER TRADING ONLY, no real orders -- evaluating readiness to go live '
+                        'after a few weeks of validation.',
+                'by_symbol': crypto_summary,
+            },
+        }
+        resp = requests.post(HERMES_SPY_SNAPSHOT_URL, json=payload, timeout=15)
+        resp.raise_for_status()
+        n_crypto = sum(len(v.get('recent_trades', [])) for v in crypto_summary.values())
+        logger.info(f'📤 Pushed SPY snapshot to Hermes ({len(spy_data["recent_trades"])} SPY + '
+                    f'{n_crypto} crypto trades)')
+    except Exception as e:
+        logger.info(f'Hermes SPY snapshot push failed (non-critical): {e}')
+
+
+SPY_HERMES_REPORT_HISTORY_MAX = 60   # ~2 months of daily reports (analysis now runs daily, not weekly)
+
+def pull_and_notify_hermes_spy_report(state: dict) -> None:
+    """Pulls whatever the most recent weekly spy_review.py run produced and
+    delivers it over the same Telegram/Discord channel as every other alert.
+    Also logs it to a capped local history (dedup'd by generated_at) so the
+    dashboard's Hermes Log tab can show it -- previously this was delivered
+    once and thrown away. Missing/stale/unreachable all resolve to silently
+    doing nothing -- this is pure upside, never a dependency for trading."""
+    try:
+        resp = requests.get(HERMES_SPY_REPORT_URL, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        report, generated_at = data.get('report_summary'), data.get('generated_at')
+        if report:
+            notify(f'🧠 **Hermes SPY Weekly Review**\n\n{report}')
+            logger.info('📬 Delivered Hermes SPY review')
+            history = state.setdefault('hermes_report_history', [])
+            if not history or history[-1].get('generated_at') != generated_at:
+                history.append({'generated_at': generated_at, 'report_summary': report})
+                del history[:-SPY_HERMES_REPORT_HISTORY_MAX]
+                save_state(state)
+    except Exception as e:
+        logger.info(f'Hermes SPY report pull failed (non-critical): {e}')
+
+
+def write_hermes_log_dashboard(state: dict) -> None:
+    """What Hermes has analyzed for SPY/crypto, for the dashboard's Hermes Log
+    tab. 'changes' is intentionally empty for now -- unlike Apex, there's no
+    evidence-gated auto-tune for SPY/crypto yet (see project plan); this
+    section is ready and will populate once that ships. Until then, this tab
+    is the weekly analysis log only."""
+    try:
+        save_signal_history_note = (
+            'Evidence-gated auto-tuning for SPY/crypto is planned but not live yet -- '
+            'this section will populate once enough shadow-signal and crypto trade '
+            'history accumulates for it to ship safely.'
+        )
+        payload = {
+            'updated_at':     datetime.now(timezone.utc).isoformat(),
+            'report_history': list(reversed(state.get('hermes_report_history', []))),
+            'changes':        [],
+            'changes_note':   save_signal_history_note,
+        }
+        # NOT data_hermes_log.json -- Apex writes that same filename to this same
+        # WEB_ROOT, and sharing a name meant this call was silently clobbering
+        # Apex's file on every SPY bot restart (caught during initial deploy).
+        json.dump(payload, open(os.path.join(WEB_ROOT, 'data_spy_hermes_log.json'), 'w'), indent=2, default=str)
+    except Exception as e:
+        logger.warning(f'write_hermes_log_dashboard: {e}')
+
+
+def run_weekly_hermes_review(state: dict) -> None:
+    last = state.get('last_hermes_review')
+    if last:
+        try:
+            age_days = (datetime.now(timezone.utc) -
+                        datetime.fromisoformat(last.replace('Z', '+00:00'))).days
+        except Exception:
+            age_days = HERMES_REVIEW_INTERVAL_DAYS
+        if age_days < HERMES_REVIEW_INTERVAL_DAYS:
+            return
+    state['last_hermes_review'] = datetime.now(timezone.utc).isoformat()
+    save_state(state)
+    push_hermes_spy_snapshot(state)
+    pull_and_notify_hermes_spy_report(state)
+    write_hermes_log_dashboard(state)
+
+
 # ── Main loop ─────────────────────────────────────────────────────────────────
 def main():
     try:
@@ -1808,6 +2486,8 @@ def main():
     last_monitor = 0.0
     crypto_state = load_crypto_state()
     last_crypto_check = 0.0
+    last_hermes_check = 0.0
+    write_hermes_log_dashboard(state)  # show existing history immediately, don't wait for next weekly run
 
     while True:
         try:
@@ -1815,6 +2495,12 @@ def main():
             if time.time() - last_crypto_check > CRYPTO_CHECK_INTERVAL_SEC:
                 run_crypto_0dte_cycle(crypto_state)
                 last_crypto_check = time.time()
+
+            # Hermes weekly review — cheap no-op check hourly; the function
+            # itself gates on HERMES_REVIEW_INTERVAL_DAYS internally.
+            if time.time() - last_hermes_check > 3600:
+                run_weekly_hermes_review(state)
+                last_hermes_check = time.time()
 
             # Handle trigger file
             if os.path.exists(TRIGGER_FILE):
@@ -1851,7 +2537,8 @@ def main():
 
                 # Monitor open trades every 5 min during market hours
                 if is_market_open() and time.time() - last_monitor > 300:
-                    alerts = check_trades(state)
+                    chain_cache = {}
+                    alerts = check_trades(state, chain_cache=chain_cache)
                     for a in alerts:
                         discord(a)
                     if alerts:
@@ -1859,6 +2546,10 @@ def main():
                         open_trade = next((t for t in state.get('trades', []) if t.get('status') == 'open'), None)
                         sig['open_trade'] = open_trade
                         save_signal(sig)
+                    try:
+                        check_shadow_trades(load_shadow_state(), chain_cache=chain_cache)
+                    except Exception as e:
+                        logger.warning(f'shadow monitor tick failed (non-critical): {e}')
                     last_monitor = time.time()
 
             time.sleep(30)
