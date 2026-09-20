@@ -2,3 +2,15 @@
 __pycache__/
 *.pyc
 trades_log.json
+
+# runtime state, logs, secrets and private docs -- never commit
+.env
+.env.*
+logs/
+*.bak
+*.bak_*
+*.tmp
+*.jsonl
+sentinel_state.json
+docs-private/
+*.private.md
