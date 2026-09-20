@@ -1,0 +1,655 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Apex Command</title>
+<script>
+(function(){
+  function isDesktopLike(){
+    try{ return !window.matchMedia('(pointer: coarse)').matches && window.innerWidth >= 1024; }
+    catch(e){ return window.innerWidth >= 1024; }
+  }
+  var params = new URLSearchParams(location.search);
+  if(params.get('view')==='mobile'){
+    try{ localStorage.setItem('apex_view_pref','mobile'); }catch(e){}
+    location.replace('index.html'); return;
+  }
+  if(params.get('view')==='desktop'){ try{ localStorage.setItem('apex_view_pref','desktop'); }catch(e){} }
+  var pref = null; try{ pref = localStorage.getItem('apex_view_pref'); }catch(e){}
+  if(pref !== 'desktop' && !isDesktopLike()){
+    location.replace('index.html');
+  }
+})();
+</script>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0a0c11; --panel:#12151d; --panel2:#0f121a; --border:#1e222c; --border2:#242833;
+    --text:#e7e9ee; --muted:#6b7280; --dim:#3f4451;
+    --teal:#2dd4bf; --teal2:#0891b2; --green:#4ade80; --red:#f87171; --amber:#f59e0b; --purple:#a78bfa; --purple2:#7c3aed;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);font-family:'Manrope',sans-serif;color:var(--text);min-width:1180px}
+  a{color:var(--teal);text-decoration:none} a:hover{color:#5eead4}
+  ::-webkit-scrollbar{width:10px;height:10px} ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:8px} ::-webkit-scrollbar-track{background:transparent}
+  .mono{font-family:'JetBrains Mono',monospace}
+  .head{font-family:'Space Grotesk',sans-serif}
+  .page{display:flex;flex-direction:column;min-height:100vh}
+  .topbar{display:flex;align-items:center;justify-content:space-between;padding:16px 28px;border-bottom:1px solid var(--border);background:rgba(13,15,21,.85);position:sticky;top:0;z-index:20}
+  .brand{display:flex;align-items:center;gap:12px}
+  .brand-mark{width:32px;height:32px;border-radius:10px;background:radial-gradient(circle at 30% 30%,#5eead4,#0891b2 60%,#164e63);display:flex;align-items:center;justify-content:center;box-shadow:0 0 20px rgba(45,212,191,.3)}
+  .brand-name{font-size:16px;font-weight:700;letter-spacing:.01em}
+  .brand-sub{font-size:11px;color:var(--muted);margin-top:1px}
+  .top-right{display:flex;align-items:center;gap:22px;font-size:12px}
+  .status-dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 10px var(--green);display:inline-block;margin-right:7px;animation:pulse 2s infinite}
+  .status-dot.degraded{background:var(--amber);box-shadow:0 0 10px var(--amber)}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  .body-row{display:flex;flex-grow:1;align-items:flex-start}
+  .rail{width:60px;flex-shrink:0;align-self:stretch;border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:center;gap:8px;padding-top:18px;background:#0d0f16}
+  .rail a{width:38px;height:38px;border-radius:11px;display:flex;align-items:center;justify-content:center}
+  .rail a.active{background:rgba(45,212,191,.12);border:1px solid rgba(45,212,191,.3)}
+  .main{flex-grow:1;padding:24px 22px 40px 28px;display:flex;flex-direction:column;gap:20px;min-width:0}
+  .hero{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:18px}
+  .card-label{font-size:11px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
+  .card-value{font-family:'JetBrains Mono',monospace;font-size:27px;font-weight:600;margin-top:7px}
+  .card-sub{font-size:12px;color:var(--muted);margin-top:4px}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:20px}
+  .panel-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+  .panel-title{font-family:'Space Grotesk',sans-serif;font-size:15px;font-weight:600}
+  table.fut{width:100%;border-collapse:collapse}
+  table.fut th{font-size:10.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);text-align:left;padding:0 10px 9px;border-bottom:1px solid var(--border)}
+  table.fut td{padding:11px 10px;font-size:13px;vertical-align:middle}
+  table.fut tr.active-row{background:rgba(45,212,191,.05);border-radius:10px}
+  table.fut tr.mu-row{background:rgba(245,158,11,.05)}
+  .pill{font-size:10.5px;padding:3px 9px;border-radius:20px;display:inline-block}
+  .pill-trend{background:rgba(45,212,191,.14);color:var(--teal)}
+  .pill-choppy{background:rgba(107,114,128,.15);color:#9ca3af}
+  .pill-held{background:rgba(245,158,11,.15);color:var(--amber)}
+  .btn{padding:5px 11px;border-radius:7px;border:1px solid var(--border2);background:transparent;color:#9ca3af;font-size:11px;font-weight:600;font-family:inherit;cursor:pointer}
+  .btn-danger{border-color:rgba(248,113,113,.35);background:rgba(248,113,113,.08);color:var(--red)}
+  .btn-amber{border-color:rgba(245,158,11,.35);background:rgba(245,158,11,.08);color:var(--amber)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .grid2{display:grid;grid-template-columns:1.3fr 1fr;gap:14px}
+  .prog-track{height:6px;border-radius:4px;background:var(--border);overflow:hidden;margin-top:14px}
+  .prog-fill{height:100%;background:linear-gradient(90deg,#0891b2,#4ade80)}
+  .mu-grid{display:grid;grid-template-columns:1.1fr 2fr;gap:18px}
+  .mini-card{background:var(--panel2);border-radius:10px;padding:10px 12px}
+  .mini-label{font-size:10px;color:var(--muted)}
+  .mini-value{font-family:'JetBrains Mono',monospace;font-size:15px;font-weight:600;margin-top:2px}
+  .row-line{display:flex;justify-content:space-between;font-size:12px;padding:3px 0}
+  .trade-row{display:grid;grid-template-columns:1fr 1.4fr .8fr 1.3fr;gap:8px;padding:8px 12px;background:var(--panel2);font-size:12px}
+  .feed-item{display:flex;gap:12px;padding:11px 12px;border-radius:10px;background:var(--panel2)}
+  .feed-badge{flex-shrink:0;font-size:10px;font-weight:700;padding:3px 9px;border-radius:20px;height:fit-content}
+  .chat-rail{width:360px;flex-shrink:0;border-left:1px solid var(--border);background:#0d0f16;display:flex;flex-direction:column;align-self:stretch;position:sticky;top:0;height:100vh}
+  .chat-head{display:flex;align-items:center;gap:10px;padding:16px 18px;border-bottom:1px solid var(--border)}
+  .chat-dot{width:26px;height:26px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#fde68a,#f59e0b 55%,#7c2d12);box-shadow:0 0 12px rgba(245,158,11,.5)}
+  #thread{flex-grow:1;overflow-y:auto;padding:16px 18px;display:flex;flex-direction:column;gap:12px}
+  .bubble-user{align-self:flex-end;max-width:90%;background:#1c2130;border-radius:14px 14px 4px 14px;padding:9px 13px;font-size:13px;line-height:1.5}
+  .bubble-hermes{align-self:flex-start;max-width:94%;background:#151822;border:1px solid var(--border);border-radius:14px 14px 14px 4px;padding:11px 13px;font-size:13px;line-height:1.55;color:#d1d5db}
+  .bubble-applied{align-self:flex-start;max-width:94%;background:rgba(74,222,128,.08);border:1px solid rgba(74,222,128,.3);border-radius:10px;padding:8px 12px;font-size:12px;color:var(--green);font-weight:600}
+  .chat-input-wrap{padding:12px 14px;border-top:1px solid var(--border)}
+  .chat-input-box{display:flex;align-items:center;gap:8px;background:#151822;border:1px solid var(--border2);border-radius:12px;padding:5px 5px 5px 12px}
+  .chat-input-box input{flex-grow:1;background:transparent;border:none;outline:none;color:var(--text);font-family:inherit;font-size:13px}
+  .chat-send{width:30px;height:30px;flex-shrink:0;border-radius:8px;border:none;background:linear-gradient(135deg,var(--teal),var(--teal2));display:flex;align-items:center;justify-content:center;cursor:pointer}
+  .chat-send:disabled{opacity:.5;cursor:default}
+  .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:#1c2130;border:1px solid var(--border2);padding:10px 18px;border-radius:10px;font-size:13px;display:none;z-index:99}
+  .empty{color:var(--dim);font-size:13px}
+  .switch-link{font-size:11px;color:var(--muted)}
+</style>
+</head>
+<body>
+
+<div class="page">
+  <div class="topbar">
+    <div class="brand">
+      <div class="brand-mark"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#04121a" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></div>
+      <div><div class="brand-name head">Apex Command</div><div class="brand-sub">Futures · SPY 0DTE · Hermes</div></div>
+    </div>
+    <div class="top-right">
+      <div><span class="status-dot" id="status-dot"></span><span id="status-text">Loading…</span></div>
+      <div class="mono" id="clock">—</div>
+      <a class="switch-link" href="?view=mobile">Switch to mobile view</a>
+    </div>
+  </div>
+
+  <div class="body-row">
+    <div class="rail">
+      <a class="active" href="command.html" title="Dashboard"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#2dd4bf" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg></a>
+      <a href="command-calendar.html" title="P&amp;L Calendar"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></a>
+    </div>
+
+    <div class="main">
+      <div class="hero">
+        <div class="card">
+          <div class="card-label">Combined P&amp;L Today</div>
+          <div class="card-value mono" id="hero-pnl">—</div>
+          <div class="card-sub" id="hero-pnl-sub">—</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Open Positions</div>
+          <div class="card-value mono" id="hero-open">—</div>
+          <div class="card-sub" id="hero-open-sub">—</div>
+        </div>
+        <div class="card">
+          <div class="card-label">7-Day Win Rate</div>
+          <div class="card-value mono" id="hero-wr">—</div>
+          <div class="card-sub" id="hero-wr-sub">—</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Hermes Actions (7d)</div>
+          <div class="card-value mono" id="hero-hermes">—</div>
+          <div class="card-sub" id="hero-hermes-sub">—</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-title head">Apex Futures</div>
+          <div style="font-size:12px;color:var(--muted)">7 symbols + MU overnight</div>
+        </div>
+        <table class="fut">
+          <thead><tr><th>Symbol</th><th>Regime</th><th>Position</th><th>Today</th><th>Since Entry</th><th>Trail / Action</th></tr></thead>
+          <tbody id="fut-rows"></tbody>
+        </table>
+      </div>
+
+      <div class="grid2">
+        <div class="panel" id="spy-panel">
+          <div class="panel-head">
+            <div class="panel-title head">SPY 0DTE Signal</div>
+            <span class="pill pill-trend" id="spy-signal-pill">—</span>
+          </div>
+          <div id="spy-body"><div class="empty">Loading…</div></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <div class="panel-title head">Crypto 0DTE <span style="font-size:11px;font-weight:500;color:var(--muted)">— paper only</span></div>
+          </div>
+          <div id="crypto-body"><div class="empty">Loading…</div></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <div style="display:flex;align-items:center;gap:10px">
+            <div class="panel-title head">MU Overnight</div>
+            <span class="pill" style="background:rgba(245,158,11,.15);color:var(--amber);font-weight:700">REAL MONEY</span>
+          </div>
+          <a href="command-calendar.html?source=mu">Full P&amp;L calendar →</a>
+        </div>
+        <div class="mu-grid">
+          <div class="mini-card" id="mu-position"><div class="empty">Loading…</div></div>
+          <div style="display:flex;flex-direction:column;gap:12px">
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px" id="mu-stats"></div>
+            <div>
+              <div style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:7px">Recent Trades</div>
+              <div style="display:flex;flex-direction:column;gap:1px;border-radius:10px;overflow:hidden" id="mu-trades"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-title head">Hermes Activity</div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:9px" id="hermes-feed"><div class="empty">Loading…</div></div>
+      </div>
+    </div>
+
+    <div class="chat-rail">
+      <div class="chat-head">
+        <div class="chat-dot"></div>
+        <div><div class="head" style="font-size:14px;font-weight:600">Hermes</div><div style="font-size:11px;color:var(--green)" id="chat-status">Ready</div></div>
+      </div>
+      <div id="thread">
+        <div class="bubble-hermes">Ask me about current positions, recent performance, or anything on this dashboard. I can also close a position, lock a trailing stop, or pause/resume the bot if you tell me to directly — the same actions as the buttons, nothing more. I can't change trading parameters or the dashboard's code, so I'll just note those requests for the developer.</div>
+      </div>
+      <div class="chat-input-wrap">
+        <div class="chat-input-box">
+          <input type="text" id="chat-input" placeholder="Ask Hermes anything…" onkeydown="if(event.key==='Enter')sendChat()">
+          <button class="chat-send" id="chat-send-btn" onclick="sendChat()">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#04121a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          </button>
+        </div>
+        <div style="font-size:10px;color:#4b5563;margin-top:7px;text-align:center">Can close/trail/pause on direct request — same actions as the buttons, nothing more.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ── Data sources ─────────────────────────────────────────────────────────────
+const FUT_SYMBOLS = [
+  {key:'nbis', api:'/data_futures_nbis.json', sym:'NBISUSDT', label:'NBIS'},
+  {key:'amd',  api:'/data_futures_amd.json',  sym:'AMDUSDT',  label:'AMD'},
+  {key:'app',  api:'/data_futures_app.json',  sym:'APPUSDT',  label:'APP'},
+  {key:'soxl', api:'/data_futures_soxl.json', sym:'SOXLUSDT', label:'SOXL'},
+  {key:'crcl', api:'/data_futures_crcl.json', sym:'CRCLUSDT', label:'CRCL'},
+  {key:'asts', api:'/data_futures_asts.json', sym:'ASTSUSDT', label:'ASTS'},
+  {key:'tsla', api:'/data_futures_tsla.json', sym:'TSLAUSDT', label:'TSLA'},
+];
+const CONFIG_API  = '/bot_config.json';
+const REFRESH_MS  = 6000;
+
+let futData = {}, muData = null, spyState = null, spySignal = null, cryptoData = null, hermesLog = null;
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+const qs = (s,el=document)=>el.querySelector(s);
+const n  = (v,d=0)=>{const f=parseFloat(v);return isNaN(f)?d:f};
+const esc = s => String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const fmtMoney = v => { const x=n(v); return (x>=0?'+$':'-$')+Math.abs(x).toFixed(2); };
+const fmtMoneyPlain = v => { const x=n(v); return (x>=0?'+':'')+x.toFixed(2); };
+function localDateKey(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function elapsed(iso){
+  if(!iso) return '—';
+  const s = Math.floor((Date.now()-new Date(iso))/1000);
+  if(s<60) return s+'s';
+  if(s<3600) return Math.floor(s/60)+'m';
+  return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';
+}
+function toast(msg, dur=2600){
+  const t = qs('#toast'); t.textContent = msg; t.style.display = 'block';
+  setTimeout(()=>t.style.display='none', dur);
+}
+function tick(){ qs('#clock').textContent = new Date().toLocaleString('en-US',{weekday:'short',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',timeZone:'America/New_York'})+' ET'; }
+setInterval(tick, 1000); tick();
+
+// ── Auth (identical pattern to index.html / spy.html) ───────────────────────
+function getStoredAuth(){ try{ return localStorage.getItem('apex_dash_auth')||''; }catch(e){ return ''; } }
+function setStoredAuth(v){ try{ localStorage.setItem('apex_dash_auth', v); }catch(e){} }
+async function authedFetch(url, options={}){
+  options.headers = Object.assign({}, options.headers);
+  let auth = getStoredAuth();
+  if(auth) options.headers['Authorization'] = 'Basic '+auth;
+  let res = await fetch(url, options);
+  if(res.status === 401){
+    const user = prompt('Dashboard login required — username:', 'apex');
+    if(user === null) return res;
+    const pass = prompt('Password:');
+    if(pass === null) return res;
+    auth = btoa(user+':'+pass);
+    options.headers['Authorization'] = 'Basic '+auth;
+    res = await fetch(url, options);
+    if(res.ok) setStoredAuth(auth);
+  }
+  return res;
+}
+async function writeConfig(patch){
+  const r = await fetch(CONFIG_API+'?t='+Date.now(), {cache:'no-store'});
+  const cur = r.ok ? await r.json() : {};
+  const up = Object.assign({}, cur, patch, {updated_at:new Date().toISOString()});
+  const wr = await authedFetch(CONFIG_API, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(up, null, 2)});
+  if(!wr.ok) throw new Error('Server '+wr.status);
+}
+
+// ── Actions ──────────────────────────────────────────────────────────────────
+async function closeFutures(key){
+  const s = FUT_SYMBOLS.find(x=>x.key===key), d = futData[key];
+  if(!s || !d || !d.position) return;
+  if(!confirm('Close '+d.position+' '+s.label+' at market?')) return;
+  try{
+    await writeConfig({futures_close_requested:true, futures_close_requested_at:new Date().toISOString(), futures_close_symbol:s.sym});
+    toast('✅ Close sent — executes within 60s');
+  }catch(e){ toast('⚠️ Failed: '+e.message); }
+}
+async function forceTrailFutures(key){
+  const s = FUT_SYMBOLS.find(x=>x.key===key), d = futData[key];
+  if(!s || !d || !d.position) return;
+  try{
+    await writeConfig({futures_force_trail:true, futures_force_trail_at:new Date().toISOString(), futures_force_trail_symbol:s.sym});
+    toast('🔒 Trail locked — activates next cycle');
+  }catch(e){ toast('⚠️ Failed: '+e.message); }
+}
+async function closeMu(){
+  if(!muData || !muData.position) return;
+  if(!confirm('Close MU overnight '+muData.position+' at market?')) return;
+  try{
+    await writeConfig({futures_mu_close_requested:true, futures_mu_close_requested_at:new Date().toISOString()});
+    toast('✅ Close sent — executes within 60s');
+  }catch(e){ toast('⚠️ Failed: '+e.message); }
+}
+async function closeSpyTrade(tradeId){
+  const pnlStr = prompt('Exit P&L for this SPY trade ($) — realized profit/loss:');
+  if(pnlStr === null) return;
+  const pnl = parseFloat(pnlStr);
+  if(isNaN(pnl)){ toast('Enter a valid number'); return; }
+  if(!confirm('Close SPY trade with P&L '+(pnl>=0?'+':'')+pnl.toFixed(2)+'?')) return;
+  try{
+    const res = await authedFetch('/spy-api/api/signal', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action:'close_trade', trade_id: tradeId, pnl})});
+    if(!res.ok){ toast(res.status===401 ? 'Login required or incorrect' : 'Error: server '+res.status); return; }
+    toast('✅ SPY trade closed');
+    setTimeout(loadAll, 1200);
+  }catch(e){ toast('⚠️ Failed: '+e.message); }
+}
+
+// ── Rendering: Apex Futures table ───────────────────────────────────────────
+function trailCell(d){
+  const t = d.trail || {};
+  if(t.active && t.trail_stop) return `<span class="mono" style="color:var(--green);font-size:11px">Trailing @ $${n(t.trail_stop).toFixed(2)}</span>`;
+  if(d.position && t.sl) return `<span class="mono" style="color:var(--amber);font-size:11px">SL @ $${n(t.sl).toFixed(2)}</span>`;
+  if(d.position) return `<span class="mono" style="color:var(--muted);font-size:11px">Armed, no stop yet</span>`;
+  return `<span style="color:var(--dim)">—</span>`;
+}
+function todayPnl(closedTrades){
+  const today = localDateKey(new Date());
+  return (closedTrades||[]).reduce((sum,t)=>{
+    if(!t.closed_at) return sum;
+    return localDateKey(new Date(t.closed_at)) === today ? sum + n(t.pnl ?? t.net) : sum;
+  }, 0);
+}
+function renderFutRows(){
+  let html = '';
+  FUT_SYMBOLS.forEach(s=>{
+    const d = futData[s.key];
+    if(!d){ html += `<tr><td colspan="6" class="empty">${s.label} — no data yet</td></tr>`; return; }
+    const hasPos = !!d.position;
+    const regimeCls = d.regime === 'CHOPPY' ? 'pill-choppy' : 'pill-trend';
+    const posColor = hasPos ? (d.position==='LONG' ? 'var(--green)' : 'var(--red)') : 'var(--muted)';
+    const unrealized = hasPos ? n(d.unrealized_pnl) : 0;
+    const unrColor = unrealized > 0 ? 'var(--green)' : unrealized < 0 ? 'var(--red)' : 'var(--muted)';
+    const dayPnl = todayPnl(d.closed_trades) + unrealized;
+    const dayColor = dayPnl > 0 ? 'var(--green)' : dayPnl < 0 ? 'var(--red)' : 'var(--muted)';
+    const posCell = hasPos
+      ? `<div>${d.position} · ${n(d.leverage)}x</div><div class="mono" style="font-size:11px;color:${unrColor}">${fmtMoney(unrealized)} open</div>`
+      : 'Flat';
+    html += `<tr class="${hasPos?'active-row':''}">
+      <td style="font-weight:600">${s.label}</td>
+      <td><span class="pill ${regimeCls}">${esc(d.regime||'—')}</span></td>
+      <td style="color:${posColor}">${posCell}</td>
+      <td class="mono" style="color:${dayColor}">${dayPnl===0?'$0.00':fmtMoney(dayPnl)}</td>
+      <td class="mono" style="color:var(--muted)">${hasPos ? elapsed(d.trade_opened_at) : '—'}</td>
+      <td>${hasPos ? `<div style="display:flex;align-items:center;gap:7px">${trailCell(d)}<button class="btn btn-amber" onclick="forceTrailFutures('${s.key}')" title="Lock trailing stop">Trail</button><button class="btn btn-danger" onclick="closeFutures('${s.key}')">Close</button></div>` : trailCell(d)}</td>
+    </tr>`;
+  });
+  // MU row
+  if(muData){
+    const hasPos = !!muData.position;
+    const unrealized = hasPos ? n(muData.unrealized_pnl) : 0;
+    const unrColor = unrealized > 0 ? 'var(--green)' : unrealized < 0 ? 'var(--red)' : 'var(--muted)';
+    const dayPnl = todayPnl((muData.trades||[]).map(t=>({closed_at:t.closed_at, pnl:t.net}))) + unrealized;
+    const dayColor = dayPnl > 0 ? 'var(--green)' : dayPnl < 0 ? 'var(--red)' : 'var(--muted)';
+    const posCell = hasPos
+      ? `<div>${muData.position} · ${n(muData.qty).toFixed(2)}</div><div class="mono" style="font-size:11px;color:${unrColor}">${fmtMoney(unrealized)} open</div>`
+      : 'Flat';
+    const trailHtml = hasPos
+      ? (muData.sl_price ? `<span class="mono" style="color:var(--amber);font-size:11px">SL @ $${n(muData.sl_price).toFixed(2)}</span>` : `<span style="color:var(--dim)">—</span>`)
+      : `<span style="color:var(--dim)">—</span>`;
+    html += `<tr class="${hasPos?'mu-row':''}">
+      <td style="font-weight:600">MU <span style="font-size:10px;font-weight:500;color:var(--muted)">overnight</span></td>
+      <td><span class="pill pill-held">${hasPos?'HELD':'FLAT'}</span></td>
+      <td style="color:${hasPos?(muData.position==='LONG'?'var(--green)':'var(--red)'):'var(--muted)'}">${posCell}</td>
+      <td class="mono" style="color:${dayColor}">${dayPnl===0?'$0.00':fmtMoney(dayPnl)}</td>
+      <td class="mono" style="color:var(--muted)">${hasPos ? elapsed(muData.opened_at) : '—'}</td>
+      <td>${hasPos ? `<div style="display:flex;align-items:center;gap:7px">${trailHtml}<button class="btn btn-danger" onclick="closeMu()">Close</button></div>` : trailHtml}</td>
+    </tr>`;
+  }
+  qs('#fut-rows').innerHTML = html;
+}
+
+// ── Rendering: SPY panel ────────────────────────────────────────────────────
+function renderSpy(){
+  const pillEl = qs('#spy-signal-pill');
+  if(spySignal){
+    const dirLabel = spySignal.direction === 'BULL_PUT' ? 'Bull Put' : spySignal.direction === 'BEAR_CALL' ? 'Bear Call' : (spySignal.direction||'—');
+    pillEl.textContent = dirLabel;
+  } else pillEl.textContent = '—';
+
+  const openTrade = spyState ? (spyState.trades||[]).slice().reverse().find(t=>t.status!=='closed') : null;
+  let html = '';
+  if(spySignal && spySignal.suggested){
+    const sg = spySignal.suggested;
+    html += `<div style="display:flex;gap:24px;margin-bottom:14px">
+      <div><div style="font-size:11px;color:var(--muted);margin-bottom:2px">Strikes</div><div class="mono" style="font-size:16px;font-weight:600">$${n(sg.short_strike)} / $${n(sg.long_strike)}</div></div>
+      <div><div style="font-size:11px;color:var(--muted);margin-bottom:2px">Credit</div><div class="mono" style="font-size:16px;font-weight:600;color:var(--green)">$${n(sg.net_credit).toFixed(2)}</div></div>
+      <div><div style="font-size:11px;color:var(--muted);margin-bottom:2px">SPY Price</div><div class="mono" style="font-size:16px;font-weight:600">$${n(spySignal.spy_price).toFixed(2)}</div></div>
+    </div>`;
+  }
+  if(openTrade){
+    const pnlColor = n(openTrade.pnl) >= 0 ? 'var(--green)' : 'var(--red)';
+    const pct = n(openTrade.profit_pct);
+    const barPct = Math.max(0, Math.min(100, pct));
+    html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+      <div style="font-size:12px;color:var(--muted)">Open trade · ${esc(openTrade.direction||'')}</div>
+      <div class="mono" style="font-size:15px;font-weight:600;color:${pnlColor}">${pct?pct.toFixed(0)+'% · ':''}${fmtMoneyPlain(openTrade.pnl)}</div>
+    </div>
+    <div class="prog-track"><div class="prog-fill" style="width:${barPct}%"></div></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:10px">
+      <div style="font-size:11px;color:var(--muted)">Manual close — enter realized P&amp;L on execution</div>
+      <button class="btn btn-danger" onclick="closeSpyTrade('${openTrade.trade_id}')">Close Trade</button>
+    </div>`;
+  } else {
+    html += `<div class="empty">No open SPY trade right now.</div>`;
+  }
+  qs('#spy-body').innerHTML = html;
+}
+
+// ── Rendering: Crypto panel ─────────────────────────────────────────────────
+function renderCrypto(){
+  if(!cryptoData || !cryptoData.symbols){ qs('#crypto-body').innerHTML = '<div class="empty">No data yet.</div>'; return; }
+  let html = '<div style="display:flex;flex-direction:column;gap:9px">';
+  Object.keys(cryptoData.symbols).forEach(k=>{
+    const s = cryptoData.symbols[k], p = s.performance || {};
+    const color = n(p.net_pnl) >= 0 ? 'var(--green)' : 'var(--red)';
+    html += `<div style="display:flex;align-items:center;justify-content:space-between">
+      <span style="font-size:13px;color:#9ca3af">${esc(k)}</span>
+      <span class="mono" style="font-size:13px;color:${color}">${n(p.win_rate).toFixed(0)}% WR · ${fmtMoneyPlain(p.net_pnl)}</span>
+    </div>`;
+  });
+  html += '</div><div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);font-size:12px;color:var(--muted)">Paper only — not yet live-ready.</div>';
+  qs('#crypto-body').innerHTML = html;
+}
+
+// ── Rendering: MU panel ──────────────────────────────────────────────────────
+function renderMu(){
+  if(!muData){ qs('#mu-position').innerHTML = '<div class="empty">No data yet.</div>'; return; }
+  const hasPos = !!muData.position;
+  if(hasPos){
+    const pnlColor = n(muData.unrealized_pnl) >= 0 ? 'var(--green)' : 'var(--red)';
+    qs('#mu-position').innerHTML = `
+      <div style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:10px">Tonight's Position</div>
+      <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:9px">
+        <span style="font-size:17px;font-weight:700;color:${muData.position==='LONG'?'var(--green)':'var(--red)'}">${esc(muData.position)}</span>
+        <span class="mono" style="font-size:13px;color:#9ca3af">${n(muData.qty).toFixed(2)} @ $${n(muData.entry_price).toFixed(2)}</span>
+      </div>
+      <div class="row-line"><span style="color:var(--muted)">Current</span><span class="mono">$${n(muData.current_price).toFixed(2)}</span></div>
+      <div class="row-line"><span style="color:var(--muted)">Unrealized</span><span class="mono" style="color:${pnlColor}">${fmtMoneyPlain(muData.unrealized_pnl)}</span></div>
+      <div class="row-line"><span style="color:var(--muted)">Stop-loss</span><span class="mono">$${muData.sl_price?n(muData.sl_price).toFixed(2):'—'}</span></div>
+      <div class="row-line"><span style="color:var(--muted)">Exits at</span><span class="mono">~9:30 ET</span></div>`;
+  } else {
+    qs('#mu-position').innerHTML = `<div style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:10px">Tonight's Position</div><div class="empty">Flat — enters ~3:55 PM ET</div>`;
+  }
+  const p = muData.performance || {};
+  let ladder = 'Default ladder';
+  const ov = hermesLog && hermesLog.current_overrides && hermesLog.current_overrides.MUUSDT;
+  if(ov && ov.amount && ov.leverage) ladder = `$${n(ov.amount)}/${n(ov.leverage)}x`;
+  else if(muData.amount && muData.leverage) ladder = `$${n(muData.amount)}/${n(muData.leverage)}x`;
+
+  // Return metrics use the CURRENT per-trade stake as the base -- the same
+  // base the MU auto-scaler uses for its avg-net-per-trade bar (7.5%).
+  // Win rate counts HOW OFTEN we win; these measure HOW MUCH we made.
+  const stake = n(muData.amount) || (ov ? n(ov.amount) : 0);
+  const retColor = v => v>0 ? 'var(--green)' : v<0 ? 'var(--red)' : 'var(--muted)';
+  const pct = v => (v>=0?'+':'')+v.toFixed(v>=100||v<=-100?0:1)+'%';
+  const totalRet = stake ? n(p.net_pnl)/stake*100 : null;
+  const avgRet   = stake && n(p.total) ? n(p.net_pnl)/n(p.total)/stake*100 : null;
+  const avgWin   = n(p.wins)   ? n(p.win_pnl)/n(p.wins) : 0;
+  const avgLoss  = n(p.losses) ? Math.abs(n(p.loss_pnl))/n(p.losses) : 0;
+  const payoff   = avgLoss ? avgWin/avgLoss : null;
+  qs('#mu-stats').innerHTML = `
+    <div class="mini-card"><div class="mini-label">Trades</div><div class="mini-value">${n(p.total)}</div></div>
+    <div class="mini-card"><div class="mini-label">Win Rate</div><div class="mini-value">${n(p.win_rate).toFixed(0)}%</div></div>
+    <div class="mini-card"><div class="mini-label">Net P&amp;L</div><div class="mini-value" style="color:${n(p.net_pnl)>=0?'var(--green)':'var(--red)'}">${fmtMoneyPlain(p.net_pnl)}</div></div>
+    <div class="mini-card"><div class="mini-label">Current Ladder</div><div class="mini-value" style="font-size:13px">${esc(ladder)}</div></div>
+    <div class="mini-card" title="Total net P&amp;L divided by the current per-trade stake"><div class="mini-label">Return on stake</div><div class="mini-value" style="color:${totalRet==null?'var(--muted)':retColor(totalRet)}">${totalRet==null?'—':pct(totalRet)}</div><div class="mini-label" style="margin-top:2px">${stake?'on $'+stake+' / trade':''}</div></div>
+    <div class="mini-card" title="Average net P&amp;L per trade as % of the stake. The auto-scaler needs this at or above 7.5% to scale up."><div class="mini-label">Avg / trade</div><div class="mini-value" style="color:${avgRet==null?'var(--muted)':retColor(avgRet)}">${avgRet==null?'—':pct(avgRet)}</div><div class="mini-label" style="margin-top:2px">scale-up bar 7.5%</div></div>
+    <div class="mini-card" title="Average winning trade divided by average losing trade"><div class="mini-label">Avg win : loss</div><div class="mini-value">${payoff==null?'—':payoff.toFixed(1)+'x'}</div><div class="mini-label" style="margin-top:2px">${payoff==null?'':'$'+avgWin.toFixed(2)+' vs −$'+avgLoss.toFixed(2)}</div></div>`;
+  const trades = (muData.trades || []).slice(0, 4);
+  qs('#mu-trades').innerHTML = trades.length ? trades.map(t=>{
+    const d = t.closed_at ? new Date(t.closed_at).toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '—';
+    const color = n(t.net) >= 0 ? 'var(--green)' : 'var(--red)';
+    return `<div class="trade-row"><span style="color:#9ca3af">${d}</span><span class="mono">$${n(t.entry_price).toFixed(2)} → $${n(t.exit_price).toFixed(2)}</span><span class="mono" style="color:${color}">${fmtMoneyPlain(t.net)}</span><span style="color:var(--muted)">${esc(t.reason||'')}</span></div>`;
+  }).join('') : '<div class="empty" style="padding:8px 12px">No closed trades yet.</div>';
+}
+
+// ── Rendering: Hermes activity feed ─────────────────────────────────────────
+function renderHermesFeed(){
+  if(!hermesLog){ qs('#hermes-feed').innerHTML = '<div class="empty">No data yet.</div>'; return; }
+  const changes = (hermesLog.changes || []).slice(0, 8);
+  if(!changes.length){ qs('#hermes-feed').innerHTML = '<div class="empty">No recent Hermes actions.</div>'; return; }
+  qs('#hermes-feed').innerHTML = changes.map(c=>{
+    let badge = 'APPLIED', badgeBg = 'rgba(96,165,250,.15)', badgeColor = '#60a5fa';
+    if(c.action === 'scaled_down'){ badge = 'SCALED ↓'; badgeBg = 'rgba(245,158,11,.15)'; badgeColor = 'var(--amber)'; }
+    else if(c.action === 'reverted'){ badge = 'REVERTED'; badgeBg = 'rgba(107,114,128,.15)'; badgeColor = '#9ca3af'; }
+    else if(c.source === 'hermes_pick'){ badge = 'PICKED'; badgeBg = 'rgba(45,212,191,.15)'; badgeColor = 'var(--teal)'; }
+    const param = c.params || {};
+    const title = c.source === 'hermes_pick'
+      ? `Daily Pick · <span class="mono" style="color:#d1d5db">${esc(param.direction||'')} ${esc(c.symbol||'')}</span>`
+      : `${esc((c.symbol||'').replace('USDT',''))} · <span class="mono" style="color:#d1d5db">${esc(param.param||'')} → ${esc(param.value)}</span>`;
+    const sub = c.candidate_total != null
+      ? `Backtested $${n(c.baseline_total).toFixed(2)} → $${n(c.candidate_total).toFixed(2)}`
+      : (param.reasoning || param.note || '');
+    return `<div class="feed-item"><span class="feed-badge" style="background:${badgeBg};color:${badgeColor}">${badge}</span><div><div style="font-size:13px">${title}</div><div style="font-size:12px;color:var(--muted);margin-top:2px">${esc(sub)}</div></div></div>`;
+  }).join('');
+}
+
+// ── Hero stats ────────────────────────────────────────────────────────────────
+function renderHero(){
+  const today = localDateKey(new Date());
+  const weekAgo = Date.now() - 7*86400*1000;
+  let pnlFut = 0, pnlMu = 0, pnlSpy = 0, openCount = 0;
+  let winsWeek = 0, totalWeek = 0;
+
+  FUT_SYMBOLS.forEach(s=>{
+    const d = futData[s.key]; if(!d) return;
+    if(d.position) openCount++;
+    (d.closed_trades||[]).forEach(t=>{
+      if(!t.closed_at) return;
+      if(localDateKey(new Date(t.closed_at)) === today) pnlFut += n(t.pnl);
+      if(new Date(t.closed_at).getTime() >= weekAgo){ totalWeek++; if(n(t.pnl) > 0) winsWeek++; }
+    });
+  });
+  if(muData){
+    if(muData.position) openCount++;
+    (muData.trades||[]).forEach(t=>{
+      if(!t.closed_at) return;
+      if(localDateKey(new Date(t.closed_at)) === today) pnlMu += n(t.net);
+      if(new Date(t.closed_at).getTime() >= weekAgo){ totalWeek++; if(n(t.net) > 0) winsWeek++; }
+    });
+  }
+  if(spyState){
+    (spyState.trades||[]).forEach(t=>{
+      if(t.status !== 'closed'){ openCount++; return; }
+      if(!t.closed_at) return;
+      if(localDateKey(new Date(t.closed_at)) === today) pnlSpy += n(t.pnl);
+      if(new Date(t.closed_at).getTime() >= weekAgo){ totalWeek++; if(n(t.pnl) > 0) winsWeek++; }
+    });
+  }
+
+  const totalToday = pnlFut + pnlMu + pnlSpy;
+  const pnlEl = qs('#hero-pnl');
+  pnlEl.textContent = fmtMoney(totalToday);
+  pnlEl.style.color = totalToday >= 0 ? 'var(--green)' : 'var(--red)';
+  qs('#hero-pnl-sub').textContent = `Futures ${fmtMoney(pnlFut)} · MU ${fmtMoney(pnlMu)} · SPY ${fmtMoney(pnlSpy)}`;
+
+  qs('#hero-open').textContent = openCount;
+  const openNames = [];
+  FUT_SYMBOLS.forEach(s=>{ if(futData[s.key] && futData[s.key].position) openNames.push(s.label); });
+  if(muData && muData.position) openNames.push('MU overnight');
+  if(spyState && (spyState.trades||[]).some(t=>t.status!=='closed')) openNames.push('SPY');
+  qs('#hero-open-sub').textContent = openNames.length ? openNames.join(' · ') : 'All flat';
+
+  const wr = totalWeek ? Math.round(winsWeek/totalWeek*100) : null;
+  qs('#hero-wr').textContent = wr==null ? '—' : wr+'%';
+  qs('#hero-wr-sub').textContent = totalWeek ? `Across ${totalWeek} closed trades` : 'No closed trades in 7d';
+
+  const changes7d = hermesLog ? (hermesLog.changes||[]).filter(c=>{
+    const at = c.at || (c.params && c.params.applied_at);
+    return at && new Date(at).getTime() >= weekAgo;
+  }) : [];
+  qs('#hero-hermes').textContent = changes7d.length;
+  const picks7d = changes7d.filter(c=>c.source==='hermes_pick').length;
+  const tunes7d = changes7d.length - picks7d;
+  qs('#hero-hermes-sub').textContent = changes7d.length ? `${tunes7d} tuning · ${picks7d} daily pick${picks7d===1?'':'s'}` : 'No actions in 7d';
+}
+
+// ── Fetch cycle ──────────────────────────────────────────────────────────────
+async function fetchJson(url){
+  try{
+    const r = await fetch(url+'?t='+Date.now(), {cache:'no-store'});
+    return r.ok ? await r.json() : null;
+  }catch(e){ return null; }
+}
+async function loadAll(){
+  const [futs, mu, spySt, spySig, crypto, hlog] = await Promise.all([
+    Promise.all(FUT_SYMBOLS.map(s=>fetchJson(s.api))),
+    fetchJson('/data_overnight_mu.json'),
+    fetchJson('/spy_state.json'),
+    fetchJson('/spy_signal.json'),
+    fetchJson('/data_crypto0dte.json'),
+    fetchJson('/data_hermes_log.json'),
+  ]);
+  let okCount = 0;
+  FUT_SYMBOLS.forEach((s,i)=>{ if(futs[i]){ futData[s.key] = futs[i]; okCount++; } });
+  if(mu) muData = mu;
+  if(spySt) spyState = spySt;
+  if(spySig) spySignal = spySig;
+  if(crypto) cryptoData = crypto;
+  if(hlog) hermesLog = hlog;
+
+  const dot = qs('#status-dot'), txt = qs('#status-text');
+  if(okCount === FUT_SYMBOLS.length){ dot.className='status-dot'; txt.textContent='All systems live'; }
+  else { dot.className='status-dot degraded'; txt.textContent='Some data delayed'; }
+
+  renderFutRows(); renderSpy(); renderCrypto(); renderMu(); renderHermesFeed(); renderHero();
+}
+
+// ── Hermes chat ──────────────────────────────────────────────────────────────
+function addBubble(text, who){
+  const t = qs('#thread');
+  const div = document.createElement('div');
+  div.className = who==='user' ? 'bubble-user' : who==='applied' ? 'bubble-applied' : 'bubble-hermes';
+  div.textContent = who==='applied' ? '✅ '+text : text;
+  t.appendChild(div);
+  t.scrollTop = t.scrollHeight;
+}
+async function sendChat(){
+  const input = qs('#chat-input');
+  const msg = input.value.trim();
+  if(!msg) return;
+  input.value = '';
+  addBubble(msg, 'user');
+  qs('#chat-send-btn').disabled = true;
+  qs('#chat-status').textContent = 'Thinking…';
+  try{
+    const res = await authedFetch('/hermes_chat', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({message: msg})});
+    if(!res.ok){
+      addBubble(res.status===401 ? 'Login required or incorrect.' : 'Server error ('+res.status+') — try again.', 'hermes');
+    } else {
+      const data = await res.json();
+      addBubble(data.reply || "Didn't get a usable reply — try again.", 'hermes');
+      if(data.action_applied){
+        addBubble(data.action_applied, 'applied');
+        setTimeout(loadAll, 1500);
+      }
+    }
+  }catch(e){
+    addBubble('Could not reach Hermes: '+e.message, 'hermes');
+  } finally {
+    qs('#chat-send-btn').disabled = false;
+    qs('#chat-status').textContent = 'Ready';
+  }
+}
+
+loadAll();
+setInterval(loadAll, REFRESH_MS);
+</script>
+</body>
+</html>
