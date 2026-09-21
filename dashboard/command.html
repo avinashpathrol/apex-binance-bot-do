@@ -183,7 +183,10 @@
           <a href="command-calendar.html?source=mu">Full P&amp;L calendar →</a>
         </div>
         <div class="mu-grid">
-          <div class="mini-card" id="mu-position"><div class="empty">Loading…</div></div>
+          <div style="display:flex;flex-direction:column;gap:12px">
+            <div class="mini-card" id="mu-position"><div class="empty">Loading…</div></div>
+            <div class="mini-card" id="mu-exit" style="display:none"></div>
+          </div>
           <div style="display:flex;flex-direction:column;gap:12px">
             <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px" id="mu-stats"></div>
             <div>
@@ -225,6 +228,7 @@
 
 <div class="toast" id="toast"></div>
 
+<script src="mu_levels.js?v=1"></script>
 <script>
 // ── Data sources ─────────────────────────────────────────────────────────────
 const FUT_SYMBOLS = [
@@ -447,6 +451,19 @@ function renderCrypto(){
   qs('#crypto-body').innerHTML = html;
 }
 
+// ── MU exit controls (stop / take-profit / close) -- logic lives in mu_levels.js ──
+let muExitCtl = null;
+function muExitUpdate(){
+  if(!window.MuLevels) return;
+  if(!muExitCtl){
+    muExitCtl = MuLevels.mount(qs('#mu-exit'), {
+      getData: ()=>muData, send: writeConfig, toast: m=>toast(m), confirm: m=>confirm(m), closeNow: closeMu,
+      onSent: ()=>[3000,9000,20000].forEach(ms=>setTimeout(loadAll, ms))
+    });
+  }
+  muExitCtl.update();
+}
+
 // ── Rendering: MU panel ──────────────────────────────────────────────────────
 function renderMu(){
   if(!muData){ qs('#mu-position').innerHTML = '<div class="empty">No data yet.</div>'; return; }
@@ -497,6 +514,7 @@ function renderMu(){
     const color = n(t.net) >= 0 ? 'var(--green)' : 'var(--red)';
     return `<div class="trade-row"><span style="color:#9ca3af">${d}</span><span class="mono">$${n(t.entry_price).toFixed(2)} → $${n(t.exit_price).toFixed(2)}</span><span class="mono" style="color:${color}">${fmtMoneyPlain(t.net)}</span><span style="color:var(--muted)">${esc(t.reason||'')}</span></div>`;
   }).join('') : '<div class="empty" style="padding:8px 12px">No closed trades yet.</div>';
+  muExitUpdate();
 }
 
 // ── Rendering: Hermes activity feed ─────────────────────────────────────────

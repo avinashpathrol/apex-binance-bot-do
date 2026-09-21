@@ -570,8 +570,11 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
         <span style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)">🌙 Overnight Position</span>
         <span id="mu-pos-badge" style="font-size:10px;font-weight:700;padding:3px 9px;border-radius:20px;background:rgba(255,255,255,.06);color:var(--muted)">FLAT</span>
       </div>
-      <div id="mu-pos-body" style="color:var(--muted);font-size:12px">No active overnight position · Next entry Mon–Thu at market close</div>
+      <div id="mu-pos-body" style="color:var(--muted);font-size:12px">No active overnight position · Next entry Mon–Fri ~3:55 PM ET</div>
     </div>
+
+    <!-- Exit controls: stop / take-profit / close (logic in mu_levels.js) -->
+    <div class="mu-pos-card" id="mu-exit-card" style="display:none"></div>
 
     <!-- Stats -->
     <div class="card" style="margin-bottom:12px">
@@ -681,6 +684,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 
 <div id="toast"></div>
 
+<script src="mu_levels.js?v=1"></script>
 <script>
 'use strict';
 
@@ -1285,8 +1289,29 @@ async function fetchMU(){
   }catch(e){}
 }
 
+let muDataM=null, muExitCtl=null;
+async function closeMuMobile(){
+  if(!muDataM||!muDataM.position) return;
+  if(!confirm('Close MU overnight '+muDataM.position+' at market?')) return;
+  try{
+    await writeConfig({futures_mu_close_requested:true,futures_mu_close_requested_at:new Date().toISOString()});
+    toast('✅ Close sent — executes within about a minute');
+  }catch(e){ toast('⚠️ Failed: '+e.message); }
+}
+function muExitUpdateM(){
+  if(!window.MuLevels) return;
+  if(!muExitCtl){
+    muExitCtl=MuLevels.mount(qs('#mu-exit-card'),{
+      getData:()=>muDataM, send:writeConfig, toast:m=>toast(m), confirm:m=>confirm(m), closeNow:closeMuMobile,
+      onSent:()=>[3000,9000,20000].forEach(ms=>setTimeout(fetchMU,ms))
+    });
+  }
+  muExitCtl.update();
+}
+
 function renderMU(d){
   if(!d) return;
+  muDataM=d; muExitUpdateM();
   const p=d.performance||{};
   const fmt=v=>v>=0?'+$'+v.toFixed(2):'-$'+Math.abs(v).toFixed(2);
 
@@ -1340,7 +1365,7 @@ function renderMU(d){
     badge.style.background='rgba(255,255,255,.06)';
     badge.style.color='var(--muted)';
     badge.textContent='FLAT';
-    body.innerHTML='<div style="color:var(--muted);font-size:12px">No active overnight position · Next entry Mon–Thu at market close</div>';
+    body.innerHTML='<div style="color:var(--muted);font-size:12px">No active overnight position · Next entry Mon–Fri ~3:55 PM ET</div>';
   }
 
   // Trade rows
