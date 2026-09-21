@@ -2803,6 +2803,7 @@ def fetch_dashboard_config() -> dict:
             'force_trail_symbol': cfg.get('futures_force_trail_symbol'),
             'mu_close_requested':    bool(cfg.get('futures_mu_close_requested', False)),
             'mu_close_requested_at': cfg.get('futures_mu_close_requested_at'),
+            'mu_levels_request':  cfg.get('futures_mu_levels_request') if isinstance(cfg.get('futures_mu_levels_request'), dict) else None,
             'manual_trade':       cfg.get('manual_trade') if isinstance(cfg.get('manual_trade'), dict) else None,
             'updated_at':         cfg.get('updated_at'),
         }
@@ -3614,6 +3615,12 @@ def write_overnight_dashboard(price: float = None) -> None:
         'position':      on.get('position'),
         'entry_price':   on.get('entry_price'),
         'sl_price':      on.get('sl_price'),
+        'sl_custom':     bool(on.get('sl_custom')),
+        'sl_default':    round(on['entry_price'] * (1 - OVERNIGHT_CFG['sl_pct']), 4) if on.get('entry_price') else None,
+        'target_price':  on.get('target_price'),
+        'entry_fee':     on.get('entry_fee'),
+        'fee_rate':      FEE_RATE,
+        'levels_status': on.get('levels_status'),
         'qty':           on.get('qty'),
         'opened_at':     on.get('opened_at'),
         'current_price': current_price,
@@ -4212,6 +4219,72 @@ def run_paper_offhours(symbol: str, price: float, action: str, confidence: int, 
     if market_closed and action in ('LONG', 'SHORT'):
         open_paper_position(symbol, action, price, confidence, reason)
 
+# ── MU exit levels set from the dashboard ─────────────────────────────────────
+# The dashboard's "Stop at price" / "Take profit at price" controls write ONE request
+# (futures_mu_levels_request) into bot_config.json. It is bound to the specific open
+# position (for_opened_at), validated here, applied once, then cleared. A custom stop can
+# only sit between the default 3.5% stop and the current price: it can tighten protection
+# or relax it back toward the default, never loosen it below the default. Enforcement is
+# the same software check as the default stop (polled once per cycle, ~40s), so a fast
+# drop can gap past it -- the level is a trigger, not a guaranteed fill price.
+MU_LEVEL_MIN_GAP = 0.0005      # a requested stop/target must be >= 0.05% away from the current price
+
+def _mu_net_at(on: dict, px: float) -> float:
+    """Net P&L (entry fee already paid + exit fee) if the MU long were closed at px."""
+    qty = on.get('qty', 0.0)
+    return (px - on['entry_price']) * qty - on.get('entry_fee', 0.0) - qty * px * FEE_RATE
+
+def apply_mu_levels_request(req: dict, price: float) -> None:
+    on = state.get('overnight_mu', {})
+    if not on.get('position'):
+        clear_flag('futures_mu_levels_request')
+        return
+    applied, rejected = [], []
+    try:
+        if req.get('for_opened_at') != on.get('opened_at'):
+            rejected.append('ignored: the request was for a different position')
+        else:
+            default_sl = round(on['entry_price'] * (1 - OVERNIGHT_CFG['sl_pct']), 4)
+            if req.get('reset_stop'):
+                on['sl_price'] = default_sl
+                on.pop('sl_custom', None)
+                applied.append(f'stop reset to the default ${default_sl:,.2f}')
+            if req.get('stop') is not None:
+                stop = safe_float(req.get('stop'), 0.0)
+                if stop <= default_sl:
+                    rejected.append(f'stop ${stop:,.2f} is not above the default stop ${default_sl:,.2f}')
+                elif stop >= price * (1 - MU_LEVEL_MIN_GAP):
+                    rejected.append(f'stop ${stop:,.2f} is at or above the current price ${price:,.2f} - it would close immediately (use Close instead)')
+                else:
+                    on['sl_price'] = round(stop, 4)
+                    on['sl_custom'] = True
+                    applied.append(f'stop set to ${stop:,.2f} (about {_mu_net_at(on, stop):+.2f} USDT net if it fills there)')
+            if req.get('clear_target'):
+                if on.pop('target_price', None) is not None:
+                    applied.append('take-profit target cleared')
+            if req.get('target') is not None:
+                target = safe_float(req.get('target'), 0.0)
+                if target <= price * (1 + MU_LEVEL_MIN_GAP):
+                    rejected.append(f'target ${target:,.2f} is at or below the current price ${price:,.2f} - it would close immediately (use Close instead)')
+                else:
+                    on['target_price'] = round(target, 4)
+                    applied.append(f'take-profit set to ${target:,.2f} (about {_mu_net_at(on, target):+.2f} USDT net)')
+    except Exception as e:
+        rejected.append(f'error while applying: {e}')
+    msg = '; '.join(applied + rejected) or 'no change'
+    on['levels_status'] = {'at': now_utc_iso(), 'ok': bool(applied) and not rejected, 'msg': msg}
+    state['overnight_mu'] = on
+    save_state()
+    logger.info(f'[OVERNIGHT] MU exit levels request: {msg}')
+    send_telegram(('🛡 <b>MU exit levels updated</b>\n' if not rejected else '⚠️ <b>MU exit levels request</b>\n')
+                  + '\n'.join(f'• {m}' for m in applied + rejected))
+    clear_flag('futures_mu_levels_request')
+    try:
+        write_overnight_dashboard(price)
+    except Exception as e:
+        logger.warning(f'[OVERNIGHT] dashboard refresh after levels request failed (non-critical): {e}')
+
+
 def run_overnight_strategy() -> None:
     et      = _et_now()
     weekday = et.weekday()   # 0=Mon … 4=Fri
@@ -4223,11 +4296,26 @@ def run_overnight_strategy() -> None:
 
     # SL check — runs any time there's an open overnight position
     if has_pos:
-        price    = get_current_price(sym)
+        price = get_current_price(sym)
+        # A dashboard request to set/adjust the exit levels is applied BEFORE the checks, so a new
+        # stop takes effect this very cycle. Never lets a bad request break the cycle.
+        try:
+            lv_req = fetch_dashboard_config().get('mu_levels_request')
+            if lv_req:
+                apply_mu_levels_request(lv_req, price)
+                on = state.get('overnight_mu', {})
+        except Exception as e:
+            logger.warning(f'[OVERNIGHT] exit-levels request failed (ignored): {e}')
         sl_price = on.get('sl_price', 0)
         if sl_price and price <= sl_price:
-            logger.info(f'[OVERNIGHT] SL hit @ ${price:.4f} (sl={sl_price:.4f})')
-            close_overnight_mu('Stop Loss')
+            reason = 'Custom Stop' if on.get('sl_custom') else 'Stop Loss'
+            logger.info(f'[OVERNIGHT] {reason} hit @ ${price:.4f} (sl={sl_price:.4f})')
+            close_overnight_mu(reason)
+            return
+        tp_price = on.get('target_price')
+        if tp_price and price >= tp_price:
+            logger.info(f'[OVERNIGHT] Take-profit hit @ ${price:.4f} (target={tp_price:.4f})')
+            close_overnight_mu('Target Hit')
             return
         # Keep the dashboard's live P&L fresh while a position is open. This
         # file used to be written only on open/close, so a weekend hold showed
