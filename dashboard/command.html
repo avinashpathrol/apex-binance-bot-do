@@ -228,7 +228,7 @@
 
 <div class="toast" id="toast"></div>
 
-<script src="mu_levels.js?v=1"></script>
+<script src="mu_levels.js?v=2" defer></script>
 <script>
 // ── Data sources ─────────────────────────────────────────────────────────────
 const FUT_SYMBOLS = [
@@ -238,7 +238,7 @@ const FUT_SYMBOLS = [
   {key:'soxl', api:'/data_futures_soxl.json', sym:'SOXLUSDT', label:'SOXL'},
   {key:'crcl', api:'/data_futures_crcl.json', sym:'CRCLUSDT', label:'CRCL'},
   {key:'asts', api:'/data_futures_asts.json', sym:'ASTSUSDT', label:'ASTS'},
-  {key:'tsla', api:'/data_futures_tsla.json', sym:'TSLAUSDT', label:'TSLA'},
+  {key:'hood', api:'/data_futures_hood.json', sym:'HOODUSDT', label:'HOOD'},
 ];
 const CONFIG_API  = '/bot_config.json';
 const REFRESH_MS  = 6000;
@@ -463,6 +463,8 @@ function muExitUpdate(){
   }
   muExitCtl.update();
 }
+// mu_levels.js loads deferred (it must never block the page); mount as soon as it has executed
+document.addEventListener('DOMContentLoaded',()=>{ if(muData) muExitUpdate(); });
 
 // ── Rendering: MU panel ──────────────────────────────────────────────────────
 function renderMu(){

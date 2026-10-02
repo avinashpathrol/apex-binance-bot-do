@@ -53,6 +53,8 @@ SYMBOLS = {
     'SNDKUSDT': {'base': 'SNDK', 'name': 'SanDisk',           'note': 'closest MU peer (NAND memory), overnight corr 0.91'},
     'WDCUSDT':  {'base': 'WDC',  'name': 'Western Digital',   'note': 'storage/memory peer, corr 0.77, thin perp'},
     'LITEUSDT': {'base': 'LITE', 'name': 'Lumentum',          'note': 'AI optics, less correlated (0.60), earnings-sensitive'},
+    'MRVLUSDT': {'base': 'MRVL', 'name': 'Marvell',            'note': 'semis, edge not earnings-dependent, added 2026-09-29 as an alternative to SNDK'},
+    'CRDOUSDT': {'base': 'CRDO', 'name': 'Credo Technology',   'note': 'best backtest edge (t=2.1) but thinnest real perp (~$5.5M/day) of the group -- added 2026-09-29 specifically to see how a thin book behaves; watch avg entry/exit slippage below before ever considering this one live'},
 }
 
 STAKE_USDT       = 100.0     # margin per trade (user request 2026-09-20)
@@ -687,6 +689,15 @@ class Sentinel:
             'net_pnl': round(sum(t['net'] for t in trades), 2),
             'avg_net_pct_notional': round(sum(t['net_pct_notional'] for t in trades) / n, 4) if n else 0,
             'stops': sum(1 for t in trades if t['stopped']), 'late_exits': sum(1 for t in trades if t.get('late')),
+            # liquidity check (added 2026-09-29 for thin-book candidates like CRDO): how far the simulated fill
+            # landed from the mid-price at entry/exit. Consistently large slippage here means the real order book
+            # can't actually absorb this stake -- a red flag worth seeing before ever trading a symbol live,
+            # separate from whether the strategy itself made money.
+            'avg_entry_slip_bps': round(sum(t['entry_slip_bps'] for t in trades) / n, 2) if n else 0,
+            'avg_exit_slip_bps': round(sum(t['exit_slip_bps'] for t in trades) / n, 2) if n else 0,
+            'max_entry_slip_bps': round(max((t['entry_slip_bps'] for t in trades), default=0), 2),
+            'max_exit_slip_bps': round(max((t['exit_slip_bps'] for t in trades), default=0), 2),
+            'partial_fills': sum(1 for t in trades if 'partial' in (t.get('entry_fill_source') or '') or 'partial' in (t.get('exit_fill_source') or '')),
         }
 
     def write_dashboard(self, now_utc):

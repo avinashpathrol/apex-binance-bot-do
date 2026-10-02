@@ -85,7 +85,7 @@ tr:last-child td{border-bottom:none}
 <script>
 const SD = '/data_sentinel.json', MUD = '/data_overnight_mu.json';
 // net avg per night after fees+funding, 2 years of stock data (2026-09-20 backtest) -- reference only
-const BACKTEST = {SNDK: 0.42, WDC: 0.22, LITE: 0.35, MU: 0.24};
+const BACKTEST = {SNDK: 0.42, WDC: 0.22, LITE: 0.35, MRVL: 0.23, CRDO: 0.36, MU: 0.24};
 let S = null, MU = null, tab = 'ALL', calY, calM;
 
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -116,7 +116,13 @@ function statsOf(trades) {
   if (!n) return {n: 0};
   const pcts = trades.map(t => t.p), nets = trades.map(t => t.net);
   const wins = nets.filter(x => x > 0).length;
-  return {n, win: wins / n * 100, avgPct: pcts.reduce((a, b) => a + b, 0) / n, net: nets.reduce((a, b) => a + b, 0), stops: trades.filter(t => t.stop).length};
+  // liquidity check (2026-09-29): how far the simulated fill landed from the mid-price. Only meaningful for
+  // paper trades (t.entry_slip_bps etc.) -- MU's real closed trades don't carry these fields, so they read as 0.
+  const eSlip = trades.map(t => t.entry_slip_bps || 0), xSlip = trades.map(t => t.exit_slip_bps || 0);
+  const partial = trades.filter(t => /partial/.test(t.entry_fill_source || '') || /partial/.test(t.exit_fill_source || '')).length;
+  return {n, win: wins / n * 100, avgPct: pcts.reduce((a, b) => a + b, 0) / n, net: nets.reduce((a, b) => a + b, 0), stops: trades.filter(t => t.stop).length,
+    avgEntrySlip: eSlip.reduce((a, b) => a + b, 0) / n, avgExitSlip: xSlip.reduce((a, b) => a + b, 0) / n,
+    maxEntrySlip: Math.max(...eSlip.map(Math.abs), 0), maxExitSlip: Math.max(...xSlip.map(Math.abs), 0), partial};
 }
 const paperTrades = sym => (sym === 'ALL' ? Object.values(S.symbols).flatMap(v => v.trades) : (S.symbols[sym] || {trades: []}).trades)
   .map(t => Object.assign({}, t, {p: t.net_pct_notional, stop: t.stopped}));
@@ -167,7 +173,7 @@ function posCard(sym) {
 
 function perfCard() {
   const st = statsOf(paperTrades(tab));
-  const title = tab === 'ALL' ? 'Performance — all three (paper)' : `Performance — ${esc(S.symbols[tab].base)} (paper)`;
+  const title = tab === 'ALL' ? 'Performance — all (paper)' : `Performance — ${esc(S.symbols[tab].base)} (paper)`;
   if (!st.n) return `<div class="card"><div class="card-title">${title}</div><div class="empty-msg">No completed paper trades yet. First entry is at the next 3:55 PM ET window; the result lands after the next open.</div></div>`;
   const bt = tab === 'ALL' ? null : BACKTEST[S.symbols[tab].base];
   return `<div class="card"><div class="card-title">${title}</div><div class="stats-row">
@@ -176,7 +182,24 @@ function perfCard() {
     <div class="stat"><div class="num ${cls(st.net)}">${pnl(st.net, 0)}</div><div class="lbl">Net P&amp;L (paper $)</div></div>
     <div class="stat"><div class="num ${cls(st.avgPct)}">${pct(st.avgPct, 2)}</div><div class="lbl">Avg / night (% of notional)</div></div>
     <div class="stat"><div class="num">${st.stops}</div><div class="lbl">Stop-outs</div></div>
-  </div>${bt != null ? `<div class="note" style="margin-top:10px">Backtest expectation for ${esc(S.symbols[tab].base)}: <b>${pct(bt)}</b> avg net per night (2 yrs of stock data). Judge this page in % of notional, not dollars — the dollar figures are sized for $100 at max leverage, far larger than the live account.</div>` : ''}</div>`;
+  </div>${bt != null ? `<div class="note" style="margin-top:10px">Backtest expectation for ${esc(S.symbols[tab].base)}: <b>${pct(bt)}</b> avg net per night (2 yrs of stock data). Judge this page in % of notional, not dollars — the dollar figures are sized for $100 at max leverage, far larger than the live account.</div>` : ''}</div>${liquidityCard(tab, st)}</div>`;
+}
+
+function liquidityCard(tab, st) {
+  // Only for a single symbol (an "ALL" blend of different tickers' slippage isn't a meaningful number) and
+  // only once there's something to show. This is the check requested 2026-09-29 for thin books like CRDO --
+  // consistently large slippage here means the real order book can't actually absorb this stake, independent
+  // of whether the strategy made money.
+  if (tab === 'ALL' || !st.n) return '';
+  const tight = Math.abs(st.avgEntrySlip) < 3 && Math.abs(st.avgExitSlip) < 3 && st.partial === 0;
+  return `<div class="card"><div class="card-title">Liquidity check ${tight ? '<span class="pos">✓ tight so far</span>' : '<span class="warn" style="color:var(--yellow)">⚠ worth watching</span>'}</div>
+    <div class="stats-row">
+      <div class="stat"><div class="num ${Math.abs(st.avgEntrySlip) >= 3 ? 'neg' : ''}">${num(st.avgEntrySlip, 1)}bp</div><div class="lbl">Avg entry slip</div></div>
+      <div class="stat"><div class="num ${Math.abs(st.avgExitSlip) >= 3 ? 'neg' : ''}">${num(st.avgExitSlip, 1)}bp</div><div class="lbl">Avg exit slip</div></div>
+      <div class="stat"><div class="num">${num(Math.max(st.maxEntrySlip, st.maxExitSlip), 1)}bp</div><div class="lbl">Worst single fill</div></div>
+      <div class="stat"><div class="num ${st.partial ? 'neg' : ''}">${st.partial}</div><div class="lbl">Thin/partial fills</div></div>
+    </div>
+    <div class="note" style="margin-top:10px">Slippage = distance between the simulated fill and the mid-price when the order was placed (in basis points, 1bp = 0.01%). A few bp is normal; a consistently wide number, or any partial fill, means this book can't really absorb a $100 stake at max leverage and shouldn't be trusted for a live-sizing decision yet.</div></div>`;
 }
 
 function compareCard() {
@@ -232,7 +255,7 @@ function rulesCard() {
     <b>Same rules as MU:</b> buy at market ${esc(r.entry)}; hard stop <b>${num(r.sl_pct, 1)}%</b> below the fill checked every ~30 s in software (no exchange stop); sell at the open (${esc(r.exit)}); no trailing stop.<br>
     <b>Costs:</b> ${num(r.fee_per_side_pct, 2)}% fee per side + real Binance funding while held. Fills are simulated by walking the live order book, so thin tickers pay realistic slippage.<br>
     <b>Not modeled:</b> liquidation. Like MU's live cross-margin account, P&amp;L = position size × return, so a stop-out can lose more than the $100 stake.<br>
-    <b>No real orders</b> are ever placed by Sentinel — it only reads prices. Ticker choice comes from the 2026-09-20 peer screen (SNDK closest to MU; WDC and LITE alternates).
+    <b>No real orders</b> are ever placed by Sentinel — it only reads prices. Ticker choice comes from the 2026-09-20 peer screen (SNDK closest to MU; WDC/LITE alternates) plus MRVL and CRDO, added 2026-09-29 -- CRDO specifically to see how a thin real book (~$5.5M/day) behaves, watch its Liquidity check card above before ever trading it live.
   </div>${(S.skips && S.skips.length) ? `<div class="note" style="margin-top:8px">Recent skips: ${S.skips.slice(-4).map(s => esc(s.day + ' ' + s.symbol.replace('USDT', '') + ' — ' + s.why)).join('; ')}</div>` : ''}</div>`;
 }
 

@@ -95,6 +95,62 @@ CRYPTO_ADX_MIN            = 25.0
 CRYPTO_CHECK_INTERVAL_SEC = 300     # 0DTE spreads aren't actively managed — just watched for rollover
 CRYPTO_CHAIN_CACHE_TTL    = 3600    # strikes don't change intraday
 
+# ── SPY 0DTE paper trading via moomoo — real quotes, real exchange Greeks ──────
+# 2026-10-02: user's moomoo account (AppKey + Ed25519 key, same .env as everything
+# else) authenticates directly against moomoo's newer signed-REST API
+# (webapi.moomoo.com) — no OpenD/local gateway needed, confirmed live against the
+# real account. This mirrors the crypto 0DTE paper engine above (real quotes,
+# simulated fills, no order-placement code at all) but for SPY during real market
+# hours, using REAL combo-spread bid/ask from moomoo (not a theoretical calc) for
+# entry/exit pricing, REAL exchange delta for strike selection, and the EXISTING
+# CBOE GEX direction signal (fetch_cboe_gex, same function the live signal bot
+# uses) to pick BULL_PUT vs BEAR_CALL — genuinely blending moomoo's real data with
+# this file's own GEX calculations, per user request. New feature vs the crypto
+# engine: profit-taking mid-day instead of only ever holding to settlement.
+SPYM_UNDERLYING            = 'US.SPY'
+SPYM_STATE_FILE            = os.path.join(WEB_ROOT, 'spy0dte_moomoo_state.json')
+SPYM_DASHBOARD_FILE        = os.path.join(WEB_ROOT, 'data_spy0dte_moomoo.json')
+SPYM_API_BASE              = 'https://webapi.moomoo.com'
+SPYM_APP_KEY               = os.getenv('MOOMOO_APP_KEY', '')
+SPYM_KEY_PATH              = os.getenv('MOOMOO_RSA_KEY_PATH', '')
+SPYM_TRADE_RISK_USD        = 100.0  # paper target max-loss-per-spread, same framing as the crypto engine
+SPYM_SPREAD_WIDTH          = 1.0    # $1-wide — narrower than the live signal bot's $2 width specifically so
+                                     # ONE real contract (equity options can't be fractional, unlike crypto's
+                                     # 0.01-step sizing) lands close to the $100 paper target instead of ~$150-190
+SPYM_TARGET_SHORT_DELTA    = 0.18   # classic 0DTE credit-spread heuristic: short strike at ~15-20 real delta
+# Trailing profit lock (replaces a flat take-profit target, user request 2026-10-02):
+# once 50% of max credit is captured, start tracking the BEST pct captured seen since
+# then; give back the position if it pulls back SPYM_TRAIL_GIVEBACK_PCT (percentage
+# points of max credit, not percent-of-peak) from that peak. No hard ceiling — a
+# position that just keeps improving smoothly is left to run to force-close/expiry;
+# only a real reversal off the peak locks it in. Same philosophy as MU's breakeven
+# trailing floor, applied to a credit spread's %-of-max-credit instead of price.
+SPYM_TRAIL_ACTIVATE_PCT    = 0.50
+SPYM_TRAIL_GIVEBACK_PCT    = 0.15
+SPYM_STOP_LOSS_MULT        = 2.0    # paper stop: close if cost-to-close grows past 2x the credit received
+SPYM_CHECK_INTERVAL_SEC    = 300    # flat-book cadence: scan for entry windows / refresh dashboard, 5 min
+SPYM_MONITOR_INTERVAL_SEC  = 15     # once ANY variant has an open position, check every 15s instead — user
+                                     # request 2026-10-02 (initially 30s, tightened to 15s on review: 0DTE
+                                     # gamma means these spreads can move meaningfully in well under 30s, and
+                                     # there's no real cost to checking more often — paper trading has no
+                                     # execution slippage, and 2 variants' worth of extra calls is nowhere
+                                     # near any real API rate limit)
+SPYM_LAST_ENTRY_HOUR       = 14     # don't open brand-new 0DTE risk after 2pm ET — too little premium/time left,
+                                     # shared ceiling across every variant below
+SPYM_FORCE_CLOSE_HOUR      = 15
+SPYM_FORCE_CLOSE_MINUTE    = 45     # settle/force-close ahead of the close auction, same safety-net philosophy
+                                     # as MU's hard-SL backstop — never depend on a later tick to catch this
+# Two parallel paper lanes, identical rules (sizing/strike-pick/profit-take/stop/
+# force-close all shared above) — ONLY the entry time differs. Run side by side,
+# same days, same real market, so the comparison is clean. User request
+# 2026-10-02: "what time is best for trading this" — answer with real paper
+# data instead of guessing. Each variant gets its own state bucket + dashboard
+# section (same pattern as Sentinel's multi-symbol SYMBOLS dict).
+SPYM_VARIANTS = {
+    'open':    {'entry_hour': 9,  'entry_minute': 45, 'label': 'Market open (9:45 ET / 7:45 MST)'},
+    'ten_mst': {'entry_hour': 12, 'entry_minute': 0,  'label': '10:00 AM MST (12:00 PM ET)'},
+}
+
 # ── Economic calendar ─────────────────────────────────────────────────────────
 # FOMC decision days, CPI and NFP release dates.
 # Update annually:  FOMC → federalreserve.gov  |  CPI/NFP → bls.gov
@@ -222,6 +278,28 @@ def save_crypto_state(st: dict):
         json.dump(st, open(CRYPTO_STATE_FILE, 'w'), indent=2, default=str)
     except Exception as e:
         logger.warning(f'save_crypto_state: {e}')
+
+def load_spym_state() -> dict:
+    try:
+        if os.path.exists(SPYM_STATE_FILE):
+            data = json.load(open(SPYM_STATE_FILE))
+        else:
+            data = {}
+    except Exception:
+        data = {}
+    data.setdefault('variants', {})
+    for vkey in SPYM_VARIANTS:
+        data['variants'].setdefault(vkey, {'open_position': None, 'trades': [], 'last_entry_date': None})
+    data.setdefault('options_permission', {
+        'status': 'pending', 'first_checked_date': None, 'last_checked_date': None, 'activated_date': None,
+    })
+    return data
+
+def save_spym_state(st: dict):
+    try:
+        json.dump(st, open(SPYM_STATE_FILE, 'w'), indent=2, default=str)
+    except Exception as e:
+        logger.warning(f'save_spym_state: {e}')
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def _safe_float(v, default: float = 0.0) -> float:
@@ -940,6 +1018,19 @@ def notify(msg: str):
 
 discord = notify
 
+# User request 2026-10-02: silence the manual-trade-suggestion alert stream (new
+# signal pushes, VIX-skip notices, daily-loss-limit notice, the 9:25am health
+# ping, and price-monitoring alerts on a registered trade) while the underlying
+# signal data/dashboard keep working exactly as before — "have it on the app,
+# but stop sending me those messages." Flip back to True to resume. Does NOT
+# touch: register/edit/close-trade confirmations (direct feedback on the user's
+# own action, not an unsolicited suggestion), or the crypto/SPY-moomoo paper
+# engines' or Hermes's notifications — all separate streams, left untouched.
+SPY_SIGNAL_NOTIFICATIONS_ENABLED = False
+def signal_notify(msg: str):
+    if SPY_SIGNAL_NOTIFICATIONS_ENABLED:
+        discord(msg)
+
 def format_discord(sig: dict) -> str:
     s   = sig['suggested']
     mst = {
@@ -1412,7 +1503,7 @@ def send_health_ping(state: dict) -> None:
     sched_str = ' → '.join(mst for _, _, _, mst in SCHEDULES)
     status_icon = '✅' if vix_ok else '⚠️'
     goal_needed = 74.0 - today_pnl
-    discord(
+    signal_notify(
         f"☀️ **SPY Bot Ready — {et_now().strftime('%a %b %-d')}**\n"
         f"{status_icon} {vix_label} "
         f"{'(signals active)' if vix_ok else f'(signals may pause — outside [{VIX_MIN}–{VIX_MAX}])'}\n"
@@ -1453,7 +1544,7 @@ def run_signal(label: str, state: dict) -> dict:
             msg = (f"⏭️ **SPY Skipped — {label}**\n"
                    f"VIX **{vix:.1f}** is below {VIX_MIN} — spreads pay near nothing. "
                    f"Waiting for higher vol before selling premium.")
-            discord(msg)
+            signal_notify(msg)
             logger.info(f'[{label}] Skipped — VIX too low ({vix:.1f} < {VIX_MIN})')
             _shadow_track_vix_skip(label, vix, state)
             return state
@@ -1461,7 +1552,7 @@ def run_signal(label: str, state: dict) -> dict:
             msg = (f"⏭️ **SPY Skipped — {label}**\n"
                    f"VIX **{vix:.1f}** above {VIX_MAX} — 0DTE too volatile. "
                    f"Max 1 contract if you trade manually today.")
-            discord(msg)
+            signal_notify(msg)
             logger.info(f'[{label}] Skipped — VIX too high ({vix:.1f} > {VIX_MAX})')
             _shadow_track_vix_skip(label, vix, state)
             return state
@@ -1474,7 +1565,7 @@ def run_signal(label: str, state: dict) -> dict:
         if not state['fired'].get(loss_key):
             state['fired'][loss_key] = True
             save_state(state)
-            discord(
+            signal_notify(
                 f"🛑 **SPY Daily Loss Limit — Signals Paused**\n"
                 f"Today's P&L: **${today_pnl:+.2f}** (limit: ${DAILY_LOSS_LIMIT_USD} ≈ -$150 CAD)\n"
                 f"No more signals today. Bot resumes tomorrow at 9:25 AM ET."
@@ -1504,7 +1595,7 @@ def run_signal(label: str, state: dict) -> dict:
         open_shadow_variants(sig, load_shadow_state())
     except Exception as e:
         logger.warning(f'shadow tracking on new signal failed (non-critical): {e}')
-    discord(format_discord(sig))
+    signal_notify(format_discord(sig))
 
     s = sig['suggested']
     logger.info(f'[{label}] {sig["direction"]} ${s["short_strike"]:.0f}/${s["long_strike"]:.0f} credit ${s["net_credit"]:.2f}')
@@ -2042,6 +2133,471 @@ def run_crypto_0dte_cycle(crypto_state):
     crypto_write_dashboard(crypto_state)
 
 
+# ── SPY 0DTE paper trading via moomoo (real quotes + real Greeks) ─────────────
+# Signed-REST auth only (AppKey + Ed25519 private key, same .env as everything
+# else) — no OpenD/local gateway, confirmed live against the real account
+# 2026-10-02. No order-placement code anywhere below: every call is a read-only
+# GET/POST against moomoo's quote endpoints. Paper only.
+_spym_priv_key_cache = None
+def _spym_priv_key():
+    global _spym_priv_key_cache
+    if _spym_priv_key_cache is None:
+        from cryptography.hazmat.primitives.serialization import load_pem_private_key
+        with open(SPYM_KEY_PATH, 'rb') as f:
+            _spym_priv_key_cache = load_pem_private_key(f.read(), password=None)
+    return _spym_priv_key_cache
+
+def _spym_sign(method: str, path: str, query: str = '', body_str: str = '') -> dict:
+    import base64, secrets, hashlib
+    ts = str(int(time.time() * 1000))
+    nonce = secrets.token_hex(8)
+    body_hash = hashlib.sha256(body_str.encode()).hexdigest() if body_str else ''
+    sign_str = f'{ts}\n{method}\n{path}\n{query}\n{body_hash}'
+    sig = base64.b64encode(_spym_priv_key().sign(sign_str.encode())).decode()
+    return {'X-Api-Key': SPYM_APP_KEY, 'X-Timestamp': ts, 'X-Nonce': nonce, 'Authorization': sig}
+
+def _spym_check(d: dict) -> dict:
+    """moomoo's REST API uses TWO different response envelopes depending on
+    which API family answered: Quote endpoints return {"ret_code":0,"ret_msg":
+    ...,"data":...}; Trading endpoints (authorized_trd_accs, acctradinginfo,
+    etc.) return {"s":"ok"/"error","d":...,"errmsg":...}. Checking only the
+    first shape against a Trading response meant 'ret_code' was always missing
+    (None != 0), so every successful Trading call was wrongly raised as an
+    error — caught live 2026-10-02 via spym_get_account_id failing right after
+    a real, correct 200 response. Handle both; don't block on an unrecognized
+    shape rather than risk the same false-positive again."""
+    if 'ret_code' in d:
+        if d.get('ret_code') != 0:
+            raise RuntimeError(d.get('ret_msg') or 'unknown moomoo error')
+    elif 's' in d:
+        if d.get('s') != 'ok':
+            raise RuntimeError(d.get('errmsg') or 'unknown moomoo error')
+    return d
+
+def spym_get(path: str, query: str = '') -> dict:
+    headers = _spym_sign('GET', path, query)
+    r = requests.get(f'{SPYM_API_BASE}{path}' + (f'?{query}' if query else ''), headers=headers, timeout=15)
+    r.raise_for_status()
+    return _spym_check(r.json())
+
+def spym_post(path: str, body: dict) -> dict:
+    body_str = json.dumps(body, separators=(',', ':'))
+    headers = _spym_sign('POST', path, '', body_str)
+    headers['Content-Type'] = 'application/json'
+    r = requests.post(f'{SPYM_API_BASE}{path}', headers=headers, data=body_str, timeout=15)
+    r.raise_for_status()
+    return _spym_check(r.json())
+
+def spym_get_spot() -> Optional[float]:
+    try:
+        d = spym_post('/api/v1.0/quote/stock-quote', {'code_list': [SPYM_UNDERLYING]})
+        return float(d['data']['quote_list'][0]['last_price'])
+    except Exception as e:
+        logger.warning(f'spym_get_spot: {e}')
+        return None
+
+def spym_today_expiry() -> Optional[str]:
+    """Today's real 0DTE expiry, per moomoo's own live trading calendar — never
+    hardcoded (same philosophy as crypto_check_rollover's live expiry check)."""
+    try:
+        d = spym_get(f'/api/v1.0/quote/{SPYM_UNDERLYING}/option-expiration')
+        today_str = et_now().strftime('%Y-%m-%d')
+        for e in d['data']['expiration_list']:
+            if e['strike_time'] == today_str:
+                return today_str
+        return None
+    except Exception as e:
+        logger.warning(f'spym_today_expiry: {e}')
+        return None
+
+_spym_chain_cache: dict = {}
+def spym_get_chain(expiry: str) -> Optional[list]:
+    now = time.time()
+    cached = _spym_chain_cache.get(expiry)
+    if cached and (now - cached['ts']) < 3600:
+        return cached['data']
+    try:
+        d = spym_get(f'/api/v1.0/quote/{SPYM_UNDERLYING}/option-chain', f'start={expiry}&end={expiry}')
+        chain = d['data']['option_chain']
+        _spym_chain_cache[expiry] = {'data': chain, 'ts': now}
+        return chain
+    except Exception as e:
+        logger.warning(f'spym_get_chain: {e}')
+        return None
+
+def spym_get_real_deltas(codes: list) -> dict:
+    """Real exchange delta per contract code, via the same stock-quote endpoint
+    used for spot. Returns {} (not an exception) on any failure — callers must
+    treat missing/empty as 'fall back to a fixed-distance heuristic', never as
+    a reason to invent a number."""
+    if not codes:
+        return {}
+    try:
+        d = spym_post('/api/v1.0/quote/stock-quote', {'code_list': codes})
+        out = {}
+        for q in d.get('data', {}).get('quote_list', []):
+            delta = (q.get('option_ex_data') or {}).get('delta')
+            if delta:
+                out[q['code']] = delta
+        return out
+    except Exception as e:
+        logger.warning(f'spym_get_real_deltas: {e}')
+        return {}
+
+def spym_get_combo_quote(short_code: str, long_code: str) -> Optional[dict]:
+    """Prices the exact position we open/hold (SELL short_code, BUY long_code) as
+    ONE combo, same as a real combo order would be quoted. Convention, verified
+    live 2026-10-02: ask_price is what opening this exact combo nets (negative =
+    credit received); bid_price is what closing it later costs. Same query used
+    for both — callers pick ask (open) or bid (close/mark)."""
+    try:
+        d = spym_post('/api/v1.0/quote/combo-option-quote', {
+            'combo_list': [{'legs': [
+                {'code': short_code, 'side': 'SELL', 'quantity': 1},
+                {'code': long_code, 'side': 'BUY', 'quantity': 1},
+            ]}]
+        })
+        ql = d.get('data', {}).get('quote_list', [])
+        if not ql or ql[0].get('rsp_code') != 0:
+            return None
+        q = ql[0]
+        return {'price': q.get('price'), 'bid': q.get('bid_price'), 'ask': q.get('ask_price')}
+    except Exception as e:
+        logger.warning(f'spym_get_combo_quote: {e}')
+        return None
+
+def spym_build_spread(direction: str, chain: list, spot: float) -> Optional[dict]:
+    """Picks the short strike by REAL exchange delta (closest to
+    SPYM_TARGET_SHORT_DELTA), falling back to a fixed %-OTM distance only if no
+    real delta is usable (e.g. outside market hours). Prices the resulting
+    vertical via a single REAL combo quote — never a theoretical calc for the
+    tradable economics, only for the fallback strike pick."""
+    want_type = 'PUT' if direction == 'BULL_PUT' else 'CALL'
+    by_strike = {c['strike_price']: c['code'] for c in chain if c['option_type'] == want_type}
+    if direction == 'BULL_PUT':
+        candidates = sorted([s for s in by_strike if s < spot], reverse=True)[:8]
+    else:
+        candidates = sorted([s for s in by_strike if s > spot])[:8]
+    if not candidates:
+        return None
+
+    codes = [by_strike[s] for s in candidates]
+    raw_deltas = spym_get_real_deltas(codes)
+    usable = {s: abs(raw_deltas[by_strike[s]]) for s in candidates if by_strike[s] in raw_deltas}
+
+    if usable:
+        delta_source = 'real'
+        short_strike = min(usable, key=lambda s: abs(usable[s] - SPYM_TARGET_SHORT_DELTA))
+        short_delta = round(usable[short_strike], 4)
+    else:
+        delta_source = 'fallback_pct_otm'   # real delta unavailable this cycle (e.g. outside market hours)
+        target_dist = spot * 0.006
+        short_strike = min(candidates, key=lambda s: abs(abs(spot - s) - target_dist))
+        short_delta = None
+
+    short_code = by_strike[short_strike]
+    long_strike = short_strike - SPYM_SPREAD_WIDTH if direction == 'BULL_PUT' else short_strike + SPYM_SPREAD_WIDTH
+    long_code = by_strike.get(long_strike)
+    if not long_code:
+        return None
+
+    q = spym_get_combo_quote(short_code, long_code)
+    if not q or q['ask'] is None:
+        return None
+    credit = round(-q['ask'], 4)
+    width = SPYM_SPREAD_WIDTH
+    if credit <= 0 or credit < width * MIN_CREDIT_WIDTH_RATIO:
+        return None
+
+    contracts = 1   # real equity options can't be fractional, unlike the crypto engine's 0.01-step sizing
+    max_loss = round((width - credit) * 100 * contracts, 2)
+    max_profit = round(credit * 100 * contracts, 2)
+    breakeven = round(short_strike - credit, 4) if direction == 'BULL_PUT' else round(short_strike + credit, 4)
+    return {
+        'direction': direction, 'short_code': short_code, 'long_code': long_code,
+        'short_strike': short_strike, 'long_strike': long_strike, 'breakeven': breakeven,
+        'credit': credit, 'width': width, 'contracts': contracts,
+        'max_loss': max_loss, 'max_profit': max_profit,
+        'delta_source': delta_source, 'short_delta': short_delta,
+    }
+
+def spym_open_new_position(state: dict, vkey: str):
+    vcfg = SPYM_VARIANTS[vkey]
+    vstate = state['variants'][vkey]
+    try:
+        today = et_now().strftime('%Y-%m-%d')
+        if vstate.get('last_entry_date') == today:
+            return   # already tried today — at most one position per day, per variant
+        expiry = spym_today_expiry()
+        if not expiry:
+            return
+        spot = spym_get_spot()
+        if not spot:
+            return
+        # "our own calculations" — the exact same GEX direction signal the live
+        # SPY bot already uses (fetch_cboe_gex), not a separate invented one.
+        # Computed fresh at EACH variant's own entry time on purpose — a real
+        # "trade at this clock time" strategy would see GEX as of that time, not
+        # stale data from another variant's earlier entry.
+        gex = fetch_cboe_gex(expiry, spot)
+        direction = gex['direction'] if gex else None
+        if not direction:
+            logger.info(f'[SPY0DTE-moomoo:{vkey}] no GEX direction available this cycle, skipping entry')
+            return
+        chain = spym_get_chain(expiry)
+        if not chain:
+            return
+        spread = spym_build_spread(direction, chain, spot)
+        vstate['last_entry_date'] = today   # mark attempted regardless of outcome
+        if spread is None:
+            logger.info(f'[SPY0DTE-moomoo:{vkey}] no qualifying spread this cycle')
+            save_spym_state(state)
+            return
+        spread.update({
+            'variant': vkey,
+            'opened_at': datetime.now(timezone.utc).isoformat(),
+            'opened_date': today,
+            'expiry': expiry,
+            'spot_at_entry': spot,
+            'gex_info': {k: gex.get(k) for k in ('total_gex_b', 'gex_regime', 'pin_strike')} if gex else None,
+        })
+        vstate['open_position'] = spread
+        save_spym_state(state)
+        notify(
+            f'🎯 **SPY 0DTE Paper (moomoo, {vcfg["label"]}) — {direction} OPENED**\n\n'
+            f'Short {spread["short_code"]} / Long {spread["long_code"]}\n'
+            f'Credit: ${spread["credit"]:.2f} | Width: ${spread["width"]:.2f} | Contracts: {spread["contracts"]}\n'
+            f'Breakeven: ${spread["breakeven"]:.2f}\n'
+            f'Max profit: ${spread["max_profit"]:.2f} | Max loss: ${spread["max_loss"]:.2f} (paper, capped)\n'
+            f'📊 GEX direction: {direction} | Spot: ${spot:.2f} | Short delta: {spread.get("short_delta")} ({spread["delta_source"]})\n'
+            f'🎯 Trail activates at {int(SPYM_TRAIL_ACTIVATE_PCT*100)}% of max credit (gives back '
+            f'{int(SPYM_TRAIL_GIVEBACK_PCT*100)}pp from peak), force-close by '
+            f'{SPYM_FORCE_CLOSE_HOUR}:{SPYM_FORCE_CLOSE_MINUTE:02d} ET'
+        )
+        logger.info(f'[SPY0DTE-moomoo:{vkey}] Opened {direction} credit={spread["credit"]:.2f} delta_source={spread["delta_source"]}')
+    except Exception as e:
+        logger.error(f'[SPY0DTE-moomoo:{vkey}] open_new_position failed: {e}', exc_info=True)
+        notify(f'❌ **SPY 0DTE Paper (moomoo, {vcfg["label"]}) ERROR**\n\nopen failed: {e}')
+
+def spym_close_position(state: dict, vkey: str, pos: dict, reason: str, cost_to_close: float):
+    vcfg = SPYM_VARIANTS[vkey]
+    vstate = state['variants'][vkey]
+    pnl = round((pos['credit'] - cost_to_close) * 100 * pos['contracts'], 2)
+    trade = dict(pos, closed_at=datetime.now(timezone.utc).isoformat(), close_reason=reason,
+                 cost_to_close=cost_to_close, pnl=pnl, win=pnl > 0, date=pos.get('opened_date'))
+    vstate.setdefault('trades', []).append(trade)
+    vstate['open_position'] = None
+    save_spym_state(state)
+    emoji = '🟢' if pnl >= 0 else '🔴'
+    label = {'trail_stop': 'TRAILING PROFIT LOCKED IN', 'stop_loss': 'STOP LOSS',
+              'force_close_eod': 'FORCE-CLOSED (EOD)'}.get(reason, reason.upper())
+    notify(
+        f'{emoji} **SPY 0DTE Paper (moomoo, {vcfg["label"]}) — {pos["direction"]} {label}**\n\n'
+        f'Short {pos["short_code"]} / Long {pos["long_code"]}\n'
+        f'Credit received: ${pos["credit"]:.2f} | Cost to close: ${cost_to_close:.2f}\n'
+        f'Net P&L: **${pnl:+.2f}** (paper)'
+    )
+    logger.info(f'[SPY0DTE-moomoo:{vkey}] Closed {pos["direction"]} reason={reason} pnl={pnl:+.2f}')
+
+def spym_monitor_position(state: dict, vkey: str):
+    vstate = state['variants'][vkey]
+    pos = vstate.get('open_position')
+    if not pos:
+        return
+    try:
+        q = spym_get_combo_quote(pos['short_code'], pos['long_code'])
+        if not q or q['bid'] is None:
+            return
+        cost_to_close = round(-q['bid'], 4)
+        pnl_per_share = pos['credit'] - cost_to_close
+        pnl = round(pnl_per_share * 100 * pos['contracts'], 2)
+        pct_captured = (pnl_per_share / pos['credit']) if pos['credit'] else 0.0
+        pct_pts = round(pct_captured * 100, 1)
+        pos['cost_to_close'] = cost_to_close
+        pos['unrealized_pnl'] = pnl
+        pos['pct_of_max_captured'] = pct_pts
+
+        # Trailing profit lock: once we've ever reached SPYM_TRAIL_ACTIVATE_PCT,
+        # track the best pct_captured seen since, in percentage points of max
+        # credit (not a '% of peak' ratio — simpler, and consistent with MU's own
+        # trailing-stop convention elsewhere in this codebase). No hard ceiling:
+        # a position that keeps improving just keeps raising its own peak and is
+        # never closed by this rule alone; only a real pullback off the peak fires.
+        trail_trigger = False
+        if pct_pts >= SPYM_TRAIL_ACTIVATE_PCT * 100:
+            peak = max(pos.get('peak_pct_captured') or pct_pts, pct_pts)
+            pos['peak_pct_captured'] = peak
+            if peak - pct_pts >= SPYM_TRAIL_GIVEBACK_PCT * 100:
+                trail_trigger = True
+        save_spym_state(state)
+
+        now_et = et_now()
+        force_close_time = now_et.replace(hour=SPYM_FORCE_CLOSE_HOUR, minute=SPYM_FORCE_CLOSE_MINUTE, second=0, microsecond=0)
+        if trail_trigger:
+            spym_close_position(state, vkey, pos, 'trail_stop', cost_to_close)
+        elif cost_to_close >= pos['credit'] * SPYM_STOP_LOSS_MULT:
+            spym_close_position(state, vkey, pos, 'stop_loss', cost_to_close)
+        elif now_et >= force_close_time:
+            spym_close_position(state, vkey, pos, 'force_close_eod', cost_to_close)
+    except Exception as e:
+        logger.error(f'[SPY0DTE-moomoo:{vkey}] monitor failed: {e}', exc_info=True)
+
+_spym_account_id_cache: Optional[str] = None
+def spym_get_account_id() -> Optional[str]:
+    global _spym_account_id_cache
+    if _spym_account_id_cache is not None:
+        return _spym_account_id_cache
+    try:
+        d = spym_get('/api/v1.0/accounts/authorized_trd_accs')
+        accounts = d.get('d', {}).get('accounts', [])   # Trading-API envelope uses 'd', not 'data'
+        if accounts:
+            _spym_account_id_cache = str(accounts[0]['account_id'])
+            return _spym_account_id_cache
+    except Exception as e:
+        logger.warning(f'spym_get_account_id: {e}')
+    return None
+
+def spym_check_options_permission(state: dict):
+    """Daily check for whether moomoo's options trading permission has actually
+    activated yet on the real account. Confirmed live 2026-10-02: the app can
+    show the chain/Greeks (read-only quote data) well before the trading engine
+    actually grants order capacity — moomoo's own real margin-check endpoint
+    (acctradinginfo) returns an all-zero buying-power/margin response for an
+    option order until that approval has gone through on the back end, even
+    though the SAME endpoint correctly returns real numbers for a plain stock
+    order on the same account the whole time. User's app says ~3 days to
+    activate; this pings once/day, either way, so it's never silently
+    forgotten — stops permanently once confirmed active."""
+    perm = state.setdefault('options_permission', {
+        'status': 'pending', 'first_checked_date': None, 'last_checked_date': None, 'activated_date': None,
+    })
+    if perm['status'] == 'active':
+        return   # resolved — never checks or notifies again
+    today = et_now().strftime('%Y-%m-%d')
+    if perm.get('last_checked_date') == today:
+        return   # already checked today
+    try:
+        acc_id = spym_get_account_id()
+        if not acc_id:
+            return
+        # Deliberately NOT spym_today_expiry() / the nearest listed date — caught
+        # live 2026-10-02: late at night, "today" by calendar date can already be
+        # past that contract's real market session (sec_status EXPIRED, price
+        # near zero), which made this check trivially "affordable" regardless of
+        # real options permission — a false positive. Pick something a few days
+        # out so there's no ambiguity about whether its session has closed.
+        d = spym_get(f'/api/v1.0/quote/{SPYM_UNDERLYING}/option-expiration')
+        exps = [e for e in d.get('data', {}).get('expiration_list', [])
+                if e.get('option_expiry_date_distance', 0) >= 2]
+        if not exps:
+            return
+        expiry = exps[0]['strike_time']
+        chain = spym_get_chain(expiry)
+        spot = spym_get_spot()
+        if not chain or not spot:
+            return
+        puts = [c for c in chain if c['option_type'] == 'PUT']
+        if not puts:
+            return
+        probe = min(puts, key=lambda c: abs(c['strike_price'] - spot))
+        price_resp = spym_post('/api/v1.0/quote/stock-quote', {'code_list': [probe['code']]})
+        probe_price = price_resp['data']['quote_list'][0].get('last_price') or 1.0
+
+        resp = spym_get(f'/api/v1.0/accounts/{acc_id}/acctradinginfo',
+                         f'code={probe["code"]}&price={probe_price}&order_type=LIMIT')
+        fields = resp.get('d', {})   # Trading-API envelope uses 'd', not 'data'
+        active = any(float(fields.get(k) or 0) > 0 for k in ('max_cash_buy', 'max_cash_and_margin_buy'))
+
+        if perm['first_checked_date'] is None:
+            perm['first_checked_date'] = today
+        perm['last_checked_date'] = today
+
+        if active:
+            perm['status'] = 'active'
+            perm['activated_date'] = today
+            save_spym_state(state)
+            notify(
+                f'🎉 **moomoo options trading permission is now ACTIVE**\n\n'
+                f'Confirmed via a real margin check on {probe["code"]} — buying power/margin capacity '
+                f'for options is no longer zero. You can start planning the real-money step whenever ready.'
+            )
+            logger.info('[SPY0DTE-moomoo] options permission now ACTIVE')
+        else:
+            start = datetime.strptime(perm['first_checked_date'], '%Y-%m-%d')
+            days_waiting = (datetime.strptime(today, '%Y-%m-%d') - start).days + 1
+            save_spym_state(state)
+            notify(
+                f'⏳ **moomoo options trading permission still PENDING** (day {days_waiting})\n\n'
+                f'Real margin check still shows zero buying power/margin capacity for options on the '
+                f'account. The app said ~3 days to activate — checking again tomorrow, will tell you '
+                f'the moment it flips.'
+            )
+            logger.info(f'[SPY0DTE-moomoo] options permission still pending (day {days_waiting})')
+    except Exception as e:
+        logger.warning(f'[SPY0DTE-moomoo] permission check failed: {e}')
+
+def spym_write_dashboard(state: dict):
+    try:
+        spot_price = spym_get_spot()
+    except Exception:
+        spot_price = None
+    variants_payload = {}
+    for vkey, vcfg in SPYM_VARIANTS.items():
+        vstate = state['variants'][vkey]
+        trades = vstate.get('trades', [])
+        wins = [t for t in trades if t.get('win')]
+        total = len(trades)
+        daily_pnl: dict = {}
+        for t in trades:
+            d = t.get('date') or (t.get('closed_at') or '')[:10]
+            if d:
+                daily_pnl[d] = round(daily_pnl.get(d, 0) + t['pnl'], 2)
+        variants_payload[vkey] = {
+            'label': vcfg['label'],
+            'entry_hour': vcfg['entry_hour'], 'entry_minute': vcfg['entry_minute'],
+            'open_position': vstate.get('open_position'),
+            'performance': {
+                'total': total, 'wins': len(wins), 'losses': total - len(wins),
+                'win_rate': round(len(wins) / total * 100, 1) if total else 0,
+                'net_pnl': round(sum(t['pnl'] for t in trades), 2),
+            },
+            'daily_pnl': daily_pnl,
+            'trades': list(reversed(trades[-30:])),
+        }
+    payload = {
+        'generated_at': datetime.now(timezone.utc).isoformat(),
+        'paper_trading': True,
+        'spot_price': spot_price,
+        'trade_risk_usd': SPYM_TRADE_RISK_USD,
+        'trail_activate_pct': SPYM_TRAIL_ACTIVATE_PCT,
+        'trail_giveback_pct': SPYM_TRAIL_GIVEBACK_PCT,
+        'options_permission': state.get('options_permission'),
+        'variants': variants_payload,
+    }
+    try:
+        with open(SPYM_DASHBOARD_FILE, 'w') as f:
+            json.dump(payload, f, indent=2)
+    except Exception as e:
+        logger.warning(f'spym_write_dashboard failed: {e}')
+
+def run_spym_cycle(state: dict):
+    try:
+        if is_market_open():
+            now_et = et_now()
+            last_entry_time = now_et.replace(hour=SPYM_LAST_ENTRY_HOUR, minute=0, second=0, microsecond=0)
+            for vkey, vcfg in SPYM_VARIANTS.items():
+                vstate = state['variants'][vkey]
+                if vstate.get('open_position'):
+                    spym_monitor_position(state, vkey)
+                else:
+                    entry_time = now_et.replace(hour=vcfg['entry_hour'], minute=vcfg['entry_minute'], second=0, microsecond=0)
+                    if entry_time <= now_et <= last_entry_time:
+                        spym_open_new_position(state, vkey)
+        spym_write_dashboard(state)
+    except Exception as e:
+        logger.error(f'[SPY0DTE-moomoo] cycle failed: {e}', exc_info=True)
+
+
 def start_api():
     while True:
         try:
@@ -2480,12 +3036,32 @@ def main():
         f'💵 ${CRYPTO_TRADE_RISK_USD}/spread max-loss sizing — PAPER ONLY, no real orders\n'
         f'⏱ Rollover check every {CRYPTO_CHECK_INTERVAL_SEC//60} min | New position each option-day (~08:00 UTC)'
     )
+    if SPYM_APP_KEY and SPYM_KEY_PATH:
+        variant_lines = '\n'.join(
+            f'  • {v["label"]} ({vkey})' for vkey, v in SPYM_VARIANTS.items()
+        )
+        logger.info(f'🚀 SPY 0DTE Paper (moomoo) starting — ${SPYM_TRADE_RISK_USD}/spread target, '
+                    f'{len(SPYM_VARIANTS)} entry-time variants running in parallel, PAPER ONLY, no real orders')
+        notify(
+            f'🚀 **SPY 0DTE Paper Trading Started (moomoo)**\n\n'
+            f'📊 Strategy: 0DTE credit spreads, GEX-direction-tilted, real moomoo quotes + real delta for strike pick\n'
+            f'💵 ${SPYM_TRADE_RISK_USD}/spread target, ${SPYM_SPREAD_WIDTH:.0f}-wide, 1 real contract — PAPER ONLY\n'
+            f'🎯 Trailing profit lock from {int(SPYM_TRAIL_ACTIVATE_PCT*100)}% of max credit (gives back '
+            f'{int(SPYM_TRAIL_GIVEBACK_PCT*100)}pp from peak) | Force-close {SPYM_FORCE_CLOSE_HOUR}:{SPYM_FORCE_CLOSE_MINUTE:02d} ET\n'
+            f'⚡ Checked every {SPYM_MONITOR_INTERVAL_SEC}s while a position is open (every {SPYM_CHECK_INTERVAL_SEC//60} min while flat)\n\n'
+            f'⏱ Running {len(SPYM_VARIANTS)} entry-time variants in parallel, same days/rules, to compare timing:\n{variant_lines}'
+        )
+    else:
+        logger.warning('SPY 0DTE Paper (moomoo) disabled — MOOMOO_APP_KEY/MOOMOO_RSA_KEY_PATH not set in .env')
     threading.Thread(target=start_api, daemon=True).start()
 
     state        = load_state()
     last_monitor = 0.0
     crypto_state = load_crypto_state()
     last_crypto_check = 0.0
+    spym_state = load_spym_state()
+    last_spym_check = 0.0
+    last_spym_perm_check = 0.0
     last_hermes_check = 0.0
     write_hermes_log_dashboard(state)  # show existing history immediately, don't wait for next weekly run
 
@@ -2495,6 +3071,29 @@ def main():
             if time.time() - last_crypto_check > CRYPTO_CHECK_INTERVAL_SEC:
                 run_crypto_0dte_cycle(crypto_state)
                 last_crypto_check = time.time()
+
+            # SPY 0DTE paper trading (moomoo) — only meaningful during US market hours,
+            # but run_spym_cycle() itself no-ops cleanly outside them (still refreshes the
+            # dashboard's spot price). Disabled entirely if moomoo creds aren't configured.
+            # Fast cadence (15s) the moment ANY variant has a real open position, so exits
+            # (trail/stop/force-close) land close to on time; slow cadence (5 min) while
+            # every variant is flat and there's only entry-window scanning to do.
+            if SPYM_APP_KEY and SPYM_KEY_PATH:
+                any_spym_open = any(v.get('open_position') for v in spym_state['variants'].values())
+                spym_interval = SPYM_MONITOR_INTERVAL_SEC if any_spym_open else SPYM_CHECK_INTERVAL_SEC
+                if time.time() - last_spym_check > spym_interval:
+                    run_spym_cycle(spym_state)
+                    last_spym_check = time.time()
+
+                # Daily check: has moomoo's options trading permission actually
+                # activated yet? (user request 2026-10-02 — app says ~3 days;
+                # notifies either way so it's never silently forgotten). Cheap
+                # hourly gate, same pattern as the Hermes review below; the
+                # function itself enforces the real once-per-day cadence and
+                # permanently stops once confirmed active.
+                if time.time() - last_spym_perm_check > 3600:
+                    spym_check_options_permission(spym_state)
+                    last_spym_perm_check = time.time()
 
             # Hermes weekly review — cheap no-op check hourly; the function
             # itself gates on HERMES_REVIEW_INTERVAL_DAYS internally.
@@ -2540,7 +3139,7 @@ def main():
                     chain_cache = {}
                     alerts = check_trades(state, chain_cache=chain_cache)
                     for a in alerts:
-                        discord(a)
+                        signal_notify(a)
                     if alerts:
                         sig = load_signal()
                         open_trade = next((t for t in state.get('trades', []) if t.get('status') == 'open'), None)

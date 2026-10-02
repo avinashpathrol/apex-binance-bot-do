@@ -24,7 +24,7 @@ class FakeFeed:
     """Scriptable market. prices[sym] = mid; spread fixed; depth flat (no slippage unless slip>0)."""
     def __init__(self, prices, lev=None, spread=0.0, slip=0.0):
         self.prices = dict(prices)
-        self.levs = lev or {'SNDKUSDT': 75, 'WDCUSDT': 20, 'LITEUSDT': 25}
+        self.levs = lev or {'SNDKUSDT': 75, 'WDCUSDT': 20, 'LITEUSDT': 25, 'MRVLUSDT': 50, 'CRDOUSDT': 25}
         self.spread, self.slip = spread, slip
         self.funding_rows = {}          # sym -> [(t_ms, rate, mark)]
         self.fail = set()               # method names that raise
@@ -65,7 +65,7 @@ class FakeFeed:
 
 def make_bot(feed=None, tmp=None):
     tmp = tmp or tempfile.mkdtemp()
-    feed = feed or FakeFeed({'SNDKUSDT': 1000.0, 'WDCUSDT': 400.0, 'LITEUSDT': 900.0})
+    feed = feed or FakeFeed({'SNDKUSDT': 1000.0, 'WDCUSDT': 400.0, 'LITEUSDT': 900.0, 'MRVLUSDT': 260.0, 'CRDOUSDT': 190.0})
     sent = []
     bot = S.Sentinel(feed, S.new_state(), notify=sent.append, state_path=os.path.join(tmp, 's.json'),
                      journal_path=os.path.join(tmp, 'j.jsonl'), dashboard_path=os.path.join(tmp, 'd.json'))
@@ -193,7 +193,7 @@ class TestEngine(unittest.TestCase):
         bot, feed = make_bot()
         # Monday 15:55 ET entry
         ev = bot.cycle(et(2026, 9, 21, 15, 55, 5))
-        self.assertEqual([e['type'] for e in ev], ['open'] * 3)
+        self.assertEqual([e['type'] for e in ev], ['open'] * 5)
         p = bot.st['positions']['SNDKUSDT']
         self.assertEqual(p['leverage'], 75)
         self.assertAlmostEqual(p['qty'], 7.5, places=2)                   # 100*75/1000
@@ -214,7 +214,7 @@ class TestEngine(unittest.TestCase):
         feed.funding_rows['SNDKUSDT'] = [(int(et(2026, 9, 22, 4, 0).timestamp() * 1000), 0.0002, 1005.0)]
         ev = bot.cycle(et(2026, 9, 22, 9, 28, 10))
         closes = {e['rec']['base']: e['rec'] for e in ev}
-        self.assertEqual(set(closes), {'SNDK', 'WDC', 'LITE'})
+        self.assertEqual(set(closes), {'SNDK', 'WDC', 'LITE', 'MRVL', 'CRDO'})
         r = closes['SNDK']
         self.assertEqual(r['reason'], 'Market Open')
         self.assertAlmostEqual(r['gross'], 7.5 * 10.0, places=2)                  # +$75
@@ -224,13 +224,13 @@ class TestEngine(unittest.TestCase):
         self.assertFalse(r['stopped'])
         self.assertTrue(all(v is None for v in bot.st['positions'].values()))
         # journal + dashboard written
-        self.assertEqual(len(open(bot.journal_path).read().strip().split('\n')), 3)
+        self.assertEqual(len(open(bot.journal_path).read().strip().split('\n')), 5)
         dash = json.load(open(bot.dashboard_path))
         self.assertEqual(dash['mode'], 'paper')
         self.assertEqual(dash['symbols']['SNDKUSDT']['performance']['total'], 1)
 
     def test_stop_loss_is_software_and_uses_bid(self):
-        bot, feed = make_bot(FakeFeed({'SNDKUSDT': 1000.0, 'WDCUSDT': 400.0, 'LITEUSDT': 900.0}, spread=0.0004))
+        bot, feed = make_bot(FakeFeed({'SNDKUSDT': 1000.0, 'WDCUSDT': 400.0, 'LITEUSDT': 900.0, 'MRVLUSDT': 260.0, 'CRDOUSDT': 190.0}, spread=0.0004))
         bot.cycle(et(2026, 9, 21, 15, 55))
         entry = bot.st['positions']['SNDKUSDT']['entry_price']
         feed.prices['SNDKUSDT'] = 970.0                       # -3.0%: above stop
@@ -265,7 +265,7 @@ class TestEngine(unittest.TestCase):
         self.assertEqual(bot.cycle(et(2026, 9, 20, 9, 30)), [])        # Sunday 9:30 -> not a trading day
         self.assertEqual(bot.cycle(et(2026, 9, 21, 9, 27)), [])
         ev = bot.cycle(et(2026, 9, 21, 9, 28, 20))
-        self.assertEqual(len(ev), 3)
+        self.assertEqual(len(ev), 5)
         self.assertTrue(all(e['rec']['reason'] == 'Market Open' for e in ev))
 
     def test_holiday_hold_skips_holiday_morning(self):
@@ -273,7 +273,7 @@ class TestEngine(unittest.TestCase):
         bot.cycle(et(2026, 9, 4, 15, 55))                     # Fri Sep 4, Monday Sep 7 = Labor Day
         self.assertEqual(bot.cycle(et(2026, 9, 7, 9, 30)), [])         # holiday morning: hold
         ev = bot.cycle(et(2026, 9, 8, 9, 29))                          # Tuesday
-        self.assertEqual(len(ev), 3)
+        self.assertEqual(len(ev), 5)
         self.assertEqual(ev[0]['rec']['exit_day'], '2026-09-08')
 
     def test_no_entry_on_holiday_and_skip_recorded(self):
@@ -287,7 +287,7 @@ class TestEngine(unittest.TestCase):
         bot, feed = make_bot()
         self.assertEqual(bot.cycle(et(2026, 11, 27, 15, 55)), [])       # 3:55pm on a half day = too late, no entry
         ev = bot.cycle(et(2026, 11, 27, 12, 56))
-        self.assertEqual([e['type'] for e in ev], ['open'] * 3)
+        self.assertEqual([e['type'] for e in ev], ['open'] * 5)
         self.assertTrue(all(e['rec']['reason'] == 'Market Open' for e in bot.cycle(et(2026, 11, 30, 9, 30))))
 
     def test_late_exit_when_window_missed(self):
@@ -303,9 +303,9 @@ class TestEngine(unittest.TestCase):
         bot2 = S.Sentinel(feed, st, notify=lambda m: None, state_path=bot.state_path, journal_path=bot.journal_path,
                           dashboard_path=bot.dashboard_path)
         self.assertEqual(bot2.cycle(et(2026, 9, 21, 15, 58)), [])
-        self.assertEqual(sum(1 for v in bot2.st['positions'].values() if v), 3)
+        self.assertEqual(sum(1 for v in bot2.st['positions'].values() if v), 5)
         ev = bot2.cycle(et(2026, 9, 22, 9, 29))
-        self.assertEqual(len(ev), 3)
+        self.assertEqual(len(ev), 5)
 
     def test_transient_leverage_failure_retries_within_window(self):
         bot, feed = make_bot()
@@ -315,7 +315,7 @@ class TestEngine(unittest.TestCase):
         self.assertEqual(bot.st['last_entry_day'], {})        # the day is NOT burned
         feed.fail.discard('leverage')
         ev = bot.cycle(et(2026, 9, 21, 15, 56))
-        self.assertEqual(len(ev), 3)
+        self.assertEqual(len(ev), 5)
 
     def test_quote_failure_isolated_per_symbol_and_position_kept(self):
         class Flaky(FakeFeed):
@@ -323,7 +323,7 @@ class TestEngine(unittest.TestCase):
                 if sym == 'WDCUSDT' and getattr(self, 'wdc_down', False):
                     raise RuntimeError('wdc feed down')
                 return FakeFeed.quote(self, sym)
-        bot, feed = make_bot(Flaky({'SNDKUSDT': 1000.0, 'WDCUSDT': 400.0, 'LITEUSDT': 900.0}))
+        bot, feed = make_bot(Flaky({'SNDKUSDT': 1000.0, 'WDCUSDT': 400.0, 'LITEUSDT': 900.0, 'MRVLUSDT': 260.0, 'CRDOUSDT': 190.0}))
         bot.cycle(et(2026, 9, 21, 15, 55))
         feed.wdc_down = True
         feed.prices['LITEUSDT'] = 850.0                        # LITE -5.6% -> must still stop even though WDC errors
@@ -347,7 +347,7 @@ class TestEngine(unittest.TestCase):
         self.assertEqual(ev[0]['rec']['reason'], 'Stop Loss')
 
     def test_slippage_and_fee_accounting(self):
-        bot, feed = make_bot(FakeFeed({'SNDKUSDT': 1000.0, 'WDCUSDT': 400.0, 'LITEUSDT': 900.0}, spread=0.0002, slip=0.0004))
+        bot, feed = make_bot(FakeFeed({'SNDKUSDT': 1000.0, 'WDCUSDT': 400.0, 'LITEUSDT': 900.0, 'MRVLUSDT': 260.0, 'CRDOUSDT': 190.0}, spread=0.0002, slip=0.0004))
         bot.cycle(et(2026, 9, 21, 15, 55))
         p = bot.st['positions']['WDCUSDT']
         self.assertAlmostEqual(p['entry_price'], 400 * (1 + 0.0001) * (1 + 0.0004), places=3)
@@ -356,6 +356,33 @@ class TestEngine(unittest.TestCase):
         r = [e['rec'] for e in ev if e['rec']['base'] == 'WDC'][0]
         self.assertLess(r['net'], 0)                            # flat price + spread + slip + fees = a small loss
         self.assertAlmostEqual(r['net'], r['gross'] - r['fee'] - r['funding'], places=3)
+
+    def test_liquidity_check_aggregates_real_slippage(self):
+        # 2026-09-29: CRDO was added specifically to see how a thin book behaves -- perf() now surfaces
+        # avg/max entry+exit slippage so that's visible without reading individual trades.
+        bot, feed = make_bot(FakeFeed({'SNDKUSDT': 1000.0, 'WDCUSDT': 400.0, 'LITEUSDT': 900.0, 'MRVLUSDT': 260.0, 'CRDOUSDT': 190.0}, spread=0.0002, slip=0.0004))
+        bot.cycle(et(2026, 9, 21, 15, 55))
+        bot.cycle(et(2026, 9, 22, 9, 28))
+        p = bot.perf(bot.st['trades'])
+        expected_bps = (0.0001 + 0.0004) * 1e4    # half the spread + the slip, same MAGNITUDE on entry and exit
+        self.assertAlmostEqual(p['avg_entry_slip_bps'], expected_bps, places=1)     # BUY fills above mid: positive
+        self.assertAlmostEqual(p['avg_exit_slip_bps'], -expected_bps, places=1)     # SELL fills below mid: negative
+        self.assertAlmostEqual(p['max_entry_slip_bps'], expected_bps, places=1)
+        self.assertEqual(p['partial_fills'], 0)
+        self.assertEqual(bot.perf([])['avg_entry_slip_bps'], 0)   # no trades yet -> no crash, just zeros
+
+    def test_liquidity_check_flags_partial_fills(self):
+        class ThinBook(FakeFeed):
+            def fill(self, sym, side, qty):
+                r = FakeFeed.fill(self, sym, side, qty)
+                if sym == 'CRDOUSDT':
+                    r['source'] = 'depth_partial'
+                return r
+        bot, feed = make_bot(ThinBook({'SNDKUSDT': 1000.0, 'WDCUSDT': 400.0, 'LITEUSDT': 900.0, 'MRVLUSDT': 260.0, 'CRDOUSDT': 190.0}))
+        bot.cycle(et(2026, 9, 21, 15, 55))
+        bot.cycle(et(2026, 9, 22, 9, 28))
+        p = bot.perf(bot.st['trades'])
+        self.assertEqual(p['partial_fills'], 1)    # counts TRADES touched by a thin fill, not legs -- CRDO's one trade had both legs thin
 
     def test_funding_estimated_when_history_unavailable(self):
         bot, feed = make_bot()

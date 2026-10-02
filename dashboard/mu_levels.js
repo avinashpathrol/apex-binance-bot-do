@@ -119,6 +119,8 @@
     var r = {};
     [].forEach.call(el.querySelectorAll('[data-r]'), function (n) { r[n.getAttribute('data-r')] = n; });
     var busy = false;
+    var cache = {}, lastChipKey = null;
+    function setHtml(node, key, html) { if (cache[key] !== html) { node.innerHTML = html; cache[key] = html; } }   // only touch the DOM when the content changed
 
     function d() { return opts.getData(); }
     function open() { var x = d(); return x && x.position === 'LONG'; }
@@ -136,10 +138,11 @@
     }
     bindPair('stop'); bindPair('tgt');
 
-    function chip(label, net) {
+    function chip(label, ratio) {                     // ratio of the CURRENT profit to keep (0 = breakeven), computed at click time
       var b = document.createElement('button'); b.className = 'mxl-chip'; b.textContent = label;
       b.addEventListener('click', function () {
         var x = d(); if (!open()) return;
+        var net = ratio * netAt(x, +x.current_price);
         r.stopPrice.value = priceForNet(x, net).toFixed(2); r.stopProfit.value = netAt(x, +r.stopPrice.value).toFixed(2); update(true);
       });
       return b;
@@ -184,14 +187,15 @@
         : 'Default stop <b>$' + (+x.sl_price).toFixed(2) + '</b> (-3.5% from entry)') + '</span>' +
         (x.sl_custom ? '<button class="mxl-btn ghost" data-act="reset">Reset</button>' : '') + '</div>');
       if (x.target_price) tags.push('<div class="mxl-tag"><span>&#127919; Take profit <b>$' + (+x.target_price).toFixed(2) + '</b> (about ' + money(netAt(x, +x.target_price)) + ')</span><button class="mxl-btn ghost" data-act="clear">Clear</button></div>');
-      r.active.innerHTML = tags.join('');
+      setHtml(r.active, 'active', tags.join(''));
       var ls = x.levels_status;
-      r.status.innerHTML = ls ? (ls.ok ? '<span class="good">&#10003; ' : '<span class="warn">&#9888; ') + esc(ls.msg).slice(0, 120) + '</span> <span style="opacity:.6">' + ago(ls.at) + '</span>' : '';
-      // quick chips (only meaningful while in profit)
-      if (!fromInput) {
-        r.chips.innerHTML = '';
+      setHtml(r.status, 'status', ls ? (ls.ok ? '<span class="good">&#10003; ' : '<span class="warn">&#9888; ') + esc(ls.msg).slice(0, 120) + '</span> <span style="opacity:.6">' + ago(ls.at) + '</span>' : '');
+      // quick chips (only meaningful while in profit); rebuilt only when the position or the profit sign changes
+      var chipKey = (x.opened_at || '') + '|' + (net > 0 ? 'p' : 'n');
+      if (chipKey !== lastChipKey) {
+        lastChipKey = chipKey; r.chips.innerHTML = '';
         r.chips.appendChild(chip('Breakeven', 0));
-        if (net > 0) { r.chips.appendChild(chip('Keep 75%', net * 0.75)); r.chips.appendChild(chip('Keep 50%', net * 0.5)); }
+        if (net > 0) { r.chips.appendChild(chip('Keep 75%', 0.75)); r.chips.appendChild(chip('Keep 50%', 0.5)); }
       }
       // stop validation + help
       var stop = num(r.stopPrice.value), h = '';
@@ -206,7 +210,7 @@
             : '<br>For reference, MU dipped this far about ' + nh.m30 + '% of the time within 30 min (' + nh.h8 + '% within 8 h).';
         }
       }
-      r.stopHelp.innerHTML = h;
+      setHtml(r.stopHelp, 'stopHelp', h);
       // target validation + help
       var t = num(r.tgtPrice.value), th = '';
       if (r.tgtPrice.value === '') { th = 'Optional. Sells at market when the price rises to your level.'; r.setTgt.disabled = true; }
@@ -214,7 +218,7 @@
         var tv = validateTarget(x, t); r.setTgt.disabled = !tv.ok;
         th = tv.ok ? 'Sells at market if the price rises to <b>$' + t.toFixed(2) + '</b> &rarr; about <b>' + money(netAt(x, t)) + '</b> after fees.' : '<span class="bad">' + esc(tv.msg) + '</span>';
       }
-      r.tgtHelp.innerHTML = th;
+      setHtml(r.tgtHelp, 'tgtHelp', th);
     }
     update();
     return { update: function () { update(false); } };

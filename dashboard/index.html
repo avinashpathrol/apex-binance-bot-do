@@ -81,9 +81,8 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .sym-tab.active-eth{background:rgba(98,126,234,.18);color:#627eea}
 .sym-tab.active-sol{background:rgba(153,69,255,.18);color:#9945ff}
 .sym-tab.active-aave{background:rgba(182,80,158,.18);color:#b6509e}
-.sym-tab.active-nvda{background:rgba(118,185,0,.18);color:#76b900}
 .sym-tab.active-amd{background:rgba(237,27,47,.18);color:var(--accent)}
-.sym-tab.active-tsla{background:rgba(204,0,0,.18);color:#cc0000}
+.sym-tab.active-hood{background:rgba(0,200,5,.18);color:#00c805}
 .sym-tab.active-nbis{background:rgba(0,188,212,.18);color:#00bcd4}
 .sym-tab.active-asts{background:rgba(0,180,255,.18);color:#00b4ff}
 .sym-tab.active-app{background:rgba(255,255,255,.12);color:#e2e8f0}
@@ -330,9 +329,8 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
         <button class="sym-tab" id="sym-soxl" onclick="switchSym('soxl')">⚡ SOXL<span class="atr-badge" id="atr-badge-soxl"></span></button>
         <button class="sym-tab" id="sym-crcl" onclick="switchSym('crcl')">🔵 CRCL<span class="atr-badge" id="atr-badge-crcl"></span></button>
         <button class="sym-tab" id="sym-asts" onclick="switchSym('asts')">🛰️ ASTS<span class="atr-badge" id="atr-badge-asts"></span></button>
-        <button class="sym-tab" id="sym-tsla" onclick="switchSym('tsla')">🔴 TSLA<span class="atr-badge" id="atr-badge-tsla"></span></button>
+        <button class="sym-tab" id="sym-hood" onclick="switchSym('hood')">🟢 HOOD<span class="atr-badge" id="atr-badge-hood"></span></button>
         <button class="sym-tab" id="sym-mu" onclick="switchSym('mu')">🌙 MU</button>
-        <button class="sym-tab" id="sym-nvda" onclick="switchSym('nvda')">🟢 NVDA</button>
       </div>
     </div>
     <!-- Margin group hidden temporarily during futures testing -->
@@ -684,7 +682,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 
 <div id="toast"></div>
 
-<script src="mu_levels.js?v=1"></script>
+<script src="mu_levels.js?v=2" defer></script>
 <script>
 'use strict';
 
@@ -693,9 +691,8 @@ const SOURCES = {
   app: {api:'/data_futures_app.json',  sym:'APPUSDT',  tv:'BINANCE:APPUSDT.P',  label:'AppLovin Futures'},
   soxl: {api:'/data_futures_soxl.json',  sym:'SOXLUSDT',  tv:'BINANCE:SOXLUSDT.P',  label:'SOXL 3x Semis Futures'},
   crcl: {api:'/data_futures_crcl.json',  sym:'CRCLUSDT',  tv:'BINANCE:CRCLUSDT.P',  label:'Circle Futures'},
-  nvda: {api:'/data_futures_nvda.json', sym:'NVDAUSDT', tv:'BINANCE:NVDAUSDT.P', label:'NVDA Futures'},
   amd: {api:'/data_futures_amd.json', sym:'AMDUSDT', tv:'BINANCE:AMDUSDT.P', label:'AMD Futures'},
-  tsla: {api:'/data_futures_tsla.json', sym:'TSLAUSDT', tv:'BINANCE:TSLAUSDT.P', label:'TSLA Futures'},
+  hood: {api:'/data_futures_hood.json', sym:'HOODUSDT', tv:'BINANCE:HOODUSDT.P', label:'Robinhood Futures'},
   nbis: {api:'/data_futures_nbis.json', sym:'NBISUSDT', tv:'BINANCE:NBISUSDT.P', label:'NBIS Futures'},
   eth:  {api:'/data_futures_eth.json',  sym:'ETHUSDT',  tv:'BINANCE:ETHUSDT.P',  label:'ETH Futures'},
   sol:  {api:'/data_futures_sol.json',  sym:'SOLUSDT',  tv:'BINANCE:SOLUSDT.P',  label:'SOL Futures'},
@@ -707,7 +704,7 @@ const SOURCES = {
 const CONFIG_API = '/bot_config.json';
 const REFRESH_MS = 2000;
 
-let activeSym  = 'nvda';
+let activeSym  = 'nbis';
 let activeTab  = 'home';
 let botData    = null;
 let prevPrice  = null;
@@ -761,13 +758,15 @@ function switchSym(sym){
   activeSym=sym;
   prevPrice=null;botData=null;
   if(heldTimer){clearInterval(heldTimer);heldTimer=null;entryTs=null;}
-  ['nvda','amd','tsla','nbis','asts','app','soxl','crcl','mu','eth','sol','btcf','aave','btc','gold'].forEach(s=>{
+  ['hood','amd','nbis','asts','app','soxl','crcl','mu','eth','sol','btcf','aave','btc','gold'].forEach(s=>{
     const el=qs('#sym-'+s); if(el) el.className='sym-tab'+(sym===s?' active-'+s:'');
   });
   if(sym==='mu'){
     // Show MU tab, hide home
     qs('#tab-home').classList.remove('active');
     qs('#tab-mu').classList.add('active');
+    qs('#status-bar').textContent='🌙 MU overnight — real money';
+    qs('#live-dot').style.background='var(--green)';
     fetchMU();
     return;
   }
@@ -825,18 +824,37 @@ function manualRefresh(){
   fetchData().then(()=>toast('🔄 Refreshed'));
 }
 
+// Network helpers: every poll gets a timeout, and a slow phone link can never stack up overlapping
+// polls (this page polls every 2 s and a big JSON can take several seconds over cellular).
+function fetchWithTimeout(url,opts,ms){
+  const c=new AbortController(); const t=setTimeout(()=>c.abort(),ms||12000);
+  return fetch(url,Object.assign({},opts,{signal:c.signal})).finally(()=>clearTimeout(t));
+}
+function niceErr(e){
+  const m=(e&&e.message)||String(e);
+  return /load failed|failed to fetch|networkerror|abort/i.test(m) ? 'Slow connection — retrying…' : m;
+}
+let _fdInflight=null;
 async function fetchData(){
+  // MU is not in SOURCES (it has its own tab and data file). Without this guard the MU tab threw
+  // "undefined is not an object (evaluating 'SOURCES[activeSym].api')" here every 2 s.
+  if(activeSym==='mu'){ fetchMU(); return; }
+  const sym=activeSym;
+  if(_fdInflight===sym) return;            // a poll for THIS symbol is already in flight (slow link); switching symbols still fetches at once
+  _fdInflight=sym;
   try{
-    const r=await fetch(SOURCES[activeSym].api+'?t='+Date.now(),{cache:'no-store'});
+    const r=await fetchWithTimeout(SOURCES[sym].api+'?t='+Date.now(),{cache:'no-store'},12000);
     if(!r.ok)throw new Error('HTTP '+r.status);
-    botData=await r.json();
+    const d=await r.json();
+    if(sym!==activeSym) return;            // the user switched symbol while this was in flight
+    botData=d;
     render(botData);
     qs('#live-dot').style.background='var(--green)';
   }catch(e){
+    if(sym!==activeSym) return;
     qs('#live-dot').style.background='var(--red)';
-    qs('#status-bar').textContent='⚠️ '+e.message;
-  }
-  if(activeSym==='mu') fetchMU();
+    qs('#status-bar').textContent='⚠️ '+niceErr(e);
+  }finally{ if(_fdInflight===sym) _fdInflight=null; }
 }
 
 // ── Render ────────────────────────────────────────────────────────────────────
@@ -1177,7 +1195,7 @@ async function doClose(){
   if(!botData?.position)return;
   if(!confirm('Close '+botData.position+' '+SOURCES[activeSym].label+' at market?'))return;
   try{
-    const isFut = activeSym==='nvda'||activeSym==='amd'||activeSym==='eth'||activeSym==='sol'||activeSym==='aave'||activeSym==='btcf'||activeSym==='tsla'||activeSym==='nbis'||activeSym==='asts'||activeSym==='app'||activeSym==='soxl'||activeSym==='crcl';
+    const isFut = activeSym==='hood'||activeSym==='amd'||activeSym==='eth'||activeSym==='sol'||activeSym==='aave'||activeSym==='btcf'||activeSym==='nbis'||activeSym==='asts'||activeSym==='app'||activeSym==='soxl'||activeSym==='crcl';
     const patch = isFut
       ? {futures_close_requested:true,futures_close_requested_at:new Date().toISOString(),futures_close_symbol:SOURCES[activeSym].sym}
       : {close_requested:true,close_requested_at:new Date().toISOString(),close_symbol:SOURCES[activeSym].sym};
@@ -1189,7 +1207,7 @@ async function doClose(){
 async function doForceTrail(){
   if(!botData?.position)return;
   try{
-    const isFut = activeSym==='nvda'||activeSym==='amd'||activeSym==='eth'||activeSym==='sol'||activeSym==='aave'||activeSym==='btcf'||activeSym==='tsla'||activeSym==='nbis'||activeSym==='asts'||activeSym==='app'||activeSym==='soxl'||activeSym==='crcl';
+    const isFut = activeSym==='hood'||activeSym==='amd'||activeSym==='eth'||activeSym==='sol'||activeSym==='aave'||activeSym==='btcf'||activeSym==='nbis'||activeSym==='asts'||activeSym==='app'||activeSym==='soxl'||activeSym==='crcl';
     const patch = isFut
       ? {futures_force_trail:true,futures_force_trail_at:new Date().toISOString(),futures_force_trail_symbol:SOURCES[activeSym].sym}
       : {force_trail:true,force_trail_at:new Date().toISOString(),force_trail_symbol:SOURCES[activeSym].sym};
@@ -1281,12 +1299,16 @@ function renderHermesLog(d){
 }
 
 // ── MU Overnight ──────────────────────────────────────────────────────────────
+let _fetchMUBusy=false;
 async function fetchMU(){
+  if(_fetchMUBusy) return;
+  _fetchMUBusy=true;
   try{
-    const r=await fetch('/data_overnight_mu.json?t='+Date.now(),{cache:'no-store'});
+    const r=await fetchWithTimeout('/data_overnight_mu.json?t='+Date.now(),{cache:'no-store'},12000);
     if(!r.ok) return;
     renderMU(await r.json());
   }catch(e){}
+  finally{ _fetchMUBusy=false; }
 }
 
 let muDataM=null, muExitCtl=null;
@@ -1308,6 +1330,8 @@ function muExitUpdateM(){
   }
   muExitCtl.update();
 }
+// mu_levels.js loads deferred (it must never block the page); mount as soon as it has executed
+document.addEventListener('DOMContentLoaded',()=>{ if(muDataM) muExitUpdateM(); });
 
 function renderMU(d){
   if(!d) return;
@@ -1391,7 +1415,7 @@ function renderMU(d){
 }
 
 function openSettings(){
-  const isFut = activeSym==='nvda'||activeSym==='amd'||activeSym==='eth'||activeSym==='sol'||activeSym==='aave'||activeSym==='btcf'||activeSym==='tsla'||activeSym==='nbis'||activeSym==='asts'||activeSym==='app'||activeSym==='soxl'||activeSym==='crcl';
+  const isFut = activeSym==='hood'||activeSym==='amd'||activeSym==='eth'||activeSym==='sol'||activeSym==='aave'||activeSym==='btcf'||activeSym==='nbis'||activeSym==='asts'||activeSym==='app'||activeSym==='soxl'||activeSym==='crcl';
   const levSel = qs('#cfg-lev');
   levSel.innerHTML = '';
   const opts = isFut
@@ -1412,7 +1436,7 @@ function closeSettings(){qs('#settings-overlay').classList.remove('open');}
 async function saveSettings(){
   const lev=parseFloat(qs('#cfg-lev').value);
   const paused=qs('#cfg-pause').value==='true';
-  const isFut = activeSym==='nvda'||activeSym==='amd'||activeSym==='eth'||activeSym==='sol'||activeSym==='aave'||activeSym==='btcf'||activeSym==='tsla'||activeSym==='nbis'||activeSym==='asts'||activeSym==='app'||activeSym==='soxl'||activeSym==='crcl';
+  const isFut = activeSym==='hood'||activeSym==='amd'||activeSym==='eth'||activeSym==='sol'||activeSym==='aave'||activeSym==='btcf'||activeSym==='nbis'||activeSym==='asts'||activeSym==='app'||activeSym==='soxl'||activeSym==='crcl';
   const validLevs = isFut ? [5,7,10,12,15,20] : [3,4,5];
   if(!validLevs.includes(lev)){alert('Invalid leverage for this mode');return;}
   try{
@@ -1433,14 +1457,12 @@ function hideLoader(){
 }
 
 async function autoSelectActiveSymbol(){
-  // Step 1: fetch default (btcf) immediately — show dashboard ASAP
-  try {
-    const r = await fetch(SOURCES['btcf'].api+'?t='+Date.now(),{cache:'no-store'});
-    if(r.ok){ botData = await r.json(); render(botData); }
-  } catch(e){}
+  // Step 1: land on MU by default (user request 2026-10-01) — show dashboard ASAP
+  switchSym('mu');
   hideLoader();
 
-  // Step 2: check all symbols in parallel for active position, switch if found
+  // Step 2: check all FUTURES symbols in parallel; if one actually has an open position,
+  // that's more urgent than MU's idle screen, so show it instead.
   const syms = Object.keys(SOURCES);
   const results = await Promise.all(syms.map(sym=>
     fetch(SOURCES[sym].api+'?t='+Date.now(),{cache:'no-store'})
@@ -1449,11 +1471,7 @@ async function autoSelectActiveSymbol(){
   for(let i=0;i<syms.length;i++){
     const d=results[i];
     if(d && (d.position==='LONG'||d.position==='SHORT')){
-      activeSym = syms[i];
-      Object.keys(SOURCES).forEach(k=>{
-        const el=qs('#sym-'+k);
-        if(el) el.className='sym-tab'+(k===activeSym?' active-'+k:'');
-      });
+      switchSym(syms[i]);     // also flips tab-mu -> tab-home, which Step 1's MU default needs undone here
       botData = d;
       render(d);
       return;
@@ -1467,7 +1485,7 @@ fetchMU();
 setInterval(fetchData,REFRESH_MS);
 
 // ── ATR health badges (weekly-refreshed backend data, cheap to poll) ──────────
-const ATR_BADGE_SYMS = ['nbis','amd','app','soxl','crcl','asts','tsla'];
+const ATR_BADGE_SYMS = ['nbis','amd','app','soxl','crcl','asts','hood'];
 async function fetchAtrBadges(){
   await Promise.all(ATR_BADGE_SYMS.map(async k=>{
     try{
@@ -1487,7 +1505,7 @@ setInterval(fetchAtrBadges, 5*60*1000);  // every 5 min — the underlying data 
 setInterval(fetchMU,30000);
 
 // ── Active positions badge ────────────────────────────────────────────────────
-const POS_TICKERS = ['nvda','amd','tsla','nbis','asts','app','soxl','crcl','eth','btc','sol','aave','coin','doge','mstr','pepe','rklb','mu'];
+const POS_TICKERS = ['hood','amd','nbis','asts','app','soxl','crcl','eth','btc','sol','aave','coin','doge','mstr','pepe','rklb','mu'];
 async function pollPositionsBadge(){
   try {
     const results = await Promise.all(POS_TICKERS.map(t =>
@@ -1517,11 +1535,11 @@ let calFetching = false;
 
 const CAL_MONTHS = ['January','February','March','April','May','June',
                     'July','August','September','October','November','December'];
-const CAL_SYMLABEL = {nvda:'NVDA',amd:'AMD',tsla:'TSLA',nbis:'NBIS',asts:'ASTS',app:'APP',soxl:'SOXL',crcl:'CRCL',btc:'BTC',btcf:'BTC',gold:'GOLD',eth:'ETH',sol:'SOL',aave:'AAVE'};
-const CAL_SYMCOLOR = {nvda:'#76b900',amd:'#ed1b2f',tsla:'#cc0000',nbis:'#00bcd4',asts:'#00b4ff',app:'#e2e8f0',soxl:'#22c55e',crcl:'#3b82f6',btc:'#f7931a',btcf:'#f7931a',gold:'#ffd700',eth:'#627eea',sol:'#9945ff',aave:'#b6509e'};
+const CAL_SYMLABEL = {hood:'HOOD',amd:'AMD',nbis:'NBIS',asts:'ASTS',app:'APP',soxl:'SOXL',crcl:'CRCL',btc:'BTC',btcf:'BTC',gold:'GOLD',eth:'ETH',sol:'SOL',aave:'AAVE'};
+const CAL_SYMCOLOR = {hood:'#00c805',amd:'#ed1b2f',nbis:'#00bcd4',asts:'#00b4ff',app:'#e2e8f0',soxl:'#22c55e',crcl:'#3b82f6',btc:'#f7931a',btcf:'#f7931a',gold:'#ffd700',eth:'#627eea',sol:'#9945ff',aave:'#b6509e'};
 
 const CAL_SYM_MAP = {
-  'NVDAUSDT':'nvda','AMDUSDT':'amd','TSLAUSDT':'tsla','NBISUSDT':'nbis','ASTSUSDT':'asts','APPUSDT':'app','SOXLUSDT':'soxl','CRCLUSDT':'crcl',
+  'AMDUSDT':'amd','HOODUSDT':'hood','NBISUSDT':'nbis','ASTSUSDT':'asts','APPUSDT':'app','SOXLUSDT':'soxl','CRCLUSDT':'crcl',
   'ETHUSDT':'eth','SOLUSDT':'sol','AAVEUSDT':'aave','BTCUSDT':'btcf','PAXGUSDT':'gold'
 };
 

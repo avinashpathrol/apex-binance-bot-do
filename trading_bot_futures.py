@@ -166,9 +166,28 @@ SYMBOLS_CONFIG = {
         'leverage': 25,
         'skip_margin_type': True,
         'daily_profit_lock': 5.0,
-        'trend_continuation_enabled': True,
+        'trend_continuation_enabled': False,  # was True. 2026-09-22: trend-continuation entries (added Sep 13) buy already-extended moves -- pooled across symbols 33% win, -$100 net; August (off) LONG +$21 vs September (on) LONG -$267. Disabled bot-wide per user request.
         'rsi_long_min': 25,
         'rsi_long_max': 65,
+        'rsi_short_min': 35,
+        'rsi_short_max': 75,
+        'pullback_zone_pct': 0.030,
+        'trail_dist_atr': 0.20,
+    },
+    'HOODUSDT': {
+        'base': 'HOOD',
+        'dashboard_file': 'data_futures_hood.json',
+        'min_atr': 0.70,   # real 7-day baseline ATR $0.945 (0.78% of $120.88) checked 2026-09-22 -- 70% pass rate
+        'trade_amount': 30.0,  # user request 2026-09-22
+        'max_loss_pct': 0.35,
+        'market_hours_only': True,
+        'one_way': True,
+        'leverage': 20,  # max leverage at $30 margin (Binance bracket 1: 0-$100k notional) -- verified live 2026-09-22
+        'skip_margin_type': True,
+        'daily_profit_lock': 5.0,
+        'short_only': True,  # user request 2026-09-22: added as a TSLA replacement, short-only from day one ("I don't want to lose money")
+        'rsi_long_min': 25,
+        'rsi_long_max': 63,
         'rsi_short_min': 35,
         'rsi_short_max': 75,
         'pullback_zone_pct': 0.030,
@@ -185,9 +204,10 @@ SYMBOLS_CONFIG = {
         'leverage': 40,
         'skip_margin_type': True,
         'daily_profit_lock': 6.0,
-        'trend_continuation_enabled': True,
+        'short_only': True,  # user request 2026-09-22: LONG net -$144/13 trades vs SHORT +$31/9 trades
+        'trend_continuation_enabled': False,  # was True. 2026-09-21: 5 of 6 CRCL trend-continuation LONGs hit the hard stop (-$92); all bought 3-5% above EMA21 at RSI 69-78
         'rsi_long_min': 25,
-        'rsi_long_max': 65,
+        'rsi_long_max': 63,  # was 65. 2026-09-21: pullback LONGs entered at RSI >= 63 lost 7 of 7 across symbols (CRCL 3 of 3, -$75); below 63 won 5 of 6
         'rsi_short_min': 35,
         'rsi_short_max': 75,
         'pullback_zone_pct': 0.030,
@@ -204,15 +224,16 @@ SYMBOLS_CONFIG = {
         'leverage': 50,  # max available at this position size (Binance bracket 1: 0-$50k notional)
         'skip_margin_type': True,
         'daily_profit_lock': 5.0,
-        'trend_continuation_enabled': True,
+        'short_only': True,  # user request 2026-09-22: LONG net -$29/5 trades (20%% win) vs SHORT +$26/5 trades (100%% win)
+        'trend_continuation_enabled': False,  # was True. 2026-09-22: trend-continuation entries (added Sep 13) buy already-extended moves -- pooled across symbols 33% win, -$100 net; August (off) LONG +$21 vs September (on) LONG -$267. Disabled bot-wide per user request.
         'rsi_long_min': 25,
-        'rsi_long_max': 65,
+        'rsi_long_max': 63,  # was 65. 2026-09-21: pullback LONGs entered at RSI >= 63 lost 7 of 7 across CRCL/SOXL/TSLA (-$116); below 63 won 5 of 6
         'rsi_short_min': 35,
         'rsi_short_max': 75,
         'pullback_zone_pct': 0.030,
         'trail_dist_atr': 0.20,
     },
-    'TSLAUSDT': {
+    'TSLAUSDT': {  # RETIRED 2026-09-22 (removed from TRADING_SYMBOLS) -- small typical moves, wins $3-5 vs losses ~$10, user request. Config kept for reference only, inert.
         'base': 'TSLA',
         'dashboard_file': 'data_futures_tsla.json',
         'min_atr': 0.95,
@@ -227,7 +248,7 @@ SYMBOLS_CONFIG = {
         'breakout_enabled': True,
         'ema_cross_enabled': True,  # backtested 2026-09-16, 90 days real data -- see get_decision()
         'rsi_long_min': 27,
-        'rsi_long_max': 66,
+        'rsi_long_max': 63,  # was 66. 2026-09-21: pullback LONGs entered at RSI >= 63 lost 7 of 7 across CRCL/SOXL/TSLA (-$116); below 63 won 5 of 6
         'rsi_short_min': 22,
         'rsi_short_max': 68,
         'pullback_zone_pct': 0.030,
@@ -253,7 +274,7 @@ SYMBOLS_CONFIG = {
         'leverage': 25,
         'skip_margin_type': True,
         'daily_profit_lock': 7.0,
-        'trend_continuation_enabled': True,
+        'trend_continuation_enabled': False,  # was True. 2026-09-22: trend-continuation entries (added Sep 13) buy already-extended moves -- pooled across symbols 33% win, -$100 net; August (off) LONG +$21 vs September (on) LONG -$267. Disabled bot-wide per user request.
         'ema_cross_enabled': True,  # backtested 2026-09-16, 90 days real data -- see get_decision()
         'rsi_long_min': 25,
         'rsi_long_max': 65,
@@ -274,7 +295,8 @@ SYMBOLS_CONFIG = {
         'leverage': 20,
         'skip_margin_type': True,
         'daily_profit_lock': 5.0,
-        'trend_continuation_enabled': True,
+        'short_only': True,  # user request 2026-09-22: LONG net -$24/11 trades vs SHORT +$20/16 trades
+        'trend_continuation_enabled': False,  # was True. 2026-09-22: trend-continuation entries (added Sep 13) buy already-extended moves -- pooled across symbols 33% win, -$100 net; August (off) LONG +$21 vs September (on) LONG -$267. Disabled bot-wide per user request.
         'breakout_enabled': True,
         'rsi_long_min': 25,
         'rsi_long_max': 65,
@@ -313,7 +335,7 @@ SYMBOLS_CONFIG = {
         'skip_margin_type': True,
     },
 }
-TRADING_SYMBOLS = ['NBISUSDT', 'AMDUSDT', 'APPUSDT', 'SOXLUSDT', 'CRCLUSDT', 'ASTSUSDT', 'TSLAUSDT']
+TRADING_SYMBOLS = ['NBISUSDT', 'AMDUSDT', 'APPUSDT', 'SOXLUSDT', 'CRCLUSDT', 'ASTSUSDT', 'HOODUSDT']
 
 # Auto-tunable SL/trail parameters live here at runtime, layered over the
 # hardcoded SYMBOLS_CONFIG defaults, so run_weekly_auto_tune() can persist a
@@ -2496,10 +2518,10 @@ def build_trail_info(symbol: str, position: Optional[str]) -> dict:
 
 
 # ── Trade Execution ───────────────────────────────────────────────────────────
-SAME_DIR_COOLDOWN = 600  # 10 minutes
+SAME_DIR_COOLDOWN = 900  # 15 minutes (was 600 = 10 min until 2026-09-21; raised on user request)
 # Consecutive-loss circuit breaker -- added 2026-09-18 after a real incident:
 # SOXL re-entered LONG three times in one session (119.35 -> 118.81 -> 118.48),
-# losing every time, because the flat 10-minute cooldown above has no memory
+# losing every time, because the flat same-direction cooldown above has no memory
 # of a losing streak -- it resets the instant the timer runs out, regardless
 # of what just happened. This tracks consecutive losses per symbol; once a
 # symbol hits the threshold, new entries are blocked NOT for a fixed duration
@@ -2527,7 +2549,7 @@ def open_long(symbol: str, price: float, confidence: int, reason: str, indicator
     ss   = sym_state(symbol)
     base = SYMBOLS_CONFIG[symbol]['base']
     cfg  = SYMBOLS_CONFIG[symbol]
-    # Block re-entry in same direction within 10 min of last close
+    # Block re-entry in same direction within SAME_DIR_COOLDOWN (15 min) of last close
     if ss.get('last_bot_closed_side') == 'LONG':
         elapsed = time.time() - int(ss.get('last_bot_closed_ts', 0))
         if elapsed < SAME_DIR_COOLDOWN:
@@ -2649,7 +2671,7 @@ def open_short(symbol: str, price: float, confidence: int, reason: str, indicato
     ss   = sym_state(symbol)
     base = SYMBOLS_CONFIG[symbol]['base']
     cfg  = SYMBOLS_CONFIG[symbol]
-    # Block re-entry in same direction within 10 min of last close
+    # Block re-entry in same direction within SAME_DIR_COOLDOWN (15 min) of last close
     if ss.get('last_bot_closed_side') == 'SHORT':
         elapsed = time.time() - int(ss.get('last_bot_closed_ts', 0))
         if elapsed < SAME_DIR_COOLDOWN:

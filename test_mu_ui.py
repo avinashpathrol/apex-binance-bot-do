@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -36,7 +37,7 @@ BASE_CONFIG = {'futures_bot_paused': False, 'futures_trade_amount_usdt': 40, 'so
 
 class Server:
     def __init__(self, root, fixture):
-        self.puts, self.config, self.fixture = [], dict(BASE_CONFIG), fixture
+        self.puts, self.config, self.fixture, self.hits = [], dict(BASE_CONFIG), fixture, {}
         outer = self
 
         class H(http.server.SimpleHTTPRequestHandler):
@@ -52,6 +53,12 @@ class Server:
 
             def do_GET(self):
                 p = self.path.split('?')[0]
+                outer.hits[p] = outer.hits.get(p, 0) + 1
+                if p == '/__hits':
+                    return self._json(outer.hits)
+                if p == '/data_futures_app.json':               # a slow link: the response takes 3 s
+                    time.sleep(3)
+                    return self._json({'symbol': 'APPUSDT', 'position': None, 'price': 100.0})
                 if p == '/bot_config.json':
                     return self._json(outer.config)
                 if p == '/data_overnight_mu.json':
@@ -77,10 +84,22 @@ class Server:
 STUBS = "<script>window.confirm=function(){return true};window.prompt=function(){return null};window.alert=function(){};</script>"
 
 
+MOBILE_PRE = """
+  R.niceErr1 = niceErr(new TypeError('Load failed')); R.niceErr2 = niceErr(new Error('HTTP 500'));
+  switchSym('mu'); await sleep(2500);
+  R.muBar = qs('#status-bar').textContent; R.muDot = qs('#live-dot').style.background;
+  // the in-flight guard is synchronous: 5 back-to-back polls must produce exactly ONE network call (no timers involved)
+  window.__n = 0; var _f0 = window.fetch;
+  window.fetch = function(u){ if (String(u).indexOf('data_futures_app') > -1) window.__n++; return _f0.apply(this, arguments); };
+  switchSym('app'); for (var i = 0; i < 5; i++) fetchData();
+  R.appFetchCalls = window.__n; window.fetch = _f0;
+  switchSym('mu'); await sleep(300);"""
+
+
 def scenario(root_sel, kind):
     reload = 'await (window.loadAll ? loadAll() : fetchMU());'
     if kind == 'open':
-        steps = """
+        steps = (MOBILE_PRE if root_sel == '#mu-exit-card' else '') + """
   type(q('stopPrice'), 1021.35);
   R.tightHelp = q('stopHelp').textContent; R.enabledTight = !q('setStop').disabled; R.profitFromPrice = q('stopProfit').value;
   type(q('stopProfit'), 8); R.priceFromProfit = q('stopPrice').value;
@@ -161,6 +180,12 @@ def main():
         r, puts = run_case(page, sel, 'open', copy.deepcopy(OPEN))
         check('page ran without a script error', 'error' not in r, r.get('error'))
         check('controls are shown for an open position', r.get('rootDisplay') != 'none', r.get('rootDisplay'))
+        if page == 'index.html':
+            check('MU tab: no error in the status bar (was "undefined is not an object")', 'muBar' in r and '\u26a0' not in r['muBar'] and 'undefined' not in r['muBar'], r.get('muBar'))
+            check('MU tab: green status dot', 'green' in r.get('muDot', ''), r.get('muDot'))
+            check('network errors are shown as a friendly message',
+                  r.get('niceErr1') == 'Slow connection \u2014 retrying\u2026' and r.get('niceErr2') == 'HTTP 500', (r.get('niceErr1'), r.get('niceErr2')))
+            check('overlapping polls on a slow link are dropped (5 rapid calls -> 1 request)', r.get('appFetchCalls') == 1, r.get('appFetchCalls'))
         check('tight stop: warning + profit shown', 'Very tight' in r.get('tightHelp', '') and 'keep about' in r.get('tightHelp', ''), r.get('tightHelp'))
         check('tight-but-valid stop enables the button', r.get('enabledTight') is True)
         exp = price_for(8)

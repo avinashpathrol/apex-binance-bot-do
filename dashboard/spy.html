@@ -278,6 +278,80 @@ body {
 }
 .toast.show { display: block; animation: fadeInUp .3s ease; }
 @keyframes fadeInUp { from { opacity:0; transform: translate(-50%,10px); } to { opacity:1; transform: translate(-50%,0); } }
+
+/* SPY 0DTE paper-trading page (new) */
+.s0-banner {
+  margin: 0 16px 12px; padding: 10px 14px; border-radius: 12px;
+  background: rgba(245,158,11,.12); border: 1px solid rgba(245,158,11,.3);
+  font-size: 12px; color: var(--yellow); display: none; align-items: center; gap: 8px;
+}
+.s0-flat { text-align: center; padding: 26px 8px; }
+.s0-flat .emoji { font-size: 30px; margin-bottom: 8px; }
+.s0-flat .title { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+.s0-flat .sub { font-size: 12.5px; color: var(--muted); }
+
+.s0-live-head { margin-bottom: 10px; }
+.s0-strikes { font-size: 22px; font-weight: 800; letter-spacing: -0.3px; margin-top: 6px; }
+.s0-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+.s0-pnl-hero { text-align: center; padding: 16px 10px; border-radius: 12px; margin: 12px 0; }
+.s0-pnl-hero .v { font-size: 30px; font-weight: 800; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.s0-pnl-hero .l { font-size: 11px; color: var(--muted); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+.s0-metrics-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
+.s0-metric { background: var(--card2); border-radius: 10px; padding: 10px 12px; }
+.s0-metric .l { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 3px; }
+.s0-metric .v { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+.s0-progress-track { position: relative; height: 10px; background: var(--card2); border-radius: 6px; }
+.s0-progress-fill { position: absolute; left: 0; top: 0; height: 100%; border-radius: 6px; transition: width .5s ease-out, background .3s; }
+.s0-progress-mark { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--border); }
+.s0-progress-labels { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); margin-top: 6px; }
+
+.s0-trail-pill { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 700; padding: 5px 11px; border-radius: 20px; }
+
+.s0-cushion { font-size: 11.5px; color: var(--muted); margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); }
+
+.s0-cal-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.s0-cal-nav-btn {
+  width: 36px; height: 36px; border-radius: 10px; border: 1px solid var(--border); background: var(--card2);
+  color: var(--text); font-size: 16px; display: flex; align-items: center; justify-content: center;
+  cursor: pointer; touch-action: manipulation; -webkit-user-select: none; user-select: none;
+  transition: transform .12s ease-out, background .15s;
+}
+.s0-cal-nav-btn:active { transform: scale(.92); background: var(--border); }
+.s0-cal-month-label { font-size: 14px; font-weight: 700; }
+.s0-cal-month-total { font-size: 11.5px; font-weight: 700; margin-top: 1px; font-variant-numeric: tabular-nums; }
+
+.s0-cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; }
+.s0-cal-day {
+  position: relative; min-height: 46px; border-radius: 9px; padding: 5px 2px 4px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  font-size: 10px; background: var(--card2); color: var(--muted);
+  touch-action: manipulation; -webkit-user-select: none; user-select: none;
+  transition: transform .12s ease-out;
+}
+.s0-cal-day.empty { background: none; }
+.s0-cal-day.has { cursor: pointer; color: var(--text); }
+.s0-cal-day.has:active { transform: scale(.92); }
+.s0-cal-day.pos { background: rgba(34,197,94,.16); }
+.s0-cal-day.neg { background: rgba(239,68,68,.16); }
+.s0-cal-day.today { box-shadow: inset 0 0 0 1.5px var(--accent); }
+.s0-cal-daynum { font-size: 10px; font-weight: 600; opacity: .75; }
+.s0-cal-pnl { font-size: 10.5px; font-weight: 800; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.s0-cal-day.pos .s0-cal-pnl { color: var(--green); }
+.s0-cal-day.neg .s0-cal-pnl { color: var(--red); }
+
+.s0-trade { background: var(--card2); border-radius: 12px; padding: 12px 13px; margin-bottom: 8px; }
+.s0-trade:last-child { margin-bottom: 0; }
+.s0-trade-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.s0-trade-strikes { font-size: 14px; font-weight: 700; }
+.s0-trade-pnl { font-size: 15px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.s0-trade-meta { display: flex; justify-content: space-between; align-items: center; margin-top: 7px; font-size: 11px; color: var(--muted); flex-wrap: wrap; gap: 4px; }
+.s0-trail-chip { font-size: 9.5px; font-weight: 700; padding: 2px 7px; border-radius: 10px; background: rgba(99,102,241,.16); color: var(--accent); margin-left: 6px; white-space: nowrap; }
+
+.s0-detail-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); gap: 10px; }
+.s0-detail-row:last-child { border-bottom: none; }
 </style>
 </head>
 <body>
@@ -306,6 +380,7 @@ body {
   <button class="tab" onclick="showPage('gex')">GEX</button>
   <button class="tab" onclick="showPage('crypto')">🪙 Crypto 0DTE</button>
   <button class="tab" onclick="showPage('hermes');loadHermesLog()">🧠 Hermes Log</button>
+  <button class="tab" onclick="showPage('spy0dte');loadSpy0dte()">📊 SPY 0DTE</button>
 </div>
 
 <div class="next-banner" id="next-banner">
@@ -621,6 +696,67 @@ body {
   </div>
 </div>
 
+<!-- ═══ SPY 0DTE PAPER PAGE ═══ -->
+<div class="page" id="page-spy0dte">
+
+  <div class="s0-banner" id="s0-perm-banner"></div>
+
+  <div class="card" style="padding:14px 16px;">
+    <div class="ticker-toggle">
+      <button class="tt-btn active" id="tt-s0-open" onclick="switchSpy0dteVariant('open')">9:45 Open</button>
+      <button class="tt-btn" id="tt-s0-tenmst" onclick="switchSpy0dteVariant('ten_mst')">10 MST</button>
+    </div>
+    <div id="s0-variant-label" style="font-size:11.5px;color:var(--muted);margin-top:8px;">—</div>
+  </div>
+
+  <div class="card" id="s0-position-card">
+    <div class="card-title">Live Position</div>
+    <div id="s0-position-body">Loading…</div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Performance — <span id="s0-perf-variant-label">—</span></div>
+    <div class="summary-row">
+      <div class="sum-box">
+        <div class="s-label">Trades</div>
+        <div class="s-val" id="s0-perf-total">—</div>
+      </div>
+      <div class="sum-box">
+        <div class="s-label">Win Rate</div>
+        <div class="s-val" id="s0-perf-wr">—</div>
+      </div>
+      <div class="sum-box">
+        <div class="s-label">Net P&amp;L</div>
+        <div class="s-val" id="s0-perf-net">—</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">P&amp;L Calendar</div>
+    <div class="s0-cal-nav">
+      <button class="s0-cal-nav-btn" onclick="s0PrevMonth()" aria-label="Previous month">‹</button>
+      <div style="text-align:center;">
+        <div class="s0-cal-month-label" id="s0-cal-month-label">—</div>
+        <div class="s0-cal-month-total" id="s0-cal-month-total">—</div>
+      </div>
+      <button class="s0-cal-nav-btn" onclick="s0NextMonth()" aria-label="Next month">›</button>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:5px;margin-bottom:6px;">
+      <div class="cal-hdr">Su</div><div class="cal-hdr">Mo</div><div class="cal-hdr">Tu</div>
+      <div class="cal-hdr">We</div><div class="cal-hdr">Th</div><div class="cal-hdr">Fr</div>
+      <div class="cal-hdr">Sa</div>
+    </div>
+    <div class="s0-cal-grid" id="s0-cal-grid"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Recent Trades</div>
+    <div id="s0-trades-list">Loading…</div>
+  </div>
+
+</div>
+
 <!-- ═══ REGISTER MODAL ═══ -->
 <div class="modal-bg" id="register-modal" onclick="closeModalIfBg(event)">
   <div class="modal">
@@ -680,6 +816,17 @@ body {
 
     <button class="btn btn-green" style="margin-bottom:10px;" onclick="submitClose()">Record Close</button>
     <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+  </div>
+</div>
+
+<!-- ═══ SPY 0DTE DAY DETAIL MODAL ═══ -->
+<div class="modal-bg" id="s0-day-modal" onclick="closeModalIfBg(event)">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <div style="font-size:16px;font-weight:700;margin-bottom:4px;" id="s0-day-title">—</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:14px;" id="s0-day-sub">—</div>
+    <div id="s0-day-rows"></div>
+    <button class="btn btn-secondary" style="margin-top:14px;" onclick="closeModal()">Close</button>
   </div>
 </div>
 
@@ -1735,6 +1882,281 @@ function renderHermesLog(d) {
         <div class="hlog-entry-body">${esc(r.report_summary)}</div>
       </div>`).join('');
   }
+}
+
+// ── SPY 0DTE paper trading (open/ten_mst variants) — separate static file ─────
+let _spy0dteData = null;
+let _spy0dteVariant = 'open';
+let _s0CalYear, _s0CalMonth;
+let _s0LastTrades = [];
+
+const S0_CLOSE_REASONS = {
+  trail_stop:      '🔒 Trail locked in',
+  stop_loss:       '🛑 Stop loss',
+  force_close_eod: '⏰ Force-closed (EOD)',
+  profit_target:   '🎯 Profit target hit',
+};
+const S0_MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+
+function s0ReasonLabel(reason) {
+  if (!reason) return '—';
+  return S0_CLOSE_REASONS[reason] || reason.replace(/_/g, ' ');
+}
+
+function fmtS0HourMin(h, m) {
+  if (h == null) return '—';
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${String(m).padStart(2,'0')} ${ampm}`;
+}
+
+function fmtS0TimeET(iso) {
+  if (!iso) return '—';
+  try {
+    return new Date(iso).toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit', timeZone:'America/New_York'});
+  } catch(e) { return '—'; }
+}
+
+async function loadSpy0dte() {
+  try {
+    const res = await Promise.race([
+      authedFetch('/data_spy0dte_moomoo.json?t=' + Date.now(), {cache:'no-store'}),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000)),
+    ]);
+    if (!res.ok) throw new Error('http ' + res.status);
+    _spy0dteData = await res.json();
+    renderSpy0dte();
+  } catch (e) {
+    console.error('loadSpy0dte failed', e);
+  }
+}
+
+function spy0dteVariantData() {
+  return (_spy0dteData && _spy0dteData.variants) ? _spy0dteData.variants[_spy0dteVariant] : null;
+}
+
+function switchSpy0dteVariant(key) {
+  _spy0dteVariant = key;
+  document.getElementById('tt-s0-open').classList.toggle('active', key === 'open');
+  document.getElementById('tt-s0-tenmst').classList.toggle('active', key === 'ten_mst');
+  renderSpy0dte();
+}
+
+function renderSpy0dte() {
+  const d = _spy0dteData;
+  renderSpy0dtePermBanner(d && d.options_permission);
+  const v = spy0dteVariantData();
+  if (!v) return;
+
+  document.getElementById('s0-variant-label').textContent = v.label || '';
+  document.getElementById('s0-perf-variant-label').textContent = v.label || '';
+
+  renderSpy0dtePosition(v, d.spot_price);
+  renderSpy0dtePerf(v.performance || {});
+
+  if (_s0CalYear === undefined) {
+    const now = new Date();
+    _s0CalYear = now.getFullYear();
+    _s0CalMonth = now.getMonth();
+  }
+  renderSpy0dteCalendar(v.daily_pnl || {}, v.trades || []);
+  renderSpy0dteTrades(v.trades || []);
+}
+
+function renderSpy0dtePermBanner(perm) {
+  const el = document.getElementById('s0-perm-banner');
+  if (!el) return;
+  if (perm && perm.status === 'pending') {
+    el.style.display = 'flex';
+    el.innerHTML = `⏳ <span>moomoo options permission still pending${perm.first_checked_date ? ' — checking since ' + perm.first_checked_date : ''}</span>`;
+  } else {
+    el.style.display = 'none';
+  }
+}
+
+function renderSpy0dtePosition(v, spot) {
+  const body = document.getElementById('s0-position-body');
+  const pos = v.open_position;
+
+  if (!pos) {
+    body.innerHTML = `
+      <div class="s0-flat">
+        <div class="emoji">💤</div>
+        <div class="title">Flat — no open position</div>
+        <div class="sub">Next entry ~${fmtS0HourMin(v.entry_hour, v.entry_minute)} ET</div>
+      </div>
+    `;
+    return;
+  }
+
+  const isBull      = pos.direction === 'BULL_PUT';
+  const credit      = pos.credit || 0;
+  const contracts   = pos.contracts || 1;
+  const maxCredit   = credit * 100 * contracts;
+  const costToClose = pos.cost_to_close;
+  const uPnl        = pos.unrealized_pnl;
+  const pct         = pos.pct_of_max_captured;
+  const peak        = pos.peak_pct_captured;
+
+  const uPnlColor = uPnl == null ? 'var(--muted)' : (uPnl >= 0 ? 'var(--green)' : 'var(--red)');
+  const severity  = (uPnl != null && uPnl < 0) ? 'danger' : (peak == null ? 'warning' : '');
+
+  const pctVal   = pct == null ? 0 : pct;
+  const barW     = Math.max(0, Math.min(100, pctVal));
+  const barColor = pctVal < 0 ? 'var(--red)' : pctVal < 50 ? 'var(--yellow)' : 'var(--green)';
+
+  let trailHtml;
+  if (peak != null) {
+    trailHtml = `<span class="s0-trail-pill" style="background:rgba(34,197,94,.15);color:var(--green);">🔒 Trail active — peak ${peak.toFixed(0)}%</span>`;
+  } else if (pctVal >= 50) {
+    trailHtml = `<span class="s0-trail-pill" style="background:rgba(245,158,11,.15);color:var(--yellow);">⚡ Arming trail…</span>`;
+  } else {
+    trailHtml = `<span class="s0-trail-pill" style="background:var(--card2);color:var(--muted);">⏳ Building toward 50%</span>`;
+  }
+
+  let cushionHtml = '';
+  if (pos.breakeven != null && spot != null) {
+    const cushionPct   = isBull ? (spot - pos.breakeven) / spot * 100 : (pos.breakeven - spot) / spot * 100;
+    const cushionColor = cushionPct >= 0 ? 'var(--muted)' : 'var(--red)';
+    cushionHtml = `<div class="s0-cushion">Breakeven <b style="color:var(--text)">$${pos.breakeven.toFixed(2)}</b> — <span style="color:${cushionColor}">${cushionPct >= 0 ? '' : 'BREACHED, '}${Math.abs(cushionPct).toFixed(2)}% ${cushionPct >= 0 ? 'cushion' : 'past breakeven'}</span></div>`;
+  }
+
+  body.innerHTML = `
+    <div class="trade-monitor ${severity}">
+      <div class="s0-live-head">
+        <span class="pill ${isBull ? 'pill-green' : 'pill-red'}">${isBull ? 'Bull Put' : 'Bear Call'}</span>
+        <div class="s0-strikes">$${pos.short_strike}/$${pos.long_strike}</div>
+        <div class="s0-sub">Opened ${fmtS0TimeET(pos.opened_at)} ET · exp ${pos.expiry || '—'}</div>
+      </div>
+
+      <div class="s0-pnl-hero" style="background:${uPnl == null ? 'var(--card2)' : (uPnl >= 0 ? 'rgba(34,197,94,.1)' : 'rgba(239,68,68,.1)')};border:1px solid ${uPnl == null ? 'var(--border)' : (uPnl >= 0 ? 'rgba(34,197,94,.35)' : 'rgba(239,68,68,.35)')}">
+        <div class="v" style="color:${uPnlColor}">${uPnl == null ? '—' : (uPnl >= 0 ? '+' : '') + '$' + uPnl.toFixed(2)}</div>
+        <div class="l">Unrealized P&amp;L</div>
+      </div>
+
+      <div class="s0-metrics-row">
+        <div class="s0-metric">
+          <div class="l">Credit received</div>
+          <div class="v" style="color:var(--green)">$${credit.toFixed(2)} × ${contracts} = $${maxCredit.toFixed(0)}</div>
+        </div>
+        <div class="s0-metric">
+          <div class="l">Cost to close</div>
+          <div class="v">${costToClose == null ? '—' : '$' + costToClose.toFixed(2)}</div>
+        </div>
+      </div>
+
+      <div class="s0-progress-track">
+        <div class="s0-progress-fill" style="width:${barW}%;background:${barColor}"></div>
+        <div class="s0-progress-mark" style="left:50%"></div>
+      </div>
+      <div class="s0-progress-labels"><span>0%</span><span>50% trail-arm</span><span>100% max</span></div>
+
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;flex-wrap:wrap;gap:6px;">
+        <span style="font-size:12px;color:var(--muted)">Captured: <b style="color:${barColor}">${pct == null ? '—' : pct.toFixed(0) + '%'}</b> of max credit</span>
+        ${trailHtml}
+      </div>
+      ${cushionHtml}
+    </div>
+  `;
+}
+
+function renderSpy0dtePerf(perf) {
+  document.getElementById('s0-perf-total').textContent = perf.total || 0;
+  document.getElementById('s0-perf-wr').textContent = (perf.win_rate != null ? perf.win_rate : 0).toFixed(1) + '%';
+  const net = perf.net_pnl || 0;
+  document.getElementById('s0-perf-net').innerHTML = `<span style="color:${net >= 0 ? 'var(--green)' : 'var(--red)'}">${net >= 0 ? '+' : ''}$${net.toFixed(2)}</span>`;
+}
+
+function s0PrevMonth() {
+  _s0CalMonth--; if (_s0CalMonth < 0) { _s0CalMonth = 11; _s0CalYear--; }
+  const v = spy0dteVariantData();
+  if (v) renderSpy0dteCalendar(v.daily_pnl || {}, v.trades || []);
+}
+function s0NextMonth() {
+  _s0CalMonth++; if (_s0CalMonth > 11) { _s0CalMonth = 0; _s0CalYear++; }
+  const v = spy0dteVariantData();
+  if (v) renderSpy0dteCalendar(v.daily_pnl || {}, v.trades || []);
+}
+
+function renderSpy0dteCalendar(dailyPnl, trades) {
+  _s0LastTrades = trades || [];
+  const y = _s0CalYear, m = _s0CalMonth;
+  document.getElementById('s0-cal-month-label').textContent = `${S0_MONTHS[m]} ${y}`;
+
+  const daysInMonth = new Date(y, m+1, 0).getDate();
+  const startDow    = new Date(y, m, 1).getDay();
+  const todayKey    = new Date().toISOString().slice(0,10);
+
+  let monthTotal = 0;
+  let html = '';
+  for (let i = 0; i < startDow; i++) html += '<div class="s0-cal-day empty"></div>';
+  for (let d = 1; d <= daysInMonth; d++) {
+    const key = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const v = dailyPnl[key];
+    let cls = 's0-cal-day';
+    let inner = `<div class="s0-cal-daynum">${d}</div>`;
+    if (v != null) {
+      monthTotal += v;
+      cls += ' has ' + (v >= 0 ? 'pos' : 'neg');
+      inner += `<div class="s0-cal-pnl">${v >= 0 ? '+' : '-'}$${Math.abs(v).toFixed(0)}</div>`;
+    }
+    if (key === todayKey) cls += ' today';
+    const onclick = v != null ? ` onclick="s0ShowDay('${key}')"` : '';
+    html += `<div class="${cls}"${onclick}>${inner}</div>`;
+  }
+  document.getElementById('s0-cal-grid').innerHTML = html;
+
+  const totalEl = document.getElementById('s0-cal-month-total');
+  totalEl.textContent = (monthTotal >= 0 ? '+' : '-') + '$' + Math.abs(monthTotal).toFixed(0);
+  totalEl.style.color = monthTotal >= 0 ? 'var(--green)' : 'var(--red)';
+}
+
+function s0ShowDay(key) {
+  const v = spy0dteVariantData();
+  const label = v && v.label || '';
+  const dayPnl = v && v.daily_pnl ? v.daily_pnl[key] : null;
+  const dayTrades = (_s0LastTrades || []).filter(t => (t.date || (t.closed_at || '').slice(0,10)) === key);
+
+  document.getElementById('s0-day-title').textContent = key;
+  document.getElementById('s0-day-sub').textContent = `${label} — net ${dayPnl != null ? ((dayPnl >= 0 ? '+' : '') + '$' + dayPnl.toFixed(2)) : '—'}`;
+
+  const rowsEl = document.getElementById('s0-day-rows');
+  if (dayTrades.length === 0) {
+    rowsEl.innerHTML = `<div class="s0-detail-row"><span style="color:var(--muted);font-size:12.5px;">${dayPnl != null ? 'Trade detail not kept for this date (older than most-recent 30) — net shown above is accurate.' : 'No trades.'}</span></div>`;
+  } else {
+    rowsEl.innerHTML = dayTrades.map(s0TradeRowHtml).join('');
+  }
+  document.getElementById('s0-day-modal').classList.add('open');
+}
+
+function s0TradeRowHtml(t) {
+  const isBull = t.direction === 'BULL_PUT';
+  const pnl    = t.pnl || 0;
+  const peak   = t.peak_pct_captured;
+  return `
+    <div class="s0-trade">
+      <div class="s0-trade-top">
+        <div style="display:flex;align-items:center;gap:6px;">
+          <span class="pill ${isBull ? 'pill-green' : 'pill-red'}" style="font-size:10px;">${isBull ? 'BP' : 'BC'}</span>
+          <span class="s0-trade-strikes">$${t.short_strike}/$${t.long_strike}</span>
+        </div>
+        <div class="s0-trade-pnl" style="color:${pnl >= 0 ? 'var(--green)' : 'var(--red)'}">${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}</div>
+      </div>
+      <div class="s0-trade-meta">
+        <span>Credit $${(t.credit || 0).toFixed(2)} · ${(t.closed_at || '').slice(0,10)}</span>
+        <span>${s0ReasonLabel(t.close_reason)}${peak != null ? `<span class="s0-trail-chip">peak ${peak.toFixed(0)}%</span>` : ''}</span>
+      </div>
+    </div>
+  `;
+}
+
+function renderSpy0dteTrades(trades) {
+  const el = document.getElementById('s0-trades-list');
+  if (!trades || trades.length === 0) {
+    el.innerHTML = '<div style="font-size:13px;color:var(--muted);">No closed trades yet.</div>';
+    return;
+  }
+  el.innerHTML = trades.slice(0, 10).map(s0TradeRowHtml).join('');
 }
 
 function showPage(name) {
