@@ -802,7 +802,7 @@ function switchSym(sym){
 function buildChart() {
   // MU isn't in SOURCES (own tab/data file, see fetchData above) -- give it the same
   // Chart-tab experience as every other ticker instead of crashing on SOURCES['mu'].
-  const tvSymbol = activeSym === 'mu' ? 'NASDAQ:MU' : SOURCES[activeSym].tv;
+  const tvSymbol = activeSym === 'mu' ? 'BINANCE:MUUSDT.P' : SOURCES[activeSym].tv;
   const symKey = activeSym === 'mu' ? 'mu' : SOURCES[activeSym].sym;
   if (chartSym === symKey) return;
   chartSym = symKey;
@@ -850,7 +850,11 @@ function buildMuChart() {
     new TradingView.widget({
       container_id: 'tv-mu-chart-mobile',
       width: '100%', height: '100%',
-      symbol: 'NASDAQ:MU',
+      // The overnight MU bot actually trades Binance's MUUSDT perpetual (see OVERNIGHT_CFG
+      // in trading_bot_futures.py), not the real NASDAQ stock -- those prices diverge,
+      // especially overnight when the real market is closed. Chart must match what the
+      // position's P&L is actually priced against, or the P&L looks "wrong" when it isn't.
+      symbol: 'BINANCE:MUUSDT.P',
       interval: '60',
       timezone: 'Etc/UTC',
       theme: 'dark',

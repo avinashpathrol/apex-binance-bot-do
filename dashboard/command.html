@@ -218,7 +218,11 @@
             <script type="text/javascript">
               new TradingView.widget({
                 "autosize": true,
-                "symbol": "NASDAQ:MU",
+                // The overnight MU bot trades Binance's MUUSDT perpetual (OVERNIGHT_CFG
+                // in trading_bot_futures.py), not the real NASDAQ stock -- those prices
+                // diverge, especially overnight. Chart must match what the position's
+                // P&L is actually priced against.
+                "symbol": "BINANCE:MUUSDT.P",
                 "interval": "15",
                 "timezone": "America/New_York",
                 "theme": "dark",
