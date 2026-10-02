@@ -2000,11 +2000,20 @@ function renderSpy0dtePosition(v, spot) {
   const pos = v.open_position;
 
   if (!pos) {
+    const todayET = new Date().toLocaleDateString('en-CA', {timeZone:'America/New_York'});
+    const skip = v.last_skip;
+    const skipHtml = (skip && skip.date === todayET)
+      ? `<div class="sub" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+           Last attempt (${fmtS0TimeET(skip.at)} ET): <b>${s0ReasonLabel(skip.reason)}</b>
+           ${skip.detail ? `<br>${skip.detail}` : ''}
+         </div>`
+      : '';
     body.innerHTML = `
       <div class="s0-flat">
         <div class="emoji">💤</div>
         <div class="title">Flat — no open position</div>
         <div class="sub">Next entry ~${fmtS0HourMin(v.entry_hour, v.entry_minute)} ET</div>
+        ${skipHtml}
       </div>
     `;
     return;

@@ -2266,12 +2266,17 @@ def spym_get_combo_quote(short_code: str, long_code: str) -> Optional[dict]:
         logger.warning(f'spym_get_combo_quote: {e}')
         return None
 
-def spym_build_spread(direction: str, chain: list, spot: float) -> Optional[dict]:
+def spym_build_spread(direction: str, chain: list, spot: float, diag: Optional[dict] = None) -> Optional[dict]:
     """Picks the short strike by REAL exchange delta (closest to
     SPYM_TARGET_SHORT_DELTA), falling back to a fixed %-OTM distance only if no
     real delta is usable (e.g. outside market hours). Prices the resulting
     vertical via a single REAL combo quote — never a theoretical calc for the
-    tradable economics, only for the fallback strike pick."""
+    tradable economics, only for the fallback strike pick.
+
+    `diag`, if passed, is filled in with why a None was returned -- purely
+    additive (existing callers/tests that omit it see identical behavior) so
+    the dashboard can show a real reason instead of the caller having to
+    grep service logs."""
     want_type = 'PUT' if direction == 'BULL_PUT' else 'CALL'
     by_strike = {c['strike_price']: c['code'] for c in chain if c['option_type'] == want_type}
     if direction == 'BULL_PUT':
@@ -2279,6 +2284,8 @@ def spym_build_spread(direction: str, chain: list, spot: float) -> Optional[dict
     else:
         candidates = sorted([s for s in by_strike if s > spot])[:8]
     if not candidates:
+        if diag is not None:
+            diag.update(reason='no_strikes', detail=f'no {want_type} strikes {"below" if direction == "BULL_PUT" else "above"} spot ${spot:.2f} in the chain')
         return None
 
     codes = [by_strike[s] for s in candidates]
@@ -2299,14 +2306,20 @@ def spym_build_spread(direction: str, chain: list, spot: float) -> Optional[dict
     long_strike = short_strike - SPYM_SPREAD_WIDTH if direction == 'BULL_PUT' else short_strike + SPYM_SPREAD_WIDTH
     long_code = by_strike.get(long_strike)
     if not long_code:
+        if diag is not None:
+            diag.update(reason='no_long_leg', detail=f'${SPYM_SPREAD_WIDTH:.2f}-wide long leg at strike {long_strike} not in the chain')
         return None
 
     q = spym_get_combo_quote(short_code, long_code)
     if not q or q['ask'] is None:
+        if diag is not None:
+            diag.update(reason='no_quote', detail=f'no live combo quote for {short_code}/{long_code}')
         return None
     credit = round(-q['ask'], 4)
     width = SPYM_SPREAD_WIDTH
     if credit <= 0 or credit < width * MIN_CREDIT_WIDTH_RATIO:
+        if diag is not None:
+            diag.update(reason='credit_too_low', detail=f'quoted credit ${credit:.2f} below the ${width * MIN_CREDIT_WIDTH_RATIO:.2f} minimum ({MIN_CREDIT_WIDTH_RATIO:.0%} of ${width:.2f} width)')
         return None
 
     contracts = 1   # real equity options can't be fractional, unlike the crypto engine's 0.01-step sizing
@@ -2324,15 +2337,22 @@ def spym_build_spread(direction: str, chain: list, spot: float) -> Optional[dict
 def spym_open_new_position(state: dict, vkey: str):
     vcfg = SPYM_VARIANTS[vkey]
     vstate = state['variants'][vkey]
+    # Records why this cycle declined to enter, so the dashboard can show a real
+    # reason instead of someone having to grep service logs for it.
+    def skip(reason: str, detail: str):
+        vstate['last_skip'] = {'date': today, 'at': datetime.now(timezone.utc).isoformat(), 'reason': reason, 'detail': detail}
+        save_spym_state(state)
     try:
         today = et_now().strftime('%Y-%m-%d')
         if vstate.get('last_entry_date') == today:
             return   # already tried today — at most one position per day, per variant
         expiry = spym_today_expiry()
         if not expiry:
+            skip('no_expiry', 'no 0DTE expiry found for today')
             return
         spot = spym_get_spot()
         if not spot:
+            skip('no_spot', 'could not fetch current SPY spot price')
             return
         # "our own calculations" — the exact same GEX direction signal the live
         # SPY bot already uses (fetch_cboe_gex), not a separate invented one.
@@ -2343,14 +2363,20 @@ def spym_open_new_position(state: dict, vkey: str):
         direction = gex['direction'] if gex else None
         if not direction:
             logger.info(f'[SPY0DTE-moomoo:{vkey}] no GEX direction available this cycle, skipping entry')
+            skip('no_gex_direction', 'no GEX direction signal available this cycle')
             return
         chain = spym_get_chain(expiry)
         if not chain:
+            skip('no_chain', 'could not fetch the live option chain')
             return
-        spread = spym_build_spread(direction, chain, spot)
+        diag: dict = {}
+        spread = spym_build_spread(direction, chain, spot, diag=diag)
         vstate['last_entry_date'] = today   # mark attempted regardless of outcome
         if spread is None:
-            logger.info(f'[SPY0DTE-moomoo:{vkey}] no qualifying spread this cycle')
+            logger.info(f'[SPY0DTE-moomoo:{vkey}] no qualifying spread this cycle ({diag.get("reason")}: {diag.get("detail")})')
+            vstate['last_skip'] = {'date': today, 'at': datetime.now(timezone.utc).isoformat(),
+                                    'reason': diag.get('reason', 'no_qualifying_spread'),
+                                    'detail': diag.get('detail', 'no spread met the entry criteria this cycle')}
             save_spym_state(state)
             return
         spread.update({
@@ -2362,6 +2388,7 @@ def spym_open_new_position(state: dict, vkey: str):
             'gex_info': {k: gex.get(k) for k in ('total_gex_b', 'gex_regime', 'pin_strike')} if gex else None,
         })
         vstate['open_position'] = spread
+        vstate['last_skip'] = None   # clear any stale skip reason now that a trade actually opened
         save_spym_state(state)
         notify(
             f'🎯 **SPY 0DTE Paper (moomoo, {vcfg["label"]}) — {direction} OPENED**\n\n'
@@ -2378,6 +2405,13 @@ def spym_open_new_position(state: dict, vkey: str):
     except Exception as e:
         logger.error(f'[SPY0DTE-moomoo:{vkey}] open_new_position failed: {e}', exc_info=True)
         notify(f'❌ **SPY 0DTE Paper (moomoo, {vcfg["label"]}) ERROR**\n\nopen failed: {e}')
+        try:
+            vstate['last_skip'] = {'date': datetime.now(timezone.utc).strftime('%Y-%m-%d'),
+                                    'at': datetime.now(timezone.utc).isoformat(),
+                                    'reason': 'error', 'detail': str(e)}
+            save_spym_state(state)
+        except Exception:
+            pass
 
 def spym_close_position(state: dict, vkey: str, pos: dict, reason: str, cost_to_close: float):
     vcfg = SPYM_VARIANTS[vkey]
@@ -2556,6 +2590,7 @@ def spym_write_dashboard(state: dict):
             'label': vcfg['label'],
             'entry_hour': vcfg['entry_hour'], 'entry_minute': vcfg['entry_minute'],
             'open_position': vstate.get('open_position'),
+            'last_skip': vstate.get('last_skip'),
             'performance': {
                 'total': total, 'wins': len(wins), 'losses': total - len(wins),
                 'win_rate': round(len(wins) / total * 100, 1) if total else 0,
