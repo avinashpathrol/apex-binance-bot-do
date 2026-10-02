@@ -35,6 +35,10 @@ body {
   padding-top: calc(var(--safe-top) + 12px);
   padding-bottom: calc(var(--safe-bot) + 80px);
 }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+}
 
 /* Header */
 .header {
@@ -54,7 +58,8 @@ body {
 }
 .tabs::-webkit-scrollbar { display: none; }
 .tab {
-  flex-shrink: 0; padding: 7px 16px; border-radius: 20px;
+  flex-shrink: 0; padding: 0 16px; min-height: 44px; border-radius: 20px;
+  display: flex; align-items: center;
   border: 1px solid var(--border); background: none;
   color: var(--muted); font-size: 13px; font-weight: 500;
   cursor: pointer; transition: all .2s;
@@ -263,7 +268,8 @@ body {
   border-radius: 20px; padding: 3px; gap: 2px;
 }
 .tt-btn {
-  padding: 4px 13px; border-radius: 16px; border: none; background: none;
+  padding: 0 14px; min-height: 44px; border-radius: 16px; border: none; background: none;
+  display: inline-flex; align-items: center; justify-content: center;
   color: var(--muted); font-size: 12px; font-weight: 700; cursor: pointer;
   transition: all .2s; letter-spacing: 0.3px;
 }
@@ -314,7 +320,7 @@ body {
 
 .s0-cal-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .s0-cal-nav-btn {
-  width: 36px; height: 36px; border-radius: 10px; border: 1px solid var(--border); background: var(--card2);
+  width: 44px; height: 44px; border-radius: 10px; border: 1px solid var(--border); background: var(--card2);
   color: var(--text); font-size: 16px; display: flex; align-items: center; justify-content: center;
   cursor: pointer; touch-action: manipulation; -webkit-user-select: none; user-select: none;
   transition: transform .12s ease-out, background .15s;
@@ -352,6 +358,11 @@ body {
 
 .s0-detail-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); gap: 10px; }
 .s0-detail-row:last-child { border-bottom: none; }
+
+.s0-skel { border-radius: 8px; background: linear-gradient(90deg, var(--card2) 25%, var(--border) 37%, var(--card2) 63%); background-size: 400% 100%; animation: s0shimmer 1.4s ease infinite; }
+@keyframes s0shimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
+.s0-skel-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; }
+.s0-skel-line { height: 14px; }
 </style>
 </head>
 <body>
@@ -711,7 +722,11 @@ body {
 
   <div class="card" id="s0-position-card">
     <div class="card-title">Live Position</div>
-    <div id="s0-position-body">Loading…</div>
+    <div id="s0-position-body" aria-busy="true">
+      <div class="s0-skel s0-skel-line" style="width:40%;margin-bottom:10px;"></div>
+      <div class="s0-skel" style="height:64px;margin-bottom:10px;"></div>
+      <div class="s0-skel" style="height:36px;"></div>
+    </div>
   </div>
 
   <div class="card">
@@ -752,7 +767,11 @@ body {
 
   <div class="card">
     <div class="card-title">Recent Trades</div>
-    <div id="s0-trades-list">Loading…</div>
+    <div id="s0-trades-list" aria-busy="true">
+      <div class="s0-skel-row"><div class="s0-skel s0-skel-line" style="width:45%;"></div><div class="s0-skel s0-skel-line" style="width:20%;"></div></div>
+      <div class="s0-skel-row"><div class="s0-skel s0-skel-line" style="width:45%;"></div><div class="s0-skel s0-skel-line" style="width:20%;"></div></div>
+      <div class="s0-skel-row"><div class="s0-skel s0-skel-line" style="width:45%;"></div><div class="s0-skel s0-skel-line" style="width:20%;"></div></div>
+    </div>
   </div>
 
 </div>
@@ -1976,6 +1995,7 @@ function renderSpy0dtePermBanner(perm) {
 
 function renderSpy0dtePosition(v, spot) {
   const body = document.getElementById('s0-position-body');
+  body.removeAttribute('aria-busy');
   const pos = v.open_position;
 
   if (!pos) {
@@ -2152,6 +2172,7 @@ function s0TradeRowHtml(t) {
 
 function renderSpy0dteTrades(trades) {
   const el = document.getElementById('s0-trades-list');
+  el.removeAttribute('aria-busy');
   if (!trades || trades.length === 0) {
     el.innerHTML = '<div style="font-size:13px;color:var(--muted);">No closed trades yet.</div>';
     return;
