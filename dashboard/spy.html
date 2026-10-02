@@ -385,8 +385,8 @@ body {
 </div>
 
 <div class="tabs">
-  <button class="tab" onclick="showPage('spy0dte');loadSpy0dte()">📊 SPY 0DTE</button>
-  <button class="tab active" onclick="showPage('signal')">Signal</button>
+  <button class="tab active" onclick="showPage('spy0dte');loadSpy0dte()">📊 SPY 0DTE</button>
+  <button class="tab" onclick="showPage('signal')">Signal</button>
   <button class="tab" onclick="showPage('trade')">My Trade</button>
   <button class="tab" onclick="showPage('pnl')">P&amp;L</button>
   <button class="tab" onclick="showPage('gex')">GEX</button>
@@ -403,7 +403,7 @@ body {
 </div>
 
 <!-- ═══ SIGNAL PAGE ═══ -->
-<div class="page active" id="page-signal">
+<div class="page" id="page-signal">
 
   <div id="signal-loading" class="card">
     <div class="loading">
@@ -708,7 +708,7 @@ body {
 </div>
 
 <!-- ═══ SPY 0DTE PAPER PAGE ═══ -->
-<div class="page" id="page-spy0dte">
+<div class="page active" id="page-spy0dte">
 
   <div class="s0-banner" id="s0-perm-banner"></div>
 
@@ -889,7 +889,7 @@ async function authedFetch(url, options = {}) {
 
 let _signal = null;
 let _state  = null;
-let _page   = 'signal';
+let _page   = 'spy0dte';
 let _selectedVariant = 1;  // 0=conservative, 1=suggested, 2=aggressive
 let _openTradeId = null;
 let _cryptoData = null;
@@ -940,6 +940,7 @@ async function init() {
   }, 8000);
 
   await loadAll();
+  loadSpy0dte();
   clearTimeout(fallbackTimer);
   startCountdown();
   setInterval(loadAll, 60000);
