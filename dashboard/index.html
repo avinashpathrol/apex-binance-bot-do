@@ -584,9 +584,9 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
     <div class="mu-pos-card" id="mu-exit-card" style="display:none"></div>
 
     <!-- Chart (TradingView, loaded only while this tab is visible) -->
-    <div class="card" style="padding:12px">
-      <div class="card-label" style="margin-bottom:8px">MU Chart</div>
-      <div class="tradingview-widget-container" style="height:280px;border-radius:10px;overflow:hidden;border:1px solid var(--border)">
+    <div class="card" style="padding:12px 8px">
+      <div class="card-label" style="margin-bottom:8px;padding-left:4px">MU Chart</div>
+      <div class="tradingview-widget-container" style="height:min(64vh,520px);border-radius:10px;overflow:hidden;border:1px solid var(--border)">
         <div id="tv-mu-chart-mobile" style="height:100%"></div>
       </div>
     </div>
@@ -800,9 +800,12 @@ function switchSym(sym){
 
 // ── TradingView chart ─────────────────────────────────────────────────────────
 function buildChart() {
-  const src = SOURCES[activeSym];
-  if (chartSym === src.sym) return;
-  chartSym = src.sym;
+  // MU isn't in SOURCES (own tab/data file, see fetchData above) -- give it the same
+  // Chart-tab experience as every other ticker instead of crashing on SOURCES['mu'].
+  const tvSymbol = activeSym === 'mu' ? 'NASDAQ:MU' : SOURCES[activeSym].tv;
+  const symKey = activeSym === 'mu' ? 'mu' : SOURCES[activeSym].sym;
+  if (chartSym === symKey) return;
+  chartSym = symKey;
   const wrap = qs('#tv-container');
   wrap.innerHTML = '';
   const script = document.createElement('script');
@@ -811,7 +814,7 @@ function buildChart() {
     new TradingView.widget({
       container_id: 'tv-container',
       width: '100%', height: '100%',
-      symbol: src.tv,
+      symbol: tvSymbol,
       interval: '60',
       timezone: 'Etc/UTC',
       theme: 'dark',
