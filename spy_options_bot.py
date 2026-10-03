@@ -131,6 +131,25 @@ SPYM_TARGET_SHORT_DELTA    = 0.18   # classic 0DTE credit-spread heuristic: shor
 SPYM_TRAIL_ACTIVATE_PCT    = 0.50
 SPYM_TRAIL_GIVEBACK_PCT    = 0.15
 SPYM_STOP_LOSS_MULT        = 2.0    # paper stop: close if cost-to-close grows past 2x the credit received
+
+# Contract-size auto-scaling -- user-designed 2026-10-03, PAPER ONLY (see
+# SPYM_AUTO_SCALE_PAPER_ONLY guard below). Scale-up needs a real sample at the
+# CURRENT tier (not all-time) clearing both a win-rate and a profit-factor
+# bar; scale-down is a hard circuit breaker that fires immediately, one tier
+# at a time, on any one of: 2 consecutive losses, rolling-10 win rate below a
+# floor, or a single outlier loss. Tier resets its own trade-count clock on
+# every change (up or down) so it must re-earn the sample before moving again.
+SPYM_CONTRACT_TIERS        = [1, 2, 4, 8, 16, 32, 50]
+SPYM_SCALE_UP_MIN_TRADES   = 20     # closed trades at current tier before eligible to scale up
+SPYM_SCALE_UP_MIN_WINRATE  = 0.55
+SPYM_SCALE_UP_MIN_PF       = 1.5    # profit factor: gross wins / gross losses
+SPYM_SCALE_UP_MAX_LOSS_VS_AVG_WIN = 2.0   # no single loss > 2x the avg win in the window
+SPYM_SCALE_DOWN_CONSEC_LOSSES     = 2
+SPYM_SCALE_DOWN_WINRATE_WINDOW    = 10
+SPYM_SCALE_DOWN_MIN_WINRATE       = 0.40
+SPYM_SCALE_DOWN_OUTLIER_LOSS_MULT = 3.0   # vs avg credit received
+SPYM_AUTO_SCALE_PAPER_ONLY = True   # hard kill switch: real-money sizing requires a deliberate
+                                     # code change here, never an automatic consequence of paper_trading flipping off
 SPYM_CHECK_INTERVAL_SEC    = 300    # flat-book cadence: scan for entry windows / refresh dashboard, 5 min
 SPYM_MONITOR_INTERVAL_SEC  = 15     # once ANY variant has an open position, check every 15s instead — user
                                      # request 2026-10-02 (initially 30s, tightened to 15s on review: 0DTE
@@ -293,6 +312,7 @@ def load_spym_state() -> dict:
     data.setdefault('variants', {})
     for vkey in SPYM_VARIANTS:
         data['variants'].setdefault(vkey, {'open_position': None, 'trades': [], 'last_entry_date': None})
+        data['variants'][vkey].setdefault('sizing', {'tier_idx': 0, 'tier_changed_at': None, 'last_tier_change_reason': None})
     data.setdefault('options_permission', {
         'status': 'pending', 'first_checked_date': None, 'last_checked_date': None, 'activated_date': None,
     })
@@ -2335,7 +2355,7 @@ def spym_get_combo_quote(short_code: str, long_code: str) -> Optional[dict]:
         logger.warning(f'spym_get_combo_quote: {e}')
         return None
 
-def spym_build_spread(direction: str, chain: list, spot: float, diag: Optional[dict] = None) -> Optional[dict]:
+def spym_build_spread(direction: str, chain: list, spot: float, diag: Optional[dict] = None, contracts: int = 1) -> Optional[dict]:
     """Picks the short strike by REAL exchange delta (closest to
     SPYM_TARGET_SHORT_DELTA), falling back to a fixed %-OTM distance only if no
     real delta is usable (e.g. outside market hours). Prices the resulting
@@ -2391,7 +2411,7 @@ def spym_build_spread(direction: str, chain: list, spot: float, diag: Optional[d
             diag.update(reason='credit_too_low', detail=f'quoted credit ${credit:.2f} below the ${width * MIN_CREDIT_WIDTH_RATIO:.2f} minimum ({MIN_CREDIT_WIDTH_RATIO:.0%} of ${width:.2f} width)')
         return None
 
-    contracts = 1   # real equity options can't be fractional, unlike the crypto engine's 0.01-step sizing
+    # real equity options can't be fractional, unlike the crypto engine's 0.01-step sizing
     max_loss = round((width - credit) * 100 * contracts, 2)
     max_profit = round(credit * 100 * contracts, 2)
     breakeven = round(short_strike - credit, 4) if direction == 'BULL_PUT' else round(short_strike + credit, 4)
@@ -3075,7 +3095,10 @@ def spym_open_new_position(state: dict, vkey: str):
             skip('no_chain', 'could not fetch the live option chain')
             return
         diag: dict = {}
-        spread = spym_build_spread(direction, chain, spot, diag=diag)
+        sizing = vstate.get('sizing', {'tier_idx': 0})
+        tier_idx = sizing.get('tier_idx', 0) if SPYM_AUTO_SCALE_PAPER_ONLY else 0
+        contracts = SPYM_CONTRACT_TIERS[min(tier_idx, len(SPYM_CONTRACT_TIERS) - 1)]
+        spread = spym_build_spread(direction, chain, spot, diag=diag, contracts=contracts)
         vstate['last_entry_date'] = today   # mark attempted regardless of outcome
         if spread is None:
             logger.info(f'[SPY0DTE-moomoo:{vkey}] no qualifying spread this cycle ({diag.get("reason")}: {diag.get("detail")})')
@@ -3118,6 +3141,64 @@ def spym_open_new_position(state: dict, vkey: str):
         except Exception:
             pass
 
+def spym_evaluate_sizing(vstate: dict):
+    """Scale-up/scale-down for one variant's contract tier, called after every
+    close. User-designed 2026-10-03: rolling win-rate + profit-factor bar to
+    scale up (re-earned at each new tier); hard circuit breaker to scale down
+    immediately, one tier at a time. PAPER ONLY -- SPYM_AUTO_SCALE_PAPER_ONLY
+    is the explicit kill switch a future real-money implementation would have
+    to consciously remove, never an automatic side effect of anything else."""
+    if not SPYM_AUTO_SCALE_PAPER_ONLY:
+        return
+    sizing = vstate.setdefault('sizing', {'tier_idx': 0, 'tier_changed_at': None, 'last_tier_change_reason': None})
+    trades = sorted(vstate.get('trades', []), key=lambda t: t.get('closed_at') or '')
+    if not trades:
+        return
+    tier_idx = sizing.get('tier_idx', 0)
+    max_idx = len(SPYM_CONTRACT_TIERS) - 1
+
+    def set_tier(new_idx: int, reason: str):
+        sizing['tier_idx'] = max(0, min(new_idx, max_idx))
+        sizing['tier_changed_at'] = datetime.now(timezone.utc).isoformat()
+        sizing['last_tier_change_reason'] = reason
+        logger.info(f'[SPY0DTE-moomoo sizing] tier -> {SPYM_CONTRACT_TIERS[sizing["tier_idx"]]} contracts ({reason})')
+        notify(f'📐 **SPY 0DTE Paper sizing change** — {reason}\nNew tier: **{SPYM_CONTRACT_TIERS[sizing["tier_idx"]]} contract(s)** (paper only)')
+
+    # ── Scale-down: hard circuit breaker, checked first, fires off the whole trade history ──
+    if tier_idx > 0:
+        last2 = trades[-2:]
+        consec_losses = len(last2) == SPYM_SCALE_DOWN_CONSEC_LOSSES and all(not t.get('win') for t in last2)
+        last10 = trades[-SPYM_SCALE_DOWN_WINRATE_WINDOW:]
+        winrate_breach = (len(trades) >= SPYM_SCALE_DOWN_WINRATE_WINDOW and
+                           sum(1 for t in last10 if t.get('win')) / len(last10) < SPYM_SCALE_DOWN_MIN_WINRATE)
+        avg_credit_dollars = sum((t.get('credit', 0) or 0) * 100 * (t.get('contracts', 1) or 1) for t in trades) / len(trades)
+        last_trade = trades[-1]
+        outlier_loss = (not last_trade.get('win') and avg_credit_dollars > 0 and
+                         abs(last_trade.get('pnl', 0)) > SPYM_SCALE_DOWN_OUTLIER_LOSS_MULT * avg_credit_dollars)
+        if consec_losses:
+            set_tier(tier_idx - 1, f'{SPYM_SCALE_DOWN_CONSEC_LOSSES} consecutive losses at current tier'); return
+        if winrate_breach:
+            set_tier(tier_idx - 1, f'rolling {SPYM_SCALE_DOWN_WINRATE_WINDOW}-trade win rate below {SPYM_SCALE_DOWN_MIN_WINRATE:.0%}'); return
+        if outlier_loss:
+            set_tier(tier_idx - 1, f'outlier loss > {SPYM_SCALE_DOWN_OUTLIER_LOSS_MULT:.0f}x avg credit'); return
+
+    # ── Scale-up: needs a real sample AT THE CURRENT TIER (since the last change, or all-time if never changed) ──
+    if tier_idx < max_idx:
+        changed_at = sizing.get('tier_changed_at')
+        window = [t for t in trades if not changed_at or (t.get('closed_at') or '') > changed_at] if changed_at else trades
+        if len(window) >= SPYM_SCALE_UP_MIN_TRADES:
+            wins = [t for t in window if t.get('win')]
+            losses = [t for t in window if not t.get('win')]
+            win_rate = len(wins) / len(window)
+            gross_win = sum(t.get('pnl', 0) for t in wins)
+            gross_loss = abs(sum(t.get('pnl', 0) for t in losses))
+            profit_factor = (gross_win / gross_loss) if gross_loss > 0 else float('inf')
+            avg_win = (gross_win / len(wins)) if wins else 0
+            max_loss = max((abs(t.get('pnl', 0)) for t in losses), default=0)
+            no_outlier = (not losses) or (avg_win > 0 and max_loss <= SPYM_SCALE_UP_MAX_LOSS_VS_AVG_WIN * avg_win)
+            if win_rate >= SPYM_SCALE_UP_MIN_WINRATE and profit_factor >= SPYM_SCALE_UP_MIN_PF and no_outlier:
+                set_tier(tier_idx + 1, f'{len(window)} trades, {win_rate:.0%} WR, {profit_factor:.1f} PF cleared the bar')
+
 def spym_close_position(state: dict, vkey: str, pos: dict, reason: str, cost_to_close: float):
     vcfg = SPYM_VARIANTS[vkey]
     vstate = state['variants'][vkey]
@@ -3126,6 +3207,10 @@ def spym_close_position(state: dict, vkey: str, pos: dict, reason: str, cost_to_
                  cost_to_close=cost_to_close, pnl=pnl, win=pnl > 0, date=pos.get('opened_date'))
     vstate.setdefault('trades', []).append(trade)
     vstate['open_position'] = None
+    try:
+        spym_evaluate_sizing(vstate)
+    except Exception as e:
+        logger.warning(f'[SPY0DTE-moomoo:{vkey}] spym_evaluate_sizing: {e}')
     save_spym_state(state)
     emoji = '🟢' if pnl >= 0 else '🔴'
     label = {'trail_stop': 'TRAILING PROFIT LOCKED IN', 'stop_loss': 'STOP LOSS',
@@ -3296,6 +3381,13 @@ def spym_write_dashboard(state: dict):
             'entry_hour': vcfg['entry_hour'], 'entry_minute': vcfg['entry_minute'],
             'open_position': vstate.get('open_position'),
             'last_skip': vstate.get('last_skip'),
+            'sizing': {
+                'current_contracts': SPYM_CONTRACT_TIERS[min(vstate.get('sizing', {}).get('tier_idx', 0), len(SPYM_CONTRACT_TIERS) - 1)],
+                'tier_idx': vstate.get('sizing', {}).get('tier_idx', 0),
+                'tiers': SPYM_CONTRACT_TIERS,
+                'tier_changed_at': vstate.get('sizing', {}).get('tier_changed_at'),
+                'last_tier_change_reason': vstate.get('sizing', {}).get('last_tier_change_reason'),
+            },
             'performance': {
                 'total': total, 'wins': len(wins), 'losses': total - len(wins),
                 'win_rate': round(len(wins) / total * 100, 1) if total else 0,
