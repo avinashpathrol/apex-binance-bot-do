@@ -110,6 +110,9 @@ CRYPTO_CHAIN_CACHE_TTL    = 3600    # strikes don't change intraday
 SPYM_UNDERLYING            = 'US.SPY'
 SPYM_STATE_FILE            = os.path.join(WEB_ROOT, 'spy0dte_moomoo_state.json')
 SPYM_DASHBOARD_FILE        = os.path.join(WEB_ROOT, 'data_spy0dte_moomoo.json')
+SHADOW_DASHBOARD_FILE      = os.path.join(WEB_ROOT, 'data_shadow_research.json')
+DELTA_TIER_DASHBOARD_FILE  = os.path.join(WEB_ROOT, 'data_delta_tier_research.json')
+IC_DASHBOARD_FILE          = os.path.join(WEB_ROOT, 'data_iron_condor_research.json')
 SPYM_API_BASE              = 'https://webapi.moomoo.com'
 SPYM_APP_KEY               = os.getenv('MOOMOO_APP_KEY', '')
 SPYM_KEY_PATH              = os.getenv('MOOMOO_RSA_KEY_PATH', '')
@@ -2587,6 +2590,7 @@ def run_delta_tier_cycle():
                     delta_tier_open(state, ticker, symbol, tier, target_delta)
     except Exception as e:
         logger.warning(f'run_delta_tier_cycle: {e}')
+    write_delta_tier_dashboard()   # unconditional -- UI should never 404 waiting for market hours
 
 def summarize_delta_tiers() -> dict:
     state = load_delta_tier_state()
@@ -2610,6 +2614,7 @@ def summarize_delta_tiers() -> dict:
                 'avg_credit': round(sum(t.get('credit', 0) for t in trades) / n, 4) if n else 0,
                 'avg_realized_delta': round(sum(realized_deltas) / len(realized_deltas), 4) if realized_deltas else None,
                 'open_position': state.get(ticker, {}).get(tier, {}).get('open_position'),
+                'recent_trades': trades[-5:][::-1],
             }
     return out
 
@@ -2802,6 +2807,7 @@ def run_ic_cycle():
             ic_open_new_position(state)
     except Exception as e:
         logger.warning(f'run_ic_cycle: {e}')
+    write_ic_dashboard()   # unconditional -- UI should never 404 waiting for market hours
 
 def summarize_ic() -> dict:
     try:
@@ -2824,10 +2830,20 @@ def summarize_ic() -> dict:
             'avg_combined_credit': round(sum(t.get('total_credit', 0) for t in trades) / n, 4) if n else 0,
             'last_skip': state.get('last_skip'),
             'open_position': state.get('open_position'),
+            'recent_trades': trades[-10:][::-1],
         }
     except Exception as e:
         logger.info(f'summarize_ic: {e}')
         return {}
+
+def write_ic_dashboard():
+    try:
+        payload = summarize_ic()
+        payload['generated_at'] = datetime.now(timezone.utc).isoformat()
+        with open(IC_DASHBOARD_FILE, 'w') as f:
+            json.dump(payload, f, indent=2, default=str)
+    except Exception as e:
+        logger.warning(f'write_ic_dashboard: {e}')
 
 def _safe_summarize_delta_tiers() -> dict:
     try:
@@ -2835,6 +2851,15 @@ def _safe_summarize_delta_tiers() -> dict:
     except Exception as e:
         logger.info(f'Hermes snapshot: delta_tier_research section skipped ({e})')
         return {}
+
+def write_delta_tier_dashboard():
+    try:
+        payload = _safe_summarize_delta_tiers()
+        payload['generated_at'] = datetime.now(timezone.utc).isoformat()
+        with open(DELTA_TIER_DASHBOARD_FILE, 'w') as f:
+            json.dump(payload, f, indent=2, default=str)
+    except Exception as e:
+        logger.warning(f'write_delta_tier_dashboard: {e}')
 
 def spym_open_new_position(state: dict, vkey: str):
     vcfg = SPYM_VARIANTS[vkey]
@@ -3291,6 +3316,17 @@ def _summarize_shadow_variants(shadow_state: dict) -> dict:
         'IWM': {'by_variant': _by_variant([s for s in closed if s.get('ticker') == 'IWM'])},
     }
 
+def write_shadow_dashboard():
+    """Was previously only pushed privately to Hermes -- never written to a
+    public JSON the dashboard could read. Added 2026-10-03 alongside the
+    delta-tier/iron-condor dashboards."""
+    try:
+        payload = _summarize_shadow_variants(load_shadow_state())
+        payload['generated_at'] = datetime.now(timezone.utc).isoformat()
+        with open(SHADOW_DASHBOARD_FILE, 'w') as f:
+            json.dump(payload, f, indent=2, default=str)
+    except Exception as e:
+        logger.warning(f'write_shadow_dashboard: {e}')
 
 def _summarize_recent_sentiment(days: int = 7) -> dict:
     """Aggregates spy_signal_history.jsonl (VIX/confidence/GEX-regime/direction
@@ -3660,6 +3696,21 @@ def main():
                 spym_interval = SPYM_MONITOR_INTERVAL_SEC if any_spym_open else SPYM_CHECK_INTERVAL_SEC
                 if time.time() - last_spym_check > spym_interval:
                     run_spym_cycle(spym_state)
+                    # Delta-tier and iron condor research -- same unconditional cadence as
+                    # run_spym_cycle (both no-op cleanly outside market hours but still write a
+                    # fresh dashboard JSON, so the UI never 404s waiting for the next trading day).
+                    try:
+                        run_delta_tier_cycle()
+                    except Exception as e:
+                        logger.warning(f'delta-tier research tick failed (non-critical): {e}')
+                    try:
+                        run_ic_cycle()
+                    except Exception as e:
+                        logger.warning(f'iron condor research tick failed (non-critical): {e}')
+                    try:
+                        write_shadow_dashboard()
+                    except Exception as e:
+                        logger.warning(f'shadow dashboard write failed (non-critical): {e}')
                     last_spym_check = time.time()
 
                 # Daily check: has moomoo's options trading permission actually
@@ -3726,14 +3777,6 @@ def main():
                         check_shadow_trades(load_shadow_state(), chain_cache=chain_cache)
                     except Exception as e:
                         logger.warning(f'shadow monitor tick failed (non-critical): {e}')
-                    try:
-                        run_delta_tier_cycle()
-                    except Exception as e:
-                        logger.warning(f'delta-tier research tick failed (non-critical): {e}')
-                    try:
-                        run_ic_cycle()
-                    except Exception as e:
-                        logger.warning(f'iron condor research tick failed (non-critical): {e}')
                     last_monitor = time.time()
 
             time.sleep(30)
