@@ -2265,41 +2265,42 @@ def spym_post(path: str, body: dict) -> dict:
     r.raise_for_status()
     return _spym_check(r.json())
 
-def spym_get_spot() -> Optional[float]:
+def spym_get_spot(symbol: str = SPYM_UNDERLYING) -> Optional[float]:
     try:
-        d = spym_post('/api/v1.0/quote/stock-quote', {'code_list': [SPYM_UNDERLYING]})
+        d = spym_post('/api/v1.0/quote/stock-quote', {'code_list': [symbol]})
         return float(d['data']['quote_list'][0]['last_price'])
     except Exception as e:
-        logger.warning(f'spym_get_spot: {e}')
+        logger.warning(f'spym_get_spot({symbol}): {e}')
         return None
 
-def spym_today_expiry() -> Optional[str]:
+def spym_today_expiry(symbol: str = SPYM_UNDERLYING) -> Optional[str]:
     """Today's real 0DTE expiry, per moomoo's own live trading calendar — never
     hardcoded (same philosophy as crypto_check_rollover's live expiry check)."""
     try:
-        d = spym_get(f'/api/v1.0/quote/{SPYM_UNDERLYING}/option-expiration')
+        d = spym_get(f'/api/v1.0/quote/{symbol}/option-expiration')
         today_str = et_now().strftime('%Y-%m-%d')
         for e in d['data']['expiration_list']:
             if e['strike_time'] == today_str:
                 return today_str
         return None
     except Exception as e:
-        logger.warning(f'spym_today_expiry: {e}')
+        logger.warning(f'spym_today_expiry({symbol}): {e}')
         return None
 
 _spym_chain_cache: dict = {}
-def spym_get_chain(expiry: str) -> Optional[list]:
+def spym_get_chain(expiry: str, symbol: str = SPYM_UNDERLYING) -> Optional[list]:
+    cache_key = f'{symbol}:{expiry}'
     now = time.time()
-    cached = _spym_chain_cache.get(expiry)
+    cached = _spym_chain_cache.get(cache_key)
     if cached and (now - cached['ts']) < 3600:
         return cached['data']
     try:
-        d = spym_get(f'/api/v1.0/quote/{SPYM_UNDERLYING}/option-chain', f'start={expiry}&end={expiry}')
+        d = spym_get(f'/api/v1.0/quote/{symbol}/option-chain', f'start={expiry}&end={expiry}')
         chain = d['data']['option_chain']
-        _spym_chain_cache[expiry] = {'data': chain, 'ts': now}
+        _spym_chain_cache[cache_key] = {'data': chain, 'ts': now}
         return chain
     except Exception as e:
-        logger.warning(f'spym_get_chain: {e}')
+        logger.warning(f'spym_get_chain({symbol}): {e}')
         return None
 
 def spym_get_real_deltas(codes: list) -> dict:
@@ -2410,6 +2411,214 @@ def spym_build_spread(direction: str, chain: list, spot: float, diag: Optional[d
         'max_loss': max_loss, 'max_profit': max_profit,
         'delta_source': delta_source, 'short_delta': short_delta,
     }
+
+# ── Delta-tier paper research (SPY/QQQ/IWM x multiple delta targets) ─────────
+# User request 2026-10-03. Separate question from both the real moomoo engine
+# (always SPYM_TARGET_SHORT_DELTA=0.18) and the wall-based shadow system
+# (Conservative/Suggested/Aggressive strike *offsets*): holding ticker and
+# management rules fixed, which short-strike DELTA actually produces the best
+# real P&L? Informed by published research -- practitioner range is 0.15-0.35,
+# most common 0.20-0.30; a rigorous 20-year SPX backtest found adjacent-delta
+# differences smaller than commonly assumed once profit-take/stop-loss
+# management is in place. So this reuses the real bot's exact management
+# rules (SPYM_TRAIL_ACTIVATE_PCT/GIVEBACK_PCT/STOP_LOSS_MULT) to keep the
+# comparison apples-to-apples -- only the delta target varies.
+# PAPER/RESEARCH ONLY, unconditionally: this module never calls
+# spym_open_new_position, spym_close_position, or any real-order code path,
+# and has its own separate state file so it can never cross-contaminate the
+# real moomoo trading state even if paper_trading is ever turned off there.
+DELTA_TIER_TICKERS   = {'SPY': 'US.SPY', 'QQQ': 'US.QQQ', 'IWM': 'US.IWM'}
+DELTA_TIERS          = {'low': 0.16, 'mid': 0.22, 'high': 0.30}
+DELTA_TIER_STATE_FILE = os.path.join(WEB_ROOT, 'spym_delta_tier_state.json')
+
+def load_delta_tier_state() -> dict:
+    try:
+        with open(DELTA_TIER_STATE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_delta_tier_state(st: dict):
+    try:
+        with open(DELTA_TIER_STATE_FILE, 'w') as f:
+            json.dump(st, f, default=str)
+    except Exception as e:
+        logger.warning(f'save_delta_tier_state: {e}')
+
+def _delta_tier_cell(state: dict, ticker: str, tier: str) -> dict:
+    return state.setdefault(ticker, {}).setdefault(tier, {'open_position': None, 'trades': []})
+
+def pick_strike_by_delta(chain: list, direction: str, spot: float, target_delta: float) -> Optional[dict]:
+    """Same approach as the real bot's spym_build_spread strike pick (real
+    exchange delta, nearest to target; %-OTM fallback when real delta is
+    unavailable e.g. outside market hours) -- parameterized by target_delta
+    instead of the fixed SPYM_TARGET_SHORT_DELTA, since that's the one thing
+    being varied here."""
+    want_type = 'PUT' if direction == 'BULL_PUT' else 'CALL'
+    by_strike = {c['strike_price']: c['code'] for c in chain if c['option_type'] == want_type}
+    if direction == 'BULL_PUT':
+        candidates = sorted([s for s in by_strike if s < spot], reverse=True)[:8]
+    else:
+        candidates = sorted([s for s in by_strike if s > spot])[:8]
+    if not candidates:
+        return None
+    codes = [by_strike[s] for s in candidates]
+    raw_deltas = spym_get_real_deltas(codes)
+    usable = {s: abs(raw_deltas[by_strike[s]]) for s in candidates if by_strike[s] in raw_deltas}
+    if usable:
+        short_strike = min(usable, key=lambda s: abs(usable[s] - target_delta))
+        return {'strike': short_strike, 'code': by_strike[short_strike],
+                'delta': round(usable[short_strike], 4), 'delta_source': 'real'}
+    # Fallback: scale the real bot's own 0.6%-of-spot heuristic by how far this
+    # tier's target sits from the real bot's target, so a higher-delta tier
+    # still ends up closer to the money than a lower-delta one even without
+    # real deltas available this cycle.
+    target_dist = spot * 0.006 * (SPYM_TARGET_SHORT_DELTA / max(target_delta, 0.01))
+    short_strike = min(candidates, key=lambda s: abs(abs(spot - s) - target_dist))
+    return {'strike': short_strike, 'code': by_strike[short_strike], 'delta': None, 'delta_source': 'fallback_pct_otm'}
+
+def delta_tier_open(state: dict, ticker: str, symbol: str, tier: str, target_delta: float):
+    cell = _delta_tier_cell(state, ticker, tier)
+    today = et_now().strftime('%Y-%m-%d')
+    if cell.get('last_entry_date') == today or cell.get('open_position'):
+        return
+    try:
+        spot = spym_get_spot(symbol)
+        if not spot:
+            return
+        expiry = spym_today_expiry(symbol)
+        if not expiry:
+            return
+        gex = fetch_cboe_gex(expiry, spot, symbol=ticker)   # same independent per-ticker signal as the QQQ/IWM wall shadow
+        if not gex:
+            return
+        direction = gex['direction']
+        chain = spym_get_chain(expiry, symbol=symbol)
+        if not chain:
+            return
+        picked = pick_strike_by_delta(chain, direction, spot, target_delta)
+        cell['last_entry_date'] = today   # mark attempted regardless of outcome, same once/day rule as the real bot
+        if not picked:
+            save_delta_tier_state(state)
+            return
+        short_strike = picked['strike']
+        long_strike  = short_strike - SPYM_SPREAD_WIDTH if direction == 'BULL_PUT' else short_strike + SPYM_SPREAD_WIDTH
+        want_type = 'PUT' if direction == 'BULL_PUT' else 'CALL'
+        by_strike = {c['strike_price']: c['code'] for c in chain if c['option_type'] == want_type}
+        long_code = by_strike.get(long_strike)
+        if not long_code:
+            save_delta_tier_state(state)
+            return
+        q = spym_get_combo_quote(picked['code'], long_code)
+        if not q or q['ask'] is None:
+            save_delta_tier_state(state)
+            return
+        credit = round(-q['ask'], 4)
+        width  = SPYM_SPREAD_WIDTH   # same $1 width across tiers/tickers -- isolates delta as the only variable
+        if credit <= 0 or credit < width * MIN_CREDIT_WIDTH_RATIO:
+            save_delta_tier_state(state)
+            return
+        cell['open_position'] = {
+            'direction': direction, 'short_code': picked['code'], 'long_code': long_code,
+            'short_strike': short_strike, 'long_strike': long_strike,
+            'credit': credit, 'width': width,
+            'target_delta': target_delta, 'short_delta': picked['delta'], 'delta_source': picked['delta_source'],
+            'opened_at': datetime.now(timezone.utc).isoformat(), 'expiry': expiry,
+        }
+        save_delta_tier_state(state)
+    except Exception as e:
+        logger.warning(f'delta_tier_open({ticker},{tier}): {e}')
+
+def delta_tier_monitor(state: dict, ticker: str, tier: str):
+    cell = _delta_tier_cell(state, ticker, tier)
+    pos = cell.get('open_position')
+    if not pos:
+        return
+    try:
+        q = spym_get_combo_quote(pos['short_code'], pos['long_code'])
+        if not q or q['bid'] is None:
+            return
+        cost_to_close  = round(-q['bid'], 4)
+        pnl_per_share  = pos['credit'] - cost_to_close
+        pct_pts        = round((pnl_per_share / pos['credit']) * 100, 1) if pos['credit'] else 0.0
+
+        trail_trigger = False
+        if pct_pts >= SPYM_TRAIL_ACTIVATE_PCT * 100:
+            peak = max(pos.get('peak_pct_captured') or pct_pts, pct_pts)
+            pos['peak_pct_captured'] = peak
+            if peak - pct_pts >= SPYM_TRAIL_GIVEBACK_PCT * 100:
+                trail_trigger = True
+
+        now_et = et_now()
+        force_close_time = now_et.replace(hour=SPYM_FORCE_CLOSE_HOUR, minute=SPYM_FORCE_CLOSE_MINUTE, second=0, microsecond=0)
+        reason = None
+        if trail_trigger:
+            reason = 'trail_stop'
+        elif cost_to_close >= pos['credit'] * SPYM_STOP_LOSS_MULT:
+            reason = 'stop_loss'
+        elif now_et >= force_close_time:
+            reason = 'force_close_eod'
+
+        if reason:
+            pnl = round(pnl_per_share * 100, 2)   # always 1 contract -- this tests strike selection, not position sizing
+            cell.setdefault('trades', []).append({
+                **pos, 'closed_at': datetime.now(timezone.utc).isoformat(),
+                'cost_to_close': cost_to_close, 'pnl': pnl, 'win': pnl > 0,
+                'pct_of_max_captured': pct_pts, 'close_reason': reason,
+            })
+            cell['open_position'] = None
+        save_delta_tier_state(state)
+    except Exception as e:
+        logger.warning(f'delta_tier_monitor({ticker},{tier}): {e}')
+
+def run_delta_tier_cycle():
+    """Main-loop entry point, same cadence as the real moomoo variant cycle.
+    3 tickers x 3 deltas = up to 9 parallel paper positions, each opening at
+    most once/day; zero real orders, zero shared state with the real moomoo
+    engine (SPYM_VARIANTS) or the wall-based shadow system."""
+    try:
+        state = load_delta_tier_state()
+        for ticker, symbol in DELTA_TIER_TICKERS.items():
+            for tier, target_delta in DELTA_TIERS.items():
+                cell = _delta_tier_cell(state, ticker, tier)
+                if cell.get('open_position'):
+                    delta_tier_monitor(state, ticker, tier)
+                else:
+                    delta_tier_open(state, ticker, symbol, tier, target_delta)
+    except Exception as e:
+        logger.warning(f'run_delta_tier_cycle: {e}')
+
+def summarize_delta_tiers() -> dict:
+    state = load_delta_tier_state()
+    out = {'note': ('PAPER/RESEARCH ONLY, never traded. Same ticker, same management rules '
+                     '(50% trail-activate / 15% giveback / 2x stop-loss, identical to the real '
+                     'moomoo bot) across 3 delta tiers -- isolates delta as the only variable. '
+                     'Added 2026-10-03 per user request to find which delta yields the best real '
+                     'P&L, informed by published research that management rules often matter more '
+                     'than the exact delta chosen.')}
+    for ticker in DELTA_TIER_TICKERS:
+        out[ticker] = {}
+        for tier, target_delta in DELTA_TIERS.items():
+            trades = state.get(ticker, {}).get(tier, {}).get('trades', [])
+            n = len(trades)
+            wins = sum(1 for t in trades if t.get('win'))
+            realized_deltas = [t['short_delta'] for t in trades if t.get('short_delta')]
+            out[ticker][tier] = {
+                'target_delta': target_delta, 'total_closed_trades': n, 'wins': wins,
+                'win_rate': round(wins / n * 100, 1) if n else 0,
+                'net_pnl': round(sum(t.get('pnl', 0) for t in trades), 2),
+                'avg_credit': round(sum(t.get('credit', 0) for t in trades) / n, 4) if n else 0,
+                'avg_realized_delta': round(sum(realized_deltas) / len(realized_deltas), 4) if realized_deltas else None,
+                'open_position': state.get(ticker, {}).get(tier, {}).get('open_position'),
+            }
+    return out
+
+def _safe_summarize_delta_tiers() -> dict:
+    try:
+        return summarize_delta_tiers()
+    except Exception as e:
+        logger.info(f'Hermes snapshot: delta_tier_research section skipped ({e})')
+        return {}
 
 def spym_open_new_position(state: dict, vkey: str):
     vcfg = SPYM_VARIANTS[vkey]
@@ -3082,6 +3291,7 @@ def push_hermes_spy_snapshot(state: dict) -> None:
                 'options_permission': moomoo_options_permission,
                 'by_variant': moomoo_summary,
             },
+            'delta_tier_research': _safe_summarize_delta_tiers(),
         }
         resp = requests.post(HERMES_SPY_SNAPSHOT_URL, json=payload, timeout=15)
         resp.raise_for_status()
@@ -3299,6 +3509,10 @@ def main():
                         check_shadow_trades(load_shadow_state(), chain_cache=chain_cache)
                     except Exception as e:
                         logger.warning(f'shadow monitor tick failed (non-critical): {e}')
+                    try:
+                        run_delta_tier_cycle()
+                    except Exception as e:
+                        logger.warning(f'delta-tier research tick failed (non-critical): {e}')
                     last_monitor = time.time()
 
             time.sleep(30)
