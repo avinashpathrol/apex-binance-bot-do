@@ -304,7 +304,7 @@ body {
 .s0-pnl-hero .v { font-size: 30px; font-weight: 800; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .s0-pnl-hero .l { font-size: 11px; color: var(--muted); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
 
-.s0-metrics-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
+.s0-metrics-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 14px; }
 .s0-metric { background: var(--card2); border-radius: 10px; padding: 10px 12px; }
 .s0-metric .l { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 3px; }
 .s0-metric .v { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
@@ -2024,6 +2024,8 @@ function renderSpy0dtePosition(v, spot) {
   const contracts   = pos.contracts || 1;
   const maxCredit   = credit * 100 * contracts;
   const costToClose = pos.cost_to_close;
+  const paidNow     = costToClose == null ? null : costToClose * 100 * contracts;
+  const margin      = pos.max_loss != null ? pos.max_loss : (pos.width != null ? (pos.width - credit) * 100 * contracts : null);
   const uPnl        = pos.unrealized_pnl;
   const pct         = pos.pct_of_max_captured;
   const peak        = pos.peak_pct_captured;
@@ -2070,8 +2072,12 @@ function renderSpy0dtePosition(v, spot) {
           <div class="v" style="color:var(--green)">$${credit.toFixed(2)} × ${contracts} = $${maxCredit.toFixed(0)}</div>
         </div>
         <div class="s0-metric">
-          <div class="l">Cost to close</div>
-          <div class="v">${costToClose == null ? '—' : '$' + costToClose.toFixed(2)}</div>
+          <div class="l">Cost to close now</div>
+          <div class="v">${paidNow == null ? '—' : '$' + paidNow.toFixed(2)}</div>
+        </div>
+        <div class="s0-metric">
+          <div class="l">Margin at risk</div>
+          <div class="v" style="color:var(--yellow)">${margin == null ? '—' : '$' + margin.toFixed(0)}</div>
         </div>
       </div>
 
@@ -2160,20 +2166,28 @@ function s0ShowDay(key) {
 }
 
 function s0TradeRowHtml(t) {
-  const isBull = t.direction === 'BULL_PUT';
-  const pnl    = t.pnl || 0;
-  const peak   = t.peak_pct_captured;
+  const isBull    = t.direction === 'BULL_PUT';
+  const pnl       = t.pnl || 0;
+  const peak      = t.peak_pct_captured;
+  const contracts = t.contracts || 1;
+  const received  = (t.credit || 0) * 100 * contracts;          // credit collected at entry
+  const paid      = (t.cost_to_close || 0) * 100 * contracts;   // debit paid to close
+  const margin    = t.max_loss != null ? t.max_loss : (t.width != null ? (t.width - (t.credit || 0)) * 100 * contracts : null);
   return `
     <div class="s0-trade">
       <div class="s0-trade-top">
         <div style="display:flex;align-items:center;gap:6px;">
           <span class="pill ${isBull ? 'pill-green' : 'pill-red'}" style="font-size:10px;">${isBull ? 'BP' : 'BC'}</span>
           <span class="s0-trade-strikes">$${t.short_strike}/$${t.long_strike}</span>
+          ${contracts > 1 ? `<span style="font-size:10px;color:var(--muted)">×${contracts}</span>` : ''}
         </div>
         <div class="s0-trade-pnl" style="color:${pnl >= 0 ? 'var(--green)' : 'var(--red)'}">${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}</div>
       </div>
       <div class="s0-trade-meta">
-        <span>Credit $${(t.credit || 0).toFixed(2)} · ${(t.closed_at || '').slice(0,10)}</span>
+        <span>Received $${received.toFixed(2)} → paid $${paid.toFixed(2)} to close${margin != null ? ` · margin $${margin.toFixed(0)}` : ''}</span>
+        <span>${(t.closed_at || '').slice(0,10)}</span>
+      </div>
+      <div class="s0-trade-meta" style="margin-top:3px">
         <span>${s0ReasonLabel(t.close_reason)}${peak != null ? `<span class="s0-trail-chip">peak ${peak.toFixed(0)}%</span>` : ''}</span>
       </div>
     </div>

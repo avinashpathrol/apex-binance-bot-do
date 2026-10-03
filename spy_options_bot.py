@@ -2936,6 +2936,20 @@ def push_hermes_spy_snapshot(state: dict) -> None:
         except Exception as e:
             logger.info(f'Hermes snapshot: shadow section skipped ({e})')
 
+        moomoo_summary = {}
+        moomoo_options_permission = None
+        try:
+            moomoo_state = load_spym_state()
+            moomoo_options_permission = moomoo_state.get('options_permission')
+            for vkey, vstate in moomoo_state.get('variants', {}).items():
+                m_closed = [t for t in vstate.get('trades', []) if t.get('pnl') is not None]
+                v_summary = _summarize_trades(m_closed, recent_cap=20)
+                v_summary['last_skip'] = vstate.get('last_skip')
+                v_summary['open_position'] = vstate.get('open_position')
+                moomoo_summary[vkey] = v_summary
+        except Exception as e:
+            logger.info(f'Hermes snapshot: moomoo section skipped ({e})')
+
         crypto_summary = {}
         try:
             crypto_state = load_crypto_state()
@@ -2975,12 +2989,22 @@ def push_hermes_spy_snapshot(state: dict) -> None:
                         'after a few weeks of validation.',
                 'by_symbol': crypto_summary,
             },
+            'spy0dte_moomoo': {
+                'note': 'PAPER TRADING ONLY -- automated SPY 0DTE credit-spread bot via moomoo '
+                        'Open API, 2 entry-time variants (market open, 10am MST/noon ET). Always '
+                        'exactly 1 contract today (real equity options can\'t be fractional); '
+                        'per-variant last_skip explains why a cycle declined to enter (no '
+                        'qualifying spread, no GEX direction, etc.) even on days with zero trades.',
+                'options_permission': moomoo_options_permission,
+                'by_variant': moomoo_summary,
+            },
         }
         resp = requests.post(HERMES_SPY_SNAPSHOT_URL, json=payload, timeout=15)
         resp.raise_for_status()
         n_crypto = sum(len(v.get('recent_trades', [])) for v in crypto_summary.values())
+        n_moomoo = sum(len(v.get('recent_trades', [])) for v in moomoo_summary.values())
         logger.info(f'📤 Pushed SPY snapshot to Hermes ({len(spy_data["recent_trades"])} SPY + '
-                    f'{n_crypto} crypto trades)')
+                    f'{n_crypto} crypto + {n_moomoo} moomoo trades)')
     except Exception as e:
         logger.info(f'Hermes SPY snapshot push failed (non-critical): {e}')
 
@@ -3038,15 +3062,22 @@ def write_hermes_log_dashboard(state: dict) -> None:
 
 
 def run_weekly_hermes_review(state: dict) -> None:
-    last = state.get('last_hermes_review')
-    if last:
-        try:
-            age_days = (datetime.now(timezone.utc) -
-                        datetime.fromisoformat(last.replace('Z', '+00:00'))).days
-        except Exception:
-            age_days = HERMES_REVIEW_INTERVAL_DAYS
-        if age_days < HERMES_REVIEW_INTERVAL_DAYS:
-            return
+    """Runs once per day, after market close -- user request 2026-10-03.
+    Previously gated by elapsed time since the last run (24h from whenever
+    the hourly check happened to land), which drifted and could fire
+    mid-day or even pre-market, reviewing an incomplete day. Gates on the
+    ET calendar date plus a fixed time past both the moomoo bot's
+    SPYM_FORCE_CLOSE_HOUR/MINUTE (15:45) and the real 4pm close, so every
+    day's full trade history (including the noon-ET moomoo variant) is in
+    before Hermes looks at it."""
+    now_et = et_now()
+    today = now_et.strftime('%Y-%m-%d')
+    if state.get('last_hermes_review_date') == today:
+        return
+    review_time = now_et.replace(hour=16, minute=15, second=0, microsecond=0)
+    if now_et < review_time:
+        return
+    state['last_hermes_review_date'] = today
     state['last_hermes_review'] = datetime.now(timezone.utc).isoformat()
     save_state(state)
     push_hermes_spy_snapshot(state)
