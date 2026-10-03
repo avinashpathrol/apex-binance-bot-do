@@ -538,6 +538,14 @@ body {
       <div class="s0-skel" style="height:40px"></div>
     </div>
   </div>
+
+  <div class="card rs-section">
+    <div class="rs-section-title">Exit Rule — 25% / 50% / Current Trail</div>
+    <div class="rs-section-note">One shared SPY entry per day (0.18&Delta;, same as live moomoo), tracked by 3 independent exit rules on the same price path — isolates only how you close, not what you enter.</div>
+    <div id="rs-exit-body" aria-busy="true">
+      <div class="rs-grid"><div class="s0-skel" style="height:58px"></div><div class="s0-skel" style="height:58px"></div><div class="s0-skel" style="height:58px"></div></div>
+    </div>
+  </div>
 </div>
 
 <!-- ═══ SPY 0DTE PAPER PAGE ═══ -->
@@ -1400,14 +1408,16 @@ function renderSpy0dteTrades(trades) {
 async function loadResearch() {
   try {
     const fetchOne = url => fetch(url + '?t=' + Date.now(), {cache:'no-store'}).then(r => r.ok ? r.json() : null).catch(() => null);
-    const [shadow, delta, ic] = await Promise.all([
+    const [shadow, delta, ic, exitT] = await Promise.all([
       fetchOne('/data_shadow_research.json'),
       fetchOne('/data_delta_tier_research.json'),
       fetchOne('/data_iron_condor_research.json'),
+      fetchOne('/data_exit_tier_research.json'),
     ]);
     renderShadowResearch(shadow);
     renderDeltaTierResearch(delta);
     renderIronCondorResearch(ic);
+    renderExitTierResearch(exitT);
   } catch (e) {
     console.error('loadResearch failed', e);
   }
@@ -1523,6 +1533,33 @@ function renderIronCondorResearch(d) {
       </div>`;
     }
     html += '</div>';
+  }
+  el.innerHTML = html;
+}
+
+function renderExitTierResearch(d) {
+  const el = document.getElementById('rs-exit-body');
+  el.removeAttribute('aria-busy');
+  if (!d) { el.innerHTML = '<div class="s0-flat"><div class="sub">No data yet.</div></div>'; return; }
+  const schemes = [['flat_25', '25% flat'], ['flat_50', '50% flat'], ['trail_current', 'Trail (live)']];
+  let bestKey = null, bestPnl = -Infinity;
+  for (const [key] of schemes) {
+    const cell = d[key];
+    if (cell && cell.total_closed_trades > 0 && cell.net_pnl > bestPnl) { bestPnl = cell.net_pnl; bestKey = key; }
+  }
+  let html = '<div class="rs-grid">';
+  for (const [key, label] of schemes) html += rsCellHtml(label, d[key], key === bestKey && bestPnl > 0);
+  html += '</div>';
+
+  const pos = d.shared_entry;
+  const todayET = new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
+  const skip = d.last_skip;
+  if (pos) {
+    html += `<div style="font-size:11.5px;color:var(--muted);margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
+      Today's shared entry: ${pos.short_strike}/${pos.long_strike} &middot; credit $${(pos.credit * 100).toFixed(2)}
+    </div>`;
+  } else if (skip && skip.date === todayET) {
+    html += `<div class="rs-ic-skip"><b>${skip.reason}</b><br>${skip.detail || ''}</div>`;
   }
   el.innerHTML = html;
 }
