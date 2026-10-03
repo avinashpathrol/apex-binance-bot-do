@@ -2613,6 +2613,222 @@ def summarize_delta_tiers() -> dict:
             }
     return out
 
+# ── Iron condor paper research (SPY, gated on positive GEX regime) ──────────
+# User request 2026-10-03: only sells both sides (bull put + bear call, same
+# expiry) on days the system's own signal says are likely range-bound --
+# gex_regime=='positive' is the textbook "dealer hedging flow is suppressing
+# volatility and pulling price toward the pin" condition, already computed by
+# fetch_cboe_gex() for every ticker. No new indicator invented; reusing a
+# signal this system already trusts. Scope v1 (confirmed with user): SPY
+# only, 0.16 delta both wings (matches published practitioner convention
+# specifically for iron condors, more conservative than a single vertical
+# since both sides are now live at once).
+#
+# IMPORTANT MATH NOTE: an iron condor's max loss is NOT the sum of each
+# side's individual max loss -- only one side can ever be breached at
+# expiration (price can't finish both above the call spread and below the
+# put spread), so max loss is the spread width minus the COMBINED credit
+# from both sides, charged once. That's the entire capital-efficiency point
+# of a condor over two separate verticals; get this wrong and the
+# "max_loss"/margin figures would be double-counted.
+#
+# PAPER/RESEARCH ONLY: separate state file, never calls any real-order path,
+# reuses the same proven building blocks (pick_strike_by_delta,
+# spym_get_combo_quote, the real bot's exact trail/stop-loss constants) as
+# the delta-tier module above.
+IC_TICKER        = 'SPY'
+IC_SYMBOL        = 'US.SPY'
+IC_TARGET_DELTA  = 0.16
+IC_STATE_FILE    = os.path.join(WEB_ROOT, 'spym_iron_condor_state.json')
+
+def load_ic_state() -> dict:
+    try:
+        with open(IC_STATE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {'open_position': None, 'trades': [], 'last_skip': None}
+
+def save_ic_state(st: dict):
+    try:
+        with open(IC_STATE_FILE, 'w') as f:
+            json.dump(st, f, default=str)
+    except Exception as e:
+        logger.warning(f'save_ic_state: {e}')
+
+def ic_build_condor(symbol: str, target_delta: float, diag: Optional[dict] = None) -> Optional[dict]:
+    """Builds both wings of the condor. All-or-nothing: if either side fails
+    to price, returns None rather than opening a naked/incomplete position."""
+    spot = spym_get_spot(symbol)
+    if not spot:
+        if diag is not None: diag.update(reason='no_spot', detail='could not fetch spot price')
+        return None
+    expiry = spym_today_expiry(symbol)
+    if not expiry:
+        if diag is not None: diag.update(reason='no_expiry', detail='no 0DTE expiry found for today')
+        return None
+    chain = spym_get_chain(expiry, symbol=symbol)
+    if not chain:
+        if diag is not None: diag.update(reason='no_chain', detail='could not fetch the live option chain')
+        return None
+
+    width = SPYM_SPREAD_WIDTH
+    legs = {}
+    for direction in ('BULL_PUT', 'BEAR_CALL'):
+        picked = pick_strike_by_delta(chain, direction, spot, target_delta)
+        if not picked:
+            if diag is not None: diag.update(reason='no_strikes', detail=f'{direction} side: no usable strikes')
+            return None
+        short_strike = picked['strike']
+        long_strike  = short_strike - width if direction == 'BULL_PUT' else short_strike + width
+        want_type = 'PUT' if direction == 'BULL_PUT' else 'CALL'
+        by_strike = {c['strike_price']: c['code'] for c in chain if c['option_type'] == want_type}
+        long_code = by_strike.get(long_strike)
+        if not long_code:
+            if diag is not None: diag.update(reason='no_long_leg', detail=f'{direction} side: ${width}-wide long leg at {long_strike} not in chain')
+            return None
+        q = spym_get_combo_quote(picked['code'], long_code)
+        if not q or q['ask'] is None:
+            if diag is not None: diag.update(reason='no_quote', detail=f'{direction} side: no live combo quote')
+            return None
+        credit = round(-q['ask'], 4)
+        if credit <= 0:
+            if diag is not None: diag.update(reason='no_quote', detail=f'{direction} side: non-positive credit')
+            return None
+        legs[direction] = {
+            'short_code': picked['code'], 'long_code': long_code,
+            'short_strike': short_strike, 'long_strike': long_strike,
+            'credit': credit, 'short_delta': picked['delta'], 'delta_source': picked['delta_source'],
+        }
+
+    total_credit = round(legs['BULL_PUT']['credit'] + legs['BEAR_CALL']['credit'], 4)
+    if total_credit < width * MIN_CREDIT_WIDTH_RATIO:
+        if diag is not None:
+            diag.update(reason='credit_too_low', detail=f'combined credit ${total_credit:.2f} below the ${width * MIN_CREDIT_WIDTH_RATIO:.2f} minimum')
+        return None
+
+    # Max loss charged ONCE, not per side -- see module docstring above.
+    max_loss   = round((width - total_credit) * 100, 2)
+    max_profit = round(total_credit * 100, 2)
+    return {
+        'put_leg': legs['BULL_PUT'], 'call_leg': legs['BEAR_CALL'],
+        'width': width, 'total_credit': total_credit,
+        'max_loss': max_loss, 'max_profit': max_profit,
+        'target_delta': target_delta, 'expiry': expiry, 'spot_at_entry': spot,
+        'opened_at': datetime.now(timezone.utc).isoformat(),
+    }
+
+def ic_open_new_position(state: dict):
+    today = et_now().strftime('%Y-%m-%d')
+    if state.get('last_entry_date') == today or state.get('open_position'):
+        return
+    def skip(reason: str, detail: str):
+        state['last_skip'] = {'date': today, 'at': datetime.now(timezone.utc).isoformat(), 'reason': reason, 'detail': detail}
+        save_ic_state(state)
+    try:
+        spot = spym_get_spot(IC_SYMBOL)
+        if not spot:
+            skip('no_spot', 'could not fetch spot price'); return
+        expiry = spym_today_expiry(IC_SYMBOL)
+        if not expiry:
+            skip('no_expiry', 'no 0DTE expiry found for today'); return
+        gex = fetch_cboe_gex(expiry, spot, symbol=IC_TICKER)
+        if not gex:
+            skip('no_gex', 'no GEX data available this cycle'); return
+        state['last_entry_date'] = today   # mark attempted regardless of outcome, once/day like the real bot
+        if gex.get('gex_regime') != 'positive':
+            skip('not_choppy', f'gex_regime={gex.get("gex_regime")} -- condor only trades positive-GEX (range-bound) days')
+            return
+        diag: dict = {}
+        condor = ic_build_condor(IC_SYMBOL, IC_TARGET_DELTA, diag=diag)
+        if not condor:
+            skip(diag.get('reason', 'no_condor'), diag.get('detail', 'could not build a qualifying condor this cycle'))
+            return
+        condor['gex_regime'] = gex.get('gex_regime')
+        condor['pin_strike'] = gex.get('pin_strike')
+        state['open_position'] = condor
+        state['last_skip'] = None
+        save_ic_state(state)
+    except Exception as e:
+        logger.warning(f'ic_open_new_position: {e}')
+
+def ic_monitor_position(state: dict):
+    pos = state.get('open_position')
+    if not pos:
+        return
+    try:
+        put_q  = spym_get_combo_quote(pos['put_leg']['short_code'], pos['put_leg']['long_code'])
+        call_q = spym_get_combo_quote(pos['call_leg']['short_code'], pos['call_leg']['long_code'])
+        if not put_q or put_q['bid'] is None or not call_q or call_q['bid'] is None:
+            return
+        cost_to_close = round(-put_q['bid'] - call_q['bid'], 4)   # closing both legs, no offset -- see module note
+        pnl_per_share = pos['total_credit'] - cost_to_close
+        pct_pts = round((pnl_per_share / pos['total_credit']) * 100, 1) if pos['total_credit'] else 0.0
+
+        trail_trigger = False
+        if pct_pts >= SPYM_TRAIL_ACTIVATE_PCT * 100:
+            peak = max(pos.get('peak_pct_captured') or pct_pts, pct_pts)
+            pos['peak_pct_captured'] = peak
+            if peak - pct_pts >= SPYM_TRAIL_GIVEBACK_PCT * 100:
+                trail_trigger = True
+
+        now_et = et_now()
+        force_close_time = now_et.replace(hour=SPYM_FORCE_CLOSE_HOUR, minute=SPYM_FORCE_CLOSE_MINUTE, second=0, microsecond=0)
+        reason = None
+        if trail_trigger:
+            reason = 'trail_stop'
+        elif cost_to_close >= pos['total_credit'] * SPYM_STOP_LOSS_MULT:
+            reason = 'stop_loss'
+        elif now_et >= force_close_time:
+            reason = 'force_close_eod'
+
+        if reason:
+            pnl = round(pnl_per_share * 100, 2)
+            state.setdefault('trades', []).append({
+                **pos, 'closed_at': datetime.now(timezone.utc).isoformat(),
+                'cost_to_close': cost_to_close, 'pnl': pnl, 'win': pnl > 0,
+                'pct_of_max_captured': pct_pts, 'close_reason': reason,
+            })
+            state['open_position'] = None
+        save_ic_state(state)
+    except Exception as e:
+        logger.warning(f'ic_monitor_position: {e}')
+
+def run_ic_cycle():
+    try:
+        state = load_ic_state()
+        if state.get('open_position'):
+            ic_monitor_position(state)
+        else:
+            ic_open_new_position(state)
+    except Exception as e:
+        logger.warning(f'run_ic_cycle: {e}')
+
+def summarize_ic() -> dict:
+    try:
+        state = load_ic_state()
+        trades = state.get('trades', [])
+        n = len(trades)
+        wins = sum(1 for t in trades if t.get('win'))
+        return {
+            'note': ('PAPER/RESEARCH ONLY, never traded. SPY only, 0.16 delta both wings, only '
+                     'opens on gex_regime=="positive" days (the system\'s existing choppy/'
+                     'range-bound signal) -- skips entirely on trending days by design, so fewer '
+                     'trading days than the other paper sections is expected, not a bug. Added '
+                     '2026-10-03 per user request. Same trail/stop-loss management rules as the '
+                     'real moomoo bot; max_loss is charged once (width minus COMBINED credit from '
+                     'both wings), not per side -- that is the real economics of a condor.'),
+            'ticker': IC_TICKER, 'target_delta': IC_TARGET_DELTA,
+            'total_closed_trades': n, 'wins': wins,
+            'win_rate': round(wins / n * 100, 1) if n else 0,
+            'net_pnl': round(sum(t.get('pnl', 0) for t in trades), 2),
+            'avg_combined_credit': round(sum(t.get('total_credit', 0) for t in trades) / n, 4) if n else 0,
+            'last_skip': state.get('last_skip'),
+            'open_position': state.get('open_position'),
+        }
+    except Exception as e:
+        logger.info(f'summarize_ic: {e}')
+        return {}
+
 def _safe_summarize_delta_tiers() -> dict:
     try:
         return summarize_delta_tiers()
@@ -3292,6 +3508,7 @@ def push_hermes_spy_snapshot(state: dict) -> None:
                 'by_variant': moomoo_summary,
             },
             'delta_tier_research': _safe_summarize_delta_tiers(),
+            'iron_condor_research': summarize_ic(),
         }
         resp = requests.post(HERMES_SPY_SNAPSHOT_URL, json=payload, timeout=15)
         resp.raise_for_status()
@@ -3513,6 +3730,10 @@ def main():
                         run_delta_tier_cycle()
                     except Exception as e:
                         logger.warning(f'delta-tier research tick failed (non-critical): {e}')
+                    try:
+                        run_ic_cycle()
+                    except Exception as e:
+                        logger.warning(f'iron condor research tick failed (non-critical): {e}')
                     last_monitor = time.time()
 
             time.sleep(30)
