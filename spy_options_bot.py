@@ -2845,6 +2845,196 @@ def write_ic_dashboard():
     except Exception as e:
         logger.warning(f'write_ic_dashboard: {e}')
 
+# ── Exit-rule paper research (SPY, 0.18 delta, 3 exit schemes) ──────────────
+# User request 2026-10-03, following research on profit-taking rules (25%
+# flat close vs 50% flat close vs the real bot's 50%-activate/15pt-giveback
+# trail). Correct experimental design: ONE shared entry per day (same
+# strikes/credit/signal), tracked by THREE INDEPENDENT exit evaluators
+# watching the same real quote stream -- this isolates the exit rule as the
+# only variable. Getting this wrong (e.g. three separate entries) would let
+# entry-timing noise contaminate the comparison. All three share the same
+# hard stop-loss (2x credit) and EOD force-close; a scheme can close earlier
+# than the others (profit target hit) while the rest keep watching the same
+# position until THEIR condition fires.
+# PAPER/RESEARCH ONLY: separate state file, never calls any real-order path.
+EXIT_TIER_TICKER     = 'SPY'
+EXIT_TIER_SYMBOL     = 'US.SPY'
+EXIT_TIER_DELTA      = SPYM_TARGET_SHORT_DELTA   # matches the real live moomoo bot, 0.18
+EXIT_SCHEMES         = ['flat_25', 'flat_50', 'trail_current']
+EXIT_TIER_STATE_FILE = os.path.join(WEB_ROOT, 'spym_exit_tier_state.json')
+EXIT_TIER_DASHBOARD_FILE = os.path.join(WEB_ROOT, 'data_exit_tier_research.json')
+
+def load_exit_tier_state() -> dict:
+    try:
+        with open(EXIT_TIER_STATE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {'shared_entry': None, 'schemes': {}, 'trades': {}, 'last_skip': None}
+
+def save_exit_tier_state(st: dict):
+    try:
+        with open(EXIT_TIER_STATE_FILE, 'w') as f:
+            json.dump(st, f, default=str)
+    except Exception as e:
+        logger.warning(f'save_exit_tier_state: {e}')
+
+def exit_tier_open(state: dict):
+    today = et_now().strftime('%Y-%m-%d')
+    if state.get('last_entry_date') == today or state.get('shared_entry'):
+        return
+    def skip(reason: str, detail: str):
+        state['last_skip'] = {'date': today, 'at': datetime.now(timezone.utc).isoformat(), 'reason': reason, 'detail': detail}
+        save_exit_tier_state(state)
+    try:
+        spot = spym_get_spot(EXIT_TIER_SYMBOL)
+        if not spot:
+            skip('no_spot', 'could not fetch spot price'); return
+        expiry = spym_today_expiry(EXIT_TIER_SYMBOL)
+        if not expiry:
+            skip('no_expiry', 'no 0DTE expiry found for today'); return
+        gex = fetch_cboe_gex(expiry, spot, symbol=EXIT_TIER_TICKER)
+        if not gex:
+            skip('no_gex', 'no GEX data available this cycle'); return
+        direction = gex['direction']
+        chain = spym_get_chain(expiry, symbol=EXIT_TIER_SYMBOL)
+        if not chain:
+            skip('no_chain', 'could not fetch the live option chain'); return
+        picked = pick_strike_by_delta(chain, direction, spot, EXIT_TIER_DELTA)
+        state['last_entry_date'] = today   # mark attempted regardless of outcome, once/day like the real bot
+        if not picked:
+            skip('no_strikes', 'no usable strikes this cycle'); return
+        short_strike = picked['strike']
+        long_strike  = short_strike - SPYM_SPREAD_WIDTH if direction == 'BULL_PUT' else short_strike + SPYM_SPREAD_WIDTH
+        want_type = 'PUT' if direction == 'BULL_PUT' else 'CALL'
+        by_strike = {c['strike_price']: c['code'] for c in chain if c['option_type'] == want_type}
+        long_code = by_strike.get(long_strike)
+        if not long_code:
+            skip('no_long_leg', f'${SPYM_SPREAD_WIDTH:.2f}-wide long leg at {long_strike} not in chain'); return
+        q = spym_get_combo_quote(picked['code'], long_code)
+        if not q or q['ask'] is None:
+            skip('no_quote', 'no live combo quote'); return
+        credit = round(-q['ask'], 4)
+        width = SPYM_SPREAD_WIDTH
+        if credit <= 0 or credit < width * MIN_CREDIT_WIDTH_RATIO:
+            skip('credit_too_low', f'quoted credit ${credit:.2f} below the ${width * MIN_CREDIT_WIDTH_RATIO:.2f} minimum'); return
+        state['shared_entry'] = {
+            'direction': direction, 'short_code': picked['code'], 'long_code': long_code,
+            'short_strike': short_strike, 'long_strike': long_strike,
+            'credit': credit, 'width': width, 'target_delta': EXIT_TIER_DELTA,
+            'short_delta': picked['delta'], 'delta_source': picked['delta_source'],
+            'opened_at': datetime.now(timezone.utc).isoformat(), 'expiry': expiry,
+        }
+        state['schemes'] = {s: {'closed': False, 'peak_pct_captured': None} for s in EXIT_SCHEMES}
+        state['last_skip'] = None
+        save_exit_tier_state(state)
+    except Exception as e:
+        logger.warning(f'exit_tier_open: {e}')
+
+def exit_tier_monitor(state: dict):
+    pos = state.get('shared_entry')
+    schemes = state.setdefault('schemes', {})
+    if not pos or all(schemes.get(s, {}).get('closed') for s in EXIT_SCHEMES):
+        return
+    try:
+        q = spym_get_combo_quote(pos['short_code'], pos['long_code'])
+        if not q or q['bid'] is None:
+            return
+        cost_to_close = round(-q['bid'], 4)
+        pnl_per_share = pos['credit'] - cost_to_close
+        pct_pts = round((pnl_per_share / pos['credit']) * 100, 1) if pos['credit'] else 0.0
+
+        now_et = et_now()
+        force_close_time = now_et.replace(hour=SPYM_FORCE_CLOSE_HOUR, minute=SPYM_FORCE_CLOSE_MINUTE, second=0, microsecond=0)
+        hard_stop = cost_to_close >= pos['credit'] * SPYM_STOP_LOSS_MULT
+        is_force_close = now_et >= force_close_time
+
+        def close_scheme(scheme: str, reason: str):
+            pnl = round(pnl_per_share * 100, 2)
+            state.setdefault('trades', {}).setdefault(scheme, []).append({
+                **pos, 'scheme': scheme, 'closed_at': datetime.now(timezone.utc).isoformat(),
+                'cost_to_close': cost_to_close, 'pnl': pnl, 'win': pnl > 0,
+                'pct_of_max_captured': pct_pts, 'close_reason': reason,
+            })
+            schemes[scheme]['closed'] = True
+
+        for scheme in EXIT_SCHEMES:
+            st = schemes.get(scheme, {})
+            if st.get('closed'):
+                continue
+            reason = None
+            if hard_stop:
+                reason = 'stop_loss'
+            elif scheme == 'flat_25' and pct_pts >= 25:
+                reason = 'profit_target_25'
+            elif scheme == 'flat_50' and pct_pts >= 50:
+                reason = 'profit_target_50'
+            elif scheme == 'trail_current' and pct_pts >= SPYM_TRAIL_ACTIVATE_PCT * 100:
+                peak = max(st.get('peak_pct_captured') or pct_pts, pct_pts)
+                st['peak_pct_captured'] = peak
+                if peak - pct_pts >= SPYM_TRAIL_GIVEBACK_PCT * 100:
+                    reason = 'trail_stop'
+            if not reason and is_force_close:
+                reason = 'force_close_eod'
+            if reason:
+                close_scheme(scheme, reason)
+        save_exit_tier_state(state)
+    except Exception as e:
+        logger.warning(f'exit_tier_monitor: {e}')
+
+def run_exit_tier_cycle():
+    try:
+        state = load_exit_tier_state()
+        if state.get('shared_entry'):
+            exit_tier_monitor(state)
+        else:
+            exit_tier_open(state)
+    except Exception as e:
+        logger.warning(f'run_exit_tier_cycle: {e}')
+    write_exit_tier_dashboard()   # unconditional -- UI should never 404 waiting for market hours
+
+def summarize_exit_tiers() -> dict:
+    try:
+        state = load_exit_tier_state()
+        out = {
+            'note': ('PAPER/RESEARCH ONLY, never traded. ONE shared SPY entry per day (0.18 delta, '
+                     'matching the real moomoo bot), tracked by 3 independent exit rules watching '
+                     'the same quote stream -- isolates the exit rule as the only variable. '
+                     'flat_25/flat_50 close immediately once that %% of credit is captured; '
+                     'trail_current is the real bot\'s exact rule (50%% activate / 15pt giveback). '
+                     'All three share the same 2x stop-loss and EOD force-close. Added 2026-10-03 '
+                     'per user request, informed by published research that profit-target width '
+                     'matters less than people assume -- stop-loss discipline mattered more in the '
+                     'backtests found.'),
+            'ticker': EXIT_TIER_TICKER, 'target_delta': EXIT_TIER_DELTA,
+            'shared_entry': state.get('shared_entry'),
+            'last_skip': state.get('last_skip'),
+        }
+        for scheme in EXIT_SCHEMES:
+            trades = state.get('trades', {}).get(scheme, [])
+            n = len(trades)
+            wins = sum(1 for t in trades if t.get('win'))
+            out[scheme] = {
+                'total_closed_trades': n, 'wins': wins,
+                'win_rate': round(wins / n * 100, 1) if n else 0,
+                'net_pnl': round(sum(t.get('pnl', 0) for t in trades), 2),
+                'avg_credit': round(sum(t.get('credit', 0) for t in trades) / n, 4) if n else 0,
+                'avg_pct_captured': round(sum(t.get('pct_of_max_captured', 0) for t in trades) / n, 1) if n else 0,
+                'recent_trades': trades[-5:][::-1],
+            }
+        return out
+    except Exception as e:
+        logger.info(f'summarize_exit_tiers: {e}')
+        return {}
+
+def write_exit_tier_dashboard():
+    try:
+        payload = summarize_exit_tiers()
+        payload['generated_at'] = datetime.now(timezone.utc).isoformat()
+        with open(EXIT_TIER_DASHBOARD_FILE, 'w') as f:
+            json.dump(payload, f, indent=2, default=str)
+    except Exception as e:
+        logger.warning(f'write_exit_tier_dashboard: {e}')
+
 def _safe_summarize_delta_tiers() -> dict:
     try:
         return summarize_delta_tiers()
@@ -3545,6 +3735,7 @@ def push_hermes_spy_snapshot(state: dict) -> None:
             },
             'delta_tier_research': _safe_summarize_delta_tiers(),
             'iron_condor_research': summarize_ic(),
+            'exit_tier_research': summarize_exit_tiers(),
         }
         resp = requests.post(HERMES_SPY_SNAPSHOT_URL, json=payload, timeout=15)
         resp.raise_for_status()
@@ -3707,6 +3898,10 @@ def main():
                         run_ic_cycle()
                     except Exception as e:
                         logger.warning(f'iron condor research tick failed (non-critical): {e}')
+                    try:
+                        run_exit_tier_cycle()
+                    except Exception as e:
+                        logger.warning(f'exit-tier research tick failed (non-critical): {e}')
                     try:
                         write_shadow_dashboard()
                     except Exception as e:
