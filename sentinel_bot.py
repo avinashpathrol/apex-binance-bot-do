@@ -720,9 +720,39 @@ class Sentinel:
             syms[sym] = {'base': meta['base'], 'name': meta['name'], 'note': meta['note'], 'stake': STAKE_USDT, 'leverage': lev,
                          'notional_target': round(STAKE_USDT * lev, 2) if lev else None, 'position': view,
                          'performance': self.perf(trades), 'trades': list(reversed(trades[-150:])), 'error': self.errors.get(sym)}
+        # MU (real money) -- read-only, copied from Apex's own live dashboard file for display
+        # here alongside the paper candidates. Sentinel never trades MU itself (no order-placement
+        # code exists in this process at all, by design -- see module docstring); the real
+        # trading_bot_futures.py / apexbot-futures service is untouched and keeps actually
+        # executing it. Added 2026-10-03 per user request so overnight-hold strategies can be
+        # compared in one place. Any failure here is silent and never affects Sentinel's own
+        # paper trading.
+        mu_real = None
+        try:
+            mu_path = os.path.join(WEB_ROOT, 'data_overnight_mu.json')
+            if os.path.exists(mu_path):
+                with open(mu_path) as f:
+                    mu_data = json.load(f)
+                mu_real = {
+                    'base': 'MU', 'name': 'Micron Technology', 'real_money': True,
+                    'note': 'REAL MONEY -- actually traded by Apex (trading_bot_futures.py), shown '
+                            'here read-only for comparison against the paper candidates.',
+                    'position': {
+                        'direction': mu_data.get('position'), 'entry_price': mu_data.get('entry_price'),
+                        'current_price': mu_data.get('current_price'), 'unrealized_pnl': mu_data.get('unrealized_pnl'),
+                        'sl_price': mu_data.get('sl_price'), 'qty': mu_data.get('qty'),
+                        'leverage': mu_data.get('leverage'), 'opened_at': mu_data.get('opened_at'),
+                    } if mu_data.get('position') else None,
+                    'performance': mu_data.get('performance'),
+                    'trades': list(reversed((mu_data.get('trades') or [])[-150:])),
+                }
+        except Exception as e:
+            logger.info('mu_real section skipped (non-critical): %s', e)
+
         nxt = next_entry_utc(now_utc)
         payload = {
             'generated_at': now_iso(now_utc.timestamp()), 'mode': 'paper', 'live_orders': False,
+            'mu_real': mu_real,
             'rules': {'stake': STAKE_USDT, 'sl_pct': round(SL_PCT * 100, 4), 'fee_per_side_pct': round(FEE_RATE * 100, 4),
                       'entry': '15:55-16:05 ET (close-5min on early-close days), trading days only',
                       'exit': '9:28-9:40 ET next trading day at market', 'trail': None,

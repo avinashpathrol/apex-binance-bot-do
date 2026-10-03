@@ -160,19 +160,25 @@ const muTrades = () => (MU && MU.trades ? MU.trades : []).map(t => ({net: t.net,
 
 function render() {
   const syms = Object.keys(S.symbols);
-  document.getElementById('tabs').innerHTML = ['ALL'].concat(syms).map(k => {
-    const label = k === 'ALL' ? 'All' : S.symbols[k].base;
+  const rest = syms.filter(s => s !== 'MRVLUSDT');
+  const tabOrder = ['MU', 'MRVLUSDT', 'ALL'].concat(rest);
+  document.getElementById('tabs').innerHTML = tabOrder.map(k => {
+    const label = k === 'ALL' ? 'All' : (k === 'MU' ? 'MU' : S.symbols[k].base);
     return `<div class="tab ${k === tab ? 'active' : ''}" onclick="setTab('${k}')">${esc(label)}</div>`;
   }).join('');
   const nx = S.next_entry_at ? 'Next entry window: ' + et(S.next_entry_at) : '';
   document.getElementById('hdr-sub').textContent = `Overnight hold · MU's rules · $${S.rules.stake} stake at each ticker's max leverage · updated ${ago(S.generated_at)}` + (nx ? ' · ' + nx : '');
-  const list = tab === 'ALL' ? syms : [tab];
   let h = '';
-  h += list.map(posCard).join('');
-  h += perfCard();
-  if (tab === 'ALL') h += compareCard();
-  h += calendarCard();
-  h += tradesCard();
+  if (tab === 'MU') {
+    h += muRealCard();
+  } else {
+    const list = tab === 'ALL' ? syms : [tab];
+    h += list.map(posCard).join('');
+    h += perfCard();
+    if (tab === 'ALL') h += compareCard();
+    h += calendarCard();
+    h += tradesCard();
+  }
   h += rulesCard();
   document.getElementById('content').innerHTML = h;
   buildCalendar();
@@ -180,9 +186,43 @@ function render() {
 
 function setTab(k) { tab = k; render(); }
 
+// MU -- real money, read-only, executed by Apex's trading_bot_futures.py, copied in via
+// Sentinel's own write_dashboard() (data_overnight_mu.json). Fully separate render path
+// from the paper tickers below so nothing about their tested logic is touched.
+function muRealCard() {
+  const mu = S.mu_real;
+  if (!mu) return `<div class="card"><div class="card-title">MU — Real Money</div><div class="empty-msg">No data yet.</div></div>`;
+  const p = mu.position;
+  const head = `<div class="poshead"><b>MU <span class="mut" style="font-weight:500;font-size:12px">Micron Technology</span></b>` +
+    `<span class="badge" style="background:rgba(245,158,11,.22);color:#f59e0b">${p ? 'LONG (REAL)' : 'FLAT'}</span></div>`;
+  let body;
+  if (p) {
+    body = `<div class="metrics">
+      <div class="metric"><div class="label">Unrealized</div><div class="val ${cls(p.unrealized_pnl)}">${pnl(p.unrealized_pnl)}</div></div>
+      <div class="metric"><div class="label">Entry → now</div><div class="val">${usd(p.entry_price)}</div><div class="mut" style="font-size:11px">now ${usd(p.current_price)}</div></div>
+      <div class="metric"><div class="label">Stop</div><div class="val" style="color:var(--red)">${usd(p.sl_price)}</div></div>
+      <div class="metric"><div class="label">Size</div><div class="val">${num(p.qty, 2)} @ ${p.leverage || '—'}x</div></div>
+    </div>
+    <div class="note" style="margin-top:10px">Opened ${et(p.opened_at)}. <b>Real capital</b> — executed by Apex's live trading_bot_futures.py service, shown here read-only.</div>`;
+  } else {
+    body = `<div class="note" style="margin-top:10px">No open position. Enters ~3:55 PM ET, exits ~9:28 AM ET next session.</div>`;
+  }
+  const perf = mu.performance || {};
+  const trades = mu.trades || [];
+  const rows = trades.slice(0, 40).map(t => `<tr><td>${esc((t.closed_at || '').slice(0, 10))}</td><td>${usd(t.entry_price)} → ${usd(t.exit_price)}</td><td class="${cls(t.net)}">${pnl(t.net)}</td><td class="mut">${esc(t.reason || '')}</td></tr>`).join('');
+  return `<div class="card"><div class="card-title">MU <span style="font-size:10px;font-weight:800;padding:2px 8px;border-radius:10px;background:rgba(245,158,11,.22);color:#f59e0b;margin-left:6px">REAL MONEY</span></div>${head}${body}</div>
+    <div class="card"><div class="card-title">Performance — MU (real)</div><div class="stats-row">
+      <div class="stat"><div class="num">${perf.total || 0}</div><div class="lbl">Trades</div></div>
+      <div class="stat"><div class="num">${num(perf.win_rate, 0)}%</div><div class="lbl">Win rate</div></div>
+      <div class="stat"><div class="num ${cls(perf.net_pnl)}">${pnl(perf.net_pnl, 0)}</div><div class="lbl">Net P&amp;L (real $)</div></div>
+    </div></div>
+    <div class="card"><div class="card-title">Recent trades (real)</div>${trades.length ? `<div class="tscroll"><table><tr><th>Closed</th><th>Entry → Exit</th><th>Net $</th><th>Why</th></tr>${rows}</table></div>` : `<div class="empty-msg">No trades yet</div>`}</div>`;
+}
+
 function posCard(sym) {
   const v = S.symbols[sym], p = v.position;
-  const head = `<div class="poshead"><b>${esc(v.base)} <span class="mut" style="font-weight:500;font-size:12px">${esc(v.name)}</span></b>` +
+  const mrvlTag = sym === 'MRVLUSDT' ? ' <span style="font-size:9px;font-weight:800;padding:2px 7px;border-radius:9px;background:rgba(99,102,241,.2);color:var(--accent);vertical-align:middle">PAPER — VALIDATION TRACK RECORD</span>' : '';
+  const head = `<div class="poshead"><b>${esc(v.base)}${mrvlTag} <span class="mut" style="font-weight:500;font-size:12px">${esc(v.name)}</span></b>` +
     (p ? '<span class="badge long">LONG (paper)</span>' : '<span class="badge flat">FLAT</span>') + '</div>';
   let body;
   if (p) {
