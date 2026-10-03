@@ -363,6 +363,32 @@ body {
 @keyframes s0shimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
 .s0-skel-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; }
 .s0-skel-line { height: 14px; }
+
+/* ── Research tab: shadow / delta-tier / iron-condor comparison grids ── */
+.rs-section { margin-bottom: 18px; }
+.rs-section:last-child { margin-bottom: 0; }
+.rs-section-title { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+.rs-section-note { font-size: 11.5px; color: var(--muted); line-height: 1.5; margin-bottom: 12px; }
+.rs-group { margin-bottom: 14px; }
+.rs-group:last-child { margin-bottom: 0; }
+.rs-group-label { font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin-bottom: 7px; display: flex; align-items: center; gap: 6px; }
+.rs-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
+.rs-cell { background: var(--card2); border: 1px solid var(--border); border-radius: 10px; padding: 9px 10px; position: relative; }
+.rs-cell.rs-positive { background: rgba(34,197,94,.08); border-color: rgba(34,197,94,.3); }
+.rs-cell.rs-negative { background: rgba(239,68,68,.08); border-color: rgba(239,68,68,.3); }
+.rs-cell-tier { font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+.rs-cell-pnl { font-family: 'JetBrains Mono', monospace; font-size: 15px; font-weight: 800; margin-top: 3px; font-variant-numeric: tabular-nums; }
+.rs-cell.rs-positive .rs-cell-pnl { color: var(--green); }
+.rs-cell.rs-negative .rs-cell-pnl { color: var(--red); }
+.rs-cell-sub { font-size: 10px; color: var(--muted); margin-top: 3px; font-variant-numeric: tabular-nums; }
+.rs-cell-best { position: absolute; top: -7px; right: 8px; background: var(--accent); color: #fff; font-size: 8.5px; font-weight: 800; padding: 1px 6px; border-radius: 8px; letter-spacing: .03em; }
+.rs-ic-card { background: var(--card2); border: 1px solid var(--border); border-radius: 12px; padding: 13px 14px; }
+.rs-ic-status { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.rs-ic-status-pill { font-size: 10.5px; font-weight: 700; padding: 3px 9px; border-radius: 20px; }
+.rs-ic-status-pill.live { background: rgba(34,197,94,.16); color: var(--green); }
+.rs-ic-status-pill.flat { background: rgba(255,255,255,.06); color: var(--muted); }
+.rs-ic-skip { font-size: 11.5px; color: var(--muted); line-height: 1.5; padding-top: 8px; margin-top: 8px; border-top: 1px solid var(--border); }
+.rs-ic-skip b { color: var(--text); }
 </style>
 </head>
 <body>
@@ -392,6 +418,7 @@ body {
   <button class="tab" onclick="showPage('gex')">GEX</button>
   <button class="tab" onclick="showPage('crypto')">🪙 Crypto 0DTE</button>
   <button class="tab" onclick="showPage('hermes');loadHermesLog()">🧠 Hermes Log</button>
+  <button class="tab" onclick="showPage('research');loadResearch()">🔬 Research</button>
 </div>
 
 <div class="next-banner" id="next-banner">
@@ -704,6 +731,44 @@ body {
   <div class="card">
     <div class="card-title">Weekly Analysis</div>
     <div id="hlog-reports"><div class="hlog-empty">Loading…</div></div>
+  </div>
+</div>
+
+<!-- ═══ RESEARCH PAGE (paper/shadow only -- never real trades) ═══ -->
+<div class="page" id="page-research">
+  <div class="card" style="padding:12px 16px">
+    <div style="font-size:11px;color:var(--muted);line-height:1.6">
+      All paper/simulated — none of this trades real money. Testing which strategy tier, delta
+      target, and market-structure signal actually produce a real edge before any of it is used
+      live.
+    </div>
+  </div>
+
+  <div class="card rs-section">
+    <div class="rs-section-title">Shadow Simulation — Tier Comparison</div>
+    <div class="rs-section-note">Conservative / Suggested / Aggressive strike offsets from the GEX wall, simulated across every signal. SPX/QQQ/IWM aren't traded yet — pure preparation.</div>
+    <div id="rs-shadow-body" aria-busy="true">
+      <div class="rs-group"><div class="s0-skel" style="height:12px;width:30%;margin-bottom:8px"></div><div class="rs-grid"><div class="s0-skel" style="height:58px"></div><div class="s0-skel" style="height:58px"></div><div class="s0-skel" style="height:58px"></div></div></div>
+      <div class="rs-group"><div class="s0-skel" style="height:12px;width:30%;margin-bottom:8px"></div><div class="rs-grid"><div class="s0-skel" style="height:58px"></div><div class="s0-skel" style="height:58px"></div><div class="s0-skel" style="height:58px"></div></div></div>
+    </div>
+  </div>
+
+  <div class="card rs-section">
+    <div class="rs-section-title">Delta-Tier Research — 0.16 / 0.22 / 0.30</div>
+    <div class="rs-section-note">Same ticker, same trail/stop-loss rules as the real moomoo bot — only the short-strike delta target varies, to isolate it as the one variable.</div>
+    <div id="rs-delta-body" aria-busy="true">
+      <div class="rs-group"><div class="s0-skel" style="height:12px;width:30%;margin-bottom:8px"></div><div class="rs-grid"><div class="s0-skel" style="height:58px"></div><div class="s0-skel" style="height:58px"></div><div class="s0-skel" style="height:58px"></div></div></div>
+      <div class="rs-group"><div class="s0-skel" style="height:12px;width:30%;margin-bottom:8px"></div><div class="rs-grid"><div class="s0-skel" style="height:58px"></div><div class="s0-skel" style="height:58px"></div><div class="s0-skel" style="height:58px"></div></div></div>
+    </div>
+  </div>
+
+  <div class="card rs-section">
+    <div class="rs-section-title">Iron Condor — SPY, choppy days only</div>
+    <div class="rs-section-note">Sells both sides (put + call spread) only when gex_regime is positive — the system's existing range-bound signal. Skips entirely on trending days by design.</div>
+    <div id="rs-ic-body" aria-busy="true">
+      <div class="s0-skel" style="height:70px;margin-bottom:10px"></div>
+      <div class="s0-skel" style="height:40px"></div>
+    </div>
   </div>
 </div>
 
@@ -2202,6 +2267,137 @@ function renderSpy0dteTrades(trades) {
     return;
   }
   el.innerHTML = trades.slice(0, 10).map(s0TradeRowHtml).join('');
+}
+
+// ── Research tab: shadow / delta-tier / iron-condor paper research ─────────
+async function loadResearch() {
+  try {
+    const fetchOne = url => fetch(url + '?t=' + Date.now(), {cache:'no-store'}).then(r => r.ok ? r.json() : null).catch(() => null);
+    const [shadow, delta, ic] = await Promise.all([
+      fetchOne('/data_shadow_research.json'),
+      fetchOne('/data_delta_tier_research.json'),
+      fetchOne('/data_iron_condor_research.json'),
+    ]);
+    renderShadowResearch(shadow);
+    renderDeltaTierResearch(delta);
+    renderIronCondorResearch(ic);
+  } catch (e) {
+    console.error('loadResearch failed', e);
+  }
+}
+
+function rsMoney(v) {
+  const n = Number(v) || 0;
+  return (n >= 0 ? '+' : '') + '$' + n.toFixed(2);
+}
+
+function rsCellHtml(tierLabel, cell, isBest) {
+  if (!cell || !cell.n && !cell.total_closed_trades) {
+    return `<div class="rs-cell"><div class="rs-cell-tier">${tierLabel}</div><div class="rs-cell-sub" style="margin-top:6px">no trades yet</div></div>`;
+  }
+  const n = cell.n ?? cell.total_closed_trades ?? 0;
+  const pnl = cell.total_simulated_pnl_per_contract ?? cell.net_pnl ?? 0;
+  const wr = cell.win_rate_pct ?? cell.win_rate ?? 0;
+  const cls = pnl > 0 ? 'rs-positive' : (pnl < 0 ? 'rs-negative' : '');
+  return `
+    <div class="rs-cell ${cls}">
+      ${isBest ? '<div class="rs-cell-best">BEST</div>' : ''}
+      <div class="rs-cell-tier">${tierLabel}</div>
+      <div class="rs-cell-pnl">${rsMoney(pnl)}</div>
+      <div class="rs-cell-sub">${wr}% WR &middot; n=${n}</div>
+    </div>
+  `;
+}
+
+function renderShadowResearch(d) {
+  const el = document.getElementById('rs-shadow-body');
+  el.removeAttribute('aria-busy');
+  if (!d) { el.innerHTML = '<div class="s0-flat"><div class="sub">No data yet.</div></div>'; return; }
+  const tickers = [['SPY', 'SPY'], ['SPX', 'SPX (not traded)'], ['QQQ', 'QQQ (not traded)'], ['IWM', 'IWM (not traded)']];
+  const tiers = ['Conservative', 'Suggested', 'Aggressive'];
+  let html = '';
+  for (const [key, label] of tickers) {
+    const byVariant = d[key] && d[key].by_variant;
+    if (!byVariant) continue;
+    let bestTier = null, bestPnl = -Infinity;
+    for (const t of tiers) {
+      const pnl = byVariant[t] && byVariant[t].total_simulated_pnl_per_contract;
+      if (pnl != null && pnl > bestPnl) { bestPnl = pnl; bestTier = t; }
+    }
+    html += `<div class="rs-group"><div class="rs-group-label">${label}</div><div class="rs-grid">`;
+    for (const t of tiers) html += rsCellHtml(t.slice(0, 4), byVariant[t], t === bestTier && bestPnl > 0);
+    html += `</div></div>`;
+  }
+  el.innerHTML = html || '<div class="s0-flat"><div class="sub">No data yet.</div></div>';
+}
+
+function renderDeltaTierResearch(d) {
+  const el = document.getElementById('rs-delta-body');
+  el.removeAttribute('aria-busy');
+  if (!d) { el.innerHTML = '<div class="s0-flat"><div class="sub">No data yet.</div></div>'; return; }
+  const tickers = ['SPY', 'QQQ', 'IWM'];
+  const tiers = [['low', '0.16Δ'], ['mid', '0.22Δ'], ['high', '0.30Δ']];
+  let html = '';
+  for (const tk of tickers) {
+    const byTier = d[tk];
+    if (!byTier) continue;
+    let bestTier = null, bestPnl = -Infinity;
+    for (const [key] of tiers) {
+      const cell = byTier[key];
+      if (cell && cell.total_closed_trades > 0 && cell.net_pnl > bestPnl) { bestPnl = cell.net_pnl; bestTier = key; }
+    }
+    html += `<div class="rs-group"><div class="rs-group-label">${tk}</div><div class="rs-grid">`;
+    for (const [key, label] of tiers) html += rsCellHtml(label, byTier[key], key === bestTier && bestPnl > 0);
+    html += `</div></div>`;
+  }
+  el.innerHTML = html || '<div class="s0-flat"><div class="sub">No data yet.</div></div>';
+}
+
+function renderIronCondorResearch(d) {
+  const el = document.getElementById('rs-ic-body');
+  el.removeAttribute('aria-busy');
+  if (!d) { el.innerHTML = '<div class="s0-flat"><div class="sub">No data yet.</div></div>'; return; }
+  const pos = d.open_position;
+  const todayET = new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
+  const skip = d.last_skip;
+  let html = `<div class="rs-ic-card">
+    <div class="rs-ic-status">
+      <span class="rs-ic-status-pill ${pos ? 'live' : 'flat'}">${pos ? '● LIVE (paper)' : 'FLAT'}</span>
+      <span style="font-size:11px;color:var(--muted)">${d.ticker || 'SPY'} &middot; ${((d.target_delta || 0) * 100).toFixed(0)}&Delta; wings</span>
+    </div>`;
+  if (pos) {
+    html += `<div style="font-size:12.5px">
+      Put ${pos.put_leg.short_strike}/${pos.put_leg.long_strike} + Call ${pos.call_leg.short_strike}/${pos.call_leg.long_strike}<br>
+      Combined credit: $${(pos.total_credit * 100).toFixed(2)} &middot; Max loss: $${pos.max_loss.toFixed(0)}
+    </div>`;
+  } else if (skip && skip.date === todayET) {
+    const label = skip.reason === 'not_choppy' ? 'Not a condor day' : skip.reason;
+    html += `<div class="rs-ic-skip"><b>${label}</b><br>${skip.detail || ''}</div>`;
+  } else {
+    html += `<div style="font-size:12px;color:var(--muted)">No position open.</div>`;
+  }
+  html += `</div>`;
+
+  html += `<div class="s0-metrics-row" style="margin-top:10px">
+    <div class="s0-metric"><div class="l">Trades</div><div class="v">${d.total_closed_trades || 0}</div></div>
+    <div class="s0-metric"><div class="l">Win Rate</div><div class="v">${d.win_rate != null && d.total_closed_trades ? d.win_rate + '%' : '—'}</div></div>
+    <div class="s0-metric"><div class="l">Net P&amp;L</div><div class="v" style="color:${(d.net_pnl || 0) >= 0 ? 'var(--green)' : 'var(--red)'}">${rsMoney(d.net_pnl)}</div></div>
+  </div>`;
+
+  if (d.recent_trades && d.recent_trades.length) {
+    html += '<div style="margin-top:12px">';
+    for (const t of d.recent_trades.slice(0, 5)) {
+      html += `<div class="s0-trade">
+        <div class="s0-trade-top">
+          <span class="s0-trade-strikes">P${t.put_leg && t.put_leg.short_strike}/C${t.call_leg && t.call_leg.short_strike}</span>
+          <div class="s0-trade-pnl" style="color:${t.pnl >= 0 ? 'var(--green)' : 'var(--red)'}">${rsMoney(t.pnl)}</div>
+        </div>
+        <div class="s0-trade-meta"><span>${(t.closed_at || '').slice(0, 10)}</span><span>${t.close_reason || ''}</span></div>
+      </div>`;
+    }
+    html += '</div>';
+  }
+  el.innerHTML = html;
 }
 
 function showPage(name) {
