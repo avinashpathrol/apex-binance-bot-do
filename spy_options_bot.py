@@ -373,10 +373,10 @@ def bs_delta(S: float, K: float, T: float, iv: float, is_call: bool, r: float = 
         return 0.0
 
 # ── GEX + options chain ───────────────────────────────────────────────────────
-def fetch_spy_chain() -> Optional[dict]:
+def fetch_spy_chain(symbol: str = 'SPY') -> Optional[dict]:
     try:
         import yfinance as yf
-        ticker = yf.Ticker('SPY')
+        ticker = yf.Ticker(symbol)
         fi   = ticker.fast_info
         spot = (fi.get('lastPrice') or fi.get('regularMarketPrice') or
                 fi.get('previousClose') or fi.get('regularMarketPreviousClose'))
@@ -479,15 +479,16 @@ def fetch_spy_chain() -> Optional[dict]:
         return None
 
 # ── CBOE GEX comparison (no API key needed) ───────────────────────────────────
-def fetch_cboe_gex(expiry: str, spot: float) -> Optional[dict]:
+def fetch_cboe_gex(expiry: str, spot: float, symbol: str = 'SPY') -> Optional[dict]:
     """
-    Fetch SPY options from CBOE's public CDN (delayed ~15 min, no auth).
+    Fetch options from CBOE's public CDN (delayed ~15 min, no auth) -- confirmed
+    2026-10-03 this same free feed exists for QQQ and IWM too, not just SPY.
     CBOE provides pre-calculated gamma. Falls back to BS when gamma=0 (deep OTM/ITM).
-    Option symbol format: SPY260827C00760000 → YYMMDD + C/P + strike*1000
+    Option symbol format: SPY260827C00760000 → <symbol> + YYMMDD + C/P + strike*1000
     """
     try:
         resp = requests.get(
-            'https://cdn.cboe.com/api/global/delayed_quotes/options/SPY.json',
+            f'https://cdn.cboe.com/api/global/delayed_quotes/options/{symbol}.json',
             timeout=15,
             headers={'User-Agent': 'Mozilla/5.0'},
         )
@@ -506,10 +507,10 @@ def fetch_cboe_gex(expiry: str, spot: float) -> Optional[dict]:
         gex: dict = {}
         for opt in options:
             sym = opt.get('option', '')
-            # Symbol: SPY{YYMMDD}{C|P}{strike*1000 zero-padded to 8 chars}
-            if len(sym) < 15:
+            # Symbol: {symbol}{YYMMDD}{C|P}{strike*1000 zero-padded to 8 chars}
+            if len(sym) < len(symbol) + 12:
                 continue
-            body = sym[3:]  # strip "SPY"
+            body = sym[len(symbol):]  # strip the leading ticker
             if not body[:6] == exp_short:
                 continue
             ctype = body[6]  # 'C' or 'P'
@@ -1357,6 +1358,69 @@ def append_signal_history(sig: dict) -> None:
     except Exception as e:
         logger.warning(f'append_signal_history: {e}')
 
+# Extra tickers to shadow-simulate alongside SPY/SPX -- PAPER/SIMULATION ONLY,
+# never traded, never touches the moomoo bot or any real order path. Unlike
+# the SPX parallel (which scales SPY's own wall by price ratio -- valid only
+# because SPX literally IS the index SPY tracks), these get a FULLY
+# INDEPENDENT GEX-wall computed from their own real CBOE options data -- QQQ
+# and IWM are different underlyings with their own dealer positioning, so
+# borrowing SPY's direction/walls would just be testing correlation with SPY,
+# not actually evaluating these tickers on their own merit. Confirmed
+# 2026-10-03 against the live CBOE feed that QQQ.json/IWM.json exist and
+# moomoo's Open API can quote both (user asked to explore these as
+# alternative 0DTE candidates after SPX turned out not to be reachable via
+# moomoo at all -- "invalid symbol" on both US.SPX and US.XSP).
+SHADOW_EXTRA_TICKERS = ['QQQ', 'IWM']
+
+def build_shadow_signal_for_ticker(symbol: str, vix: Optional[float]) -> Optional[dict]:
+    """Independent GEX-wall signal for a ticker that isn't SPY -- same method
+    SPY's own build_signal() uses on itself (CBOE gamma -> nearest wall below/
+    above spot -> floor/ceil to a tradeable strike -> +/-$2 Conservative/
+    Aggressive offsets, SPY's own backtested spacing), just pointed at a
+    different symbol's real chain instead of SPY's. Deliberately does NOT
+    reuse build_signal() itself (that function is the live SPY/SPX path) --
+    this is a fully separate, additive code path so it can never regress the
+    real signal."""
+    try:
+        data = fetch_spy_chain(symbol=symbol)
+        if not data:
+            return None
+        expiry = data.get('expiry')
+        spot   = data.get('spot')
+        gex    = fetch_cboe_gex(expiry, spot, symbol=symbol)
+        if not gex or gex.get('upper_wall') is None or gex.get('lower_wall') is None:
+            return None
+
+        direction  = gex['direction']
+        lower_wall = gex['lower_wall']
+        upper_wall = gex['upper_wall']
+
+        if direction == 'BULL_PUT':
+            base = math.floor(lower_wall)
+            variants = [(+2, 'Conservative'), (0, 'Suggested'), (-2, 'Aggressive')]
+        else:
+            base = math.ceil(upper_wall)
+            variants = [(-2, 'Conservative'), (0, 'Suggested'), (+2, 'Aggressive')]
+
+        spreads = []
+        for delta, lbl in variants:
+            short_s = float(base + delta) if direction == 'BEAR_CALL' else float(base - delta)
+            sp = make_spread(data, direction, short_s)
+            if sp:
+                sp['label'] = lbl
+                spreads.append(sp)
+        if not spreads:
+            return None
+
+        return {
+            'direction': direction, 'expiry': expiry, 'spreads': spreads,
+            'gex_regime': gex.get('gex_regime'), 'total_gex_b': gex.get('total_gex_b'),
+            'pin_strike': gex.get('pin_strike'), 'vix_gate_skipped': False,
+        }
+    except Exception as e:
+        logger.warning(f'build_shadow_signal_for_ticker({symbol}): {e}')
+        return None
+
 def open_shadow_variants(sig: dict, shadow_state: dict) -> None:
     """One shadow record per spread variant (Conservative/Suggested/
     Aggressive) for BOTH SPY and, when present, its SPX parallel spread --
@@ -1401,6 +1465,16 @@ def open_shadow_variants(sig: dict, shadow_state: dict) -> None:
         if spx and spx.get('spreads'):
             _open('SPX', spx.get('direction', sig.get('direction')), spx.get('expiry'), spx.get('spreads', []))
 
+        # QQQ/IWM -- independent GEX-wall signal per ticker (see
+        # build_shadow_signal_for_ticker), not SPY's direction rescaled.
+        for extra_symbol in SHADOW_EXTRA_TICKERS:
+            try:
+                extra_sig = build_shadow_signal_for_ticker(extra_symbol, vix=None)
+                if extra_sig and extra_sig.get('spreads'):
+                    _open(extra_symbol, extra_sig['direction'], extra_sig['expiry'], extra_sig['spreads'])
+            except Exception as e:
+                logger.warning(f'open_shadow_variants: {extra_symbol} failed: {e}')
+
         save_shadow_state(shadow_state)
     except Exception as e:
         logger.warning(f'open_shadow_variants: {e}')
@@ -1436,7 +1510,10 @@ def check_shadow_trades(shadow_state: dict, chain_cache: Optional[dict] = None) 
             for sh in open_shadows:
                 tk = sh.get('ticker', 'SPY')
                 if tk not in _yf_tickers:
-                    _yf_tickers[tk] = yf.Ticker('^SPX' if tk == 'SPX' else 'SPY')
+                    # Was hardcoded to 'SPY' for anything that wasn't 'SPX' -- silently
+                    # priced every non-SPY/SPX ticker's shadow trades off SPY's own chain.
+                    # Caught 2026-10-03 while adding QQQ/IWM shadow tracking.
+                    _yf_tickers[tk] = yf.Ticker('^SPX' if tk == 'SPX' else tk)
 
             for sh in open_shadows:
                 yf_ticker = _yf_tickers[sh.get('ticker', 'SPY')]
@@ -2776,10 +2853,17 @@ def _summarize_shadow_variants(shadow_state: dict) -> dict:
     return {
         'note': ('Simulated -- what each tier would have made per contract if actually traded and '
                  'managed with the same exit rule real trades use (stop-loss / profit-milestone / '
-                 'EOD mark). Not real money. Includes VIX-gate-skip days, tagged separately. SPX is '
-                 'NOT currently traded -- its section is pure preparation for a future go-live decision.'),
+                 'EOD mark). Not real money. Includes VIX-gate-skip days, tagged separately. None of '
+                 'SPX/QQQ/IWM are currently traded -- each section is pure preparation for a future '
+                 'go-live decision. SPX reuses SPY\'s own GEX-wall direction scaled by price ratio '
+                 '(SPX literally is the index SPY tracks, so that\'s valid); QQQ and IWM instead get '
+                 'a FULLY INDEPENDENT GEX-wall computed from their own real options data, since '
+                 'they\'re different underlyings whose dealer positioning does not necessarily '
+                 'track SPY\'s -- added 2026-10-03.'),
         'SPY': {'by_variant': _by_variant([s for s in closed if s.get('ticker', 'SPY') == 'SPY'])},
         'SPX': {'by_variant': _by_variant([s for s in closed if s.get('ticker') == 'SPX'])},
+        'QQQ': {'by_variant': _by_variant([s for s in closed if s.get('ticker') == 'QQQ'])},
+        'IWM': {'by_variant': _by_variant([s for s in closed if s.get('ticker') == 'IWM'])},
     }
 
 
