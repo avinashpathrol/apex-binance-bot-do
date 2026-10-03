@@ -1583,14 +1583,12 @@ def send_health_ping(state: dict) -> None:
     sched_str = ' → '.join(mst for _, _, _, mst in SCHEDULES)
     status_icon = '✅' if vix_ok else '⚠️'
     goal_needed = 74.0 - today_pnl
-    signal_notify(
-        f"☀️ **SPY Bot Ready — {et_now().strftime('%a %b %-d')}**\n"
-        f"{status_icon} {vix_label} "
-        f"{'(signals active)' if vix_ok else f'(signals may pause — outside [{VIX_MIN}–{VIX_MAX}])'}\n"
-        f"📅 5 signals: {sched_str}\n"
-        f"💰 Today P&L: **${today_pnl:+.2f}** | Goal: ${goal_needed:.2f} more to reach $74 (~$100 CAD)\n"
-        f"🛑 Daily loss limit: ${DAILY_LOSS_LIMIT_USD} | Hard close: 3:30 PM ET"
-    )
+    # "SPY Bot Ready" morning push silenced 2026-10-03: manual trading off this
+    # signal stopped (Signal/My Trade/P&L removed from the dashboard), so a daily
+    # "here's today's goal" push against a P&L log that no longer grows is just
+    # noise. Signal generation itself is untouched -- still feeds GEX/shadow/
+    # moomoo's direction signal.
+    logger.info(f'[morning] {status_icon} {vix_label} | Today P&L: ${today_pnl:+.2f}')
 
 
 # ── Signal runner ─────────────────────────────────────────────────────────────
@@ -1621,18 +1619,10 @@ def run_signal(label: str, state: dict) -> dict:
     if vix is not None:
         logger.info(f'[{label}] VIX={vix:.1f}')
         if vix < VIX_MIN:
-            msg = (f"⏭️ **SPY Skipped — {label}**\n"
-                   f"VIX **{vix:.1f}** is below {VIX_MIN} — spreads pay near nothing. "
-                   f"Waiting for higher vol before selling premium.")
-            signal_notify(msg)
             logger.info(f'[{label}] Skipped — VIX too low ({vix:.1f} < {VIX_MIN})')
             _shadow_track_vix_skip(label, vix, state)
             return state
         if vix > VIX_MAX:
-            msg = (f"⏭️ **SPY Skipped — {label}**\n"
-                   f"VIX **{vix:.1f}** above {VIX_MAX} — 0DTE too volatile. "
-                   f"Max 1 contract if you trade manually today.")
-            signal_notify(msg)
             logger.info(f'[{label}] Skipped — VIX too high ({vix:.1f} > {VIX_MAX})')
             _shadow_track_vix_skip(label, vix, state)
             return state
@@ -1645,11 +1635,7 @@ def run_signal(label: str, state: dict) -> dict:
         if not state['fired'].get(loss_key):
             state['fired'][loss_key] = True
             save_state(state)
-            signal_notify(
-                f"🛑 **SPY Daily Loss Limit — Signals Paused**\n"
-                f"Today's P&L: **${today_pnl:+.2f}** (limit: ${DAILY_LOSS_LIMIT_USD} ≈ -$150 CAD)\n"
-                f"No more signals today. Bot resumes tomorrow at 9:25 AM ET."
-            )
+            logger.info(f'[{label}] Daily loss limit hit, signals paused (${today_pnl:+.2f})')
         logger.info(f'[{label}] Skipped — daily loss limit (${today_pnl:+.2f} ≤ ${DAILY_LOSS_LIMIT_USD})')
         return state
 
@@ -1675,7 +1661,9 @@ def run_signal(label: str, state: dict) -> dict:
         open_shadow_variants(sig, load_shadow_state())
     except Exception as e:
         logger.warning(f'shadow tracking on new signal failed (non-critical): {e}')
-    signal_notify(format_discord(sig))
+    # Spread-suggestion push to Discord/Telegram silenced 2026-10-03 -- nobody
+    # trades manually off this signal anymore. sig itself is still saved/
+    # returned below for GEX/shadow/moomoo, only the notification is gone.
 
     s = sig['suggested']
     logger.info(f'[{label}] {sig["direction"]} ${s["short_strike"]:.0f}/${s["long_strike"]:.0f} credit ${s["net_credit"]:.2f}')
