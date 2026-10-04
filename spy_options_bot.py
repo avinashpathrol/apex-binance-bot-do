@@ -2853,6 +2853,184 @@ def write_ic_dashboard():
     except Exception as e:
         logger.warning(f'write_ic_dashboard: {e}')
 
+
+# ── Iron condor research on single-name high-IV tickers (NVDA, TSLA) ───────────
+# User request 2026-10-04: SPY's condor runs one fixed ticker at one fixed delta
+# (0.16). This tests whether richer premium on higher-IV single names is worth
+# the extra single-stock risk, AND which delta tier works best on each --
+# combines the IC engine (ic_build_condor, full condor not a single spread)
+# with the delta-tier pattern above (multiple tickers x multiple deltas,
+# isolating one variable at a time). Checked before building: NVDA ATM IV ~23%
+# vs SPY's ~9% (premium ~1.8x), TSLA ~31% (premium ~3.7x) -- both have
+# Mon/Wed/Fri 0DTE-equivalent expiries (not daily like SPY, so naturally fewer
+# trading days -- not a bug). MSTR deliberately excluded: weekly-only expiries
+# make its premium not apples-to-apples with true 0DTE.
+#
+# PAPER/RESEARCH ONLY: separate state file, never calls any real-order path,
+# zero shared state with the real moomoo engine or any other research module.
+IC_TIER_TICKERS    = {'NVDA': 'US.NVDA', 'TSLA': 'US.TSLA'}
+IC_TIER_STATE_FILE     = os.path.join(WEB_ROOT, 'spym_ic_tier_state.json')
+IC_TIER_DASHBOARD_FILE = os.path.join(WEB_ROOT, 'data_ic_tier_research.json')
+
+
+def load_ic_tier_state() -> dict:
+    try:
+        with open(IC_TIER_STATE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_ic_tier_state(st: dict):
+    try:
+        with open(IC_TIER_STATE_FILE, 'w') as f:
+            json.dump(st, f, default=str)
+    except Exception as e:
+        logger.warning(f'save_ic_tier_state: {e}')
+
+
+def _ic_tier_cell(state: dict, ticker: str, tier: str) -> dict:
+    return state.setdefault(ticker, {}).setdefault(tier, {'open_position': None, 'trades': [], 'last_skip': None})
+
+
+def ic_tier_open(state: dict, ticker: str, symbol: str, tier: str, target_delta: float):
+    cell = _ic_tier_cell(state, ticker, tier)
+    today = et_now().strftime('%Y-%m-%d')
+    if cell.get('last_entry_date') == today or cell.get('open_position'):
+        return
+
+    def skip(reason: str, detail: str):
+        cell['last_skip'] = {'date': today, 'at': datetime.now(timezone.utc).isoformat(), 'reason': reason, 'detail': detail}
+        save_ic_tier_state(state)
+    try:
+        spot = spym_get_spot(symbol)
+        if not spot:
+            skip('no_spot', 'could not fetch spot price'); return
+        expiry = spym_today_expiry(symbol)
+        if not expiry:
+            # expected most days -- NVDA/TSLA only list 0DTE-equivalent expiries Mon/Wed/Fri, not daily
+            skip('no_expiry', 'no same-day expiry today for this ticker'); return
+        gex = fetch_cboe_gex(expiry, spot, symbol=ticker)
+        if not gex:
+            skip('no_gex', 'no CBOE GEX data available this cycle for this ticker'); return
+        cell['last_entry_date'] = today   # mark attempted regardless of outcome, same once/day rule as SPY's condor
+        if gex.get('gex_regime') != 'positive':
+            skip('not_choppy', f'gex_regime={gex.get("gex_regime")} -- condor only trades positive-GEX (range-bound) days')
+            return
+        diag: dict = {}
+        condor = ic_build_condor(symbol, target_delta, diag=diag)
+        if not condor:
+            skip(diag.get('reason', 'no_condor'), diag.get('detail', 'could not build a qualifying condor this cycle'))
+            return
+        condor['gex_regime'] = gex.get('gex_regime')
+        condor['pin_strike'] = gex.get('pin_strike')
+        cell['open_position'] = condor
+        cell['last_skip'] = None
+        save_ic_tier_state(state)
+    except Exception as e:
+        logger.warning(f'ic_tier_open({ticker},{tier}): {e}')
+
+
+def ic_tier_monitor(state: dict, ticker: str, tier: str):
+    cell = _ic_tier_cell(state, ticker, tier)
+    pos = cell.get('open_position')
+    if not pos:
+        return
+    try:
+        put_q  = spym_get_combo_quote(pos['put_leg']['short_code'], pos['put_leg']['long_code'])
+        call_q = spym_get_combo_quote(pos['call_leg']['short_code'], pos['call_leg']['long_code'])
+        if not put_q or put_q['bid'] is None or not call_q or call_q['bid'] is None:
+            return
+        cost_to_close = round(-put_q['bid'] - call_q['bid'], 4)
+        pnl_per_share = pos['total_credit'] - cost_to_close
+        pct_pts = round((pnl_per_share / pos['total_credit']) * 100, 1) if pos['total_credit'] else 0.0
+
+        trail_trigger = False
+        if pct_pts >= SPYM_TRAIL_ACTIVATE_PCT * 100:
+            peak = max(pos.get('peak_pct_captured') or pct_pts, pct_pts)
+            pos['peak_pct_captured'] = peak
+            if peak - pct_pts >= SPYM_TRAIL_GIVEBACK_PCT * 100:
+                trail_trigger = True
+
+        now_et = et_now()
+        force_close_time = now_et.replace(hour=SPYM_FORCE_CLOSE_HOUR, minute=SPYM_FORCE_CLOSE_MINUTE, second=0, microsecond=0)
+        reason = None
+        if trail_trigger:
+            reason = 'trail_stop'
+        elif cost_to_close >= pos['total_credit'] * SPYM_STOP_LOSS_MULT:
+            reason = 'stop_loss'
+        elif now_et >= force_close_time:
+            reason = 'force_close_eod'
+
+        if reason:
+            pnl = round(pnl_per_share * 100, 2)
+            cell.setdefault('trades', []).append({
+                **pos, 'closed_at': datetime.now(timezone.utc).isoformat(),
+                'cost_to_close': cost_to_close, 'pnl': pnl, 'win': pnl > 0,
+                'pct_of_max_captured': pct_pts, 'close_reason': reason,
+            })
+            cell['open_position'] = None
+        save_ic_tier_state(state)
+    except Exception as e:
+        logger.warning(f'ic_tier_monitor({ticker},{tier}): {e}')
+
+
+def run_ic_tier_cycle():
+    """Main-loop entry point, same cadence as the SPY condor / delta-tier cycles.
+    2 tickers x 3 deltas = up to 6 parallel paper condors, each opening at most
+    once/day; zero real orders."""
+    try:
+        state = load_ic_tier_state()
+        for ticker, symbol in IC_TIER_TICKERS.items():
+            for tier, target_delta in DELTA_TIERS.items():
+                cell = _ic_tier_cell(state, ticker, tier)
+                if cell.get('open_position'):
+                    ic_tier_monitor(state, ticker, tier)
+                else:
+                    ic_tier_open(state, ticker, symbol, tier, target_delta)
+    except Exception as e:
+        logger.warning(f'run_ic_tier_cycle: {e}')
+    write_ic_tier_dashboard()   # unconditional -- UI should never 404 waiting for market hours
+
+
+def summarize_ic_tier() -> dict:
+    state = load_ic_tier_state()
+    out = {'note': ('PAPER/RESEARCH ONLY, never traded. Full iron condors (both wings) on NVDA and '
+                     'TSLA across the same 3 delta tiers as the SPY delta-tier research, isolating '
+                     'ticker and delta as the only variables -- same trail/stop-loss/force-close '
+                     'rules as the SPY condor. Both tickers only have 0DTE-equivalent expiries on '
+                     'Mon/Wed/Fri (not daily like SPY), so fewer trading days than SPY sections is '
+                     'expected, not a bug. Added 2026-10-04 per user request to see if richer '
+                     'single-name premium (NVDA ATM IV ~23%, TSLA ~31%, vs SPY ~9%) is worth the '
+                     'extra single-stock risk, and which delta tier works best on each.')}
+    for ticker in IC_TIER_TICKERS:
+        out[ticker] = {}
+        for tier in DELTA_TIERS:
+            trades = state.get(ticker, {}).get(tier, {}).get('trades', [])
+            n = len(trades)
+            wins = sum(1 for t in trades if t.get('win'))
+            out[ticker][tier] = {
+                'target_delta': DELTA_TIERS[tier],
+                'total_closed_trades': n, 'wins': wins,
+                'win_rate': round(wins / n * 100, 1) if n else 0,
+                'net_pnl': round(sum(t.get('pnl', 0) for t in trades), 2),
+                'avg_combined_credit': round(sum(t.get('total_credit', 0) for t in trades) / n, 4) if n else 0,
+                'last_skip': state.get(ticker, {}).get(tier, {}).get('last_skip'),
+                'open_position': state.get(ticker, {}).get(tier, {}).get('open_position'),
+                'recent_trades': trades[-10:][::-1],
+            }
+    return out
+
+
+def write_ic_tier_dashboard():
+    try:
+        payload = summarize_ic_tier()
+        payload['generated_at'] = datetime.now(timezone.utc).isoformat()
+        with open(IC_TIER_DASHBOARD_FILE, 'w') as f:
+            json.dump(payload, f, indent=2, default=str)
+    except Exception as e:
+        logger.warning(f'write_ic_tier_dashboard: {e}')
+
 # ── Exit-rule paper research (SPY, 0.18 delta, 3 exit schemes) ──────────────
 # User request 2026-10-03, following research on profit-taking rules (25%
 # flat close vs 50% flat close vs the real bot's 50%-activate/15pt-giveback
@@ -3978,6 +4156,10 @@ def main():
                         run_ic_cycle()
                     except Exception as e:
                         logger.warning(f'iron condor research tick failed (non-critical): {e}')
+                    try:
+                        run_ic_tier_cycle()
+                    except Exception as e:
+                        logger.warning(f'NVDA/TSLA iron condor research tick failed (non-critical): {e}')
                     try:
                         run_exit_tier_cycle()
                     except Exception as e:

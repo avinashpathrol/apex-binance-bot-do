@@ -540,6 +540,15 @@ body {
   </div>
 
   <div class="card rs-section">
+    <div class="rs-section-title">Iron Condor — NVDA / TSLA, 0.16 / 0.22 / 0.30</div>
+    <div class="rs-section-note">Same condor mechanics as SPY's, on higher-IV single names instead (NVDA ATM IV ~23%, TSLA ~31%, vs SPY ~9%) — richer premium, but single-stock risk. Both only have same-day-equivalent expiries Mon/Wed/Fri, so fewer trading days than SPY is expected.</div>
+    <div id="rs-ictier-body" aria-busy="true">
+      <div class="rs-group"><div class="s0-skel" style="height:12px;width:30%;margin-bottom:8px"></div><div class="rs-grid"><div class="s0-skel" style="height:58px"></div><div class="s0-skel" style="height:58px"></div><div class="s0-skel" style="height:58px"></div></div></div>
+      <div class="rs-group"><div class="s0-skel" style="height:12px;width:30%;margin-bottom:8px"></div><div class="rs-grid"><div class="s0-skel" style="height:58px"></div><div class="s0-skel" style="height:58px"></div><div class="s0-skel" style="height:58px"></div></div></div>
+    </div>
+  </div>
+
+  <div class="card rs-section">
     <div class="rs-section-title">Exit Rule — 25% / 50% / Current Trail</div>
     <div class="rs-section-note">One shared SPY entry per day (0.18&Delta;, same as live moomoo), tracked by 3 independent exit rules on the same price path — isolates only how you close, not what you enter.</div>
     <div id="rs-exit-body" aria-busy="true">
@@ -1408,15 +1417,17 @@ function renderSpy0dteTrades(trades) {
 async function loadResearch() {
   try {
     const fetchOne = url => fetch(url + '?t=' + Date.now(), {cache:'no-store'}).then(r => r.ok ? r.json() : null).catch(() => null);
-    const [shadow, delta, ic, exitT] = await Promise.all([
+    const [shadow, delta, ic, icTier, exitT] = await Promise.all([
       fetchOne('/data_shadow_research.json'),
       fetchOne('/data_delta_tier_research.json'),
       fetchOne('/data_iron_condor_research.json'),
+      fetchOne('/data_ic_tier_research.json'),
       fetchOne('/data_exit_tier_research.json'),
     ]);
     renderShadowResearch(shadow);
     renderDeltaTierResearch(delta);
     renderIronCondorResearch(ic);
+    renderIcTierResearch(icTier);
     renderExitTierResearch(exitT);
   } catch (e) {
     console.error('loadResearch failed', e);
@@ -1473,6 +1484,28 @@ function renderDeltaTierResearch(d) {
   el.removeAttribute('aria-busy');
   if (!d) { el.innerHTML = '<div class="s0-flat"><div class="sub">No data yet.</div></div>'; return; }
   const tickers = ['SPY', 'QQQ', 'IWM'];
+  const tiers = [['low', '0.16Δ'], ['mid', '0.22Δ'], ['high', '0.30Δ']];
+  let html = '';
+  for (const tk of tickers) {
+    const byTier = d[tk];
+    if (!byTier) continue;
+    let bestTier = null, bestPnl = -Infinity;
+    for (const [key] of tiers) {
+      const cell = byTier[key];
+      if (cell && cell.total_closed_trades > 0 && cell.net_pnl > bestPnl) { bestPnl = cell.net_pnl; bestTier = key; }
+    }
+    html += `<div class="rs-group"><div class="rs-group-label">${tk}</div><div class="rs-grid">`;
+    for (const [key, label] of tiers) html += rsCellHtml(label, byTier[key], key === bestTier && bestPnl > 0);
+    html += `</div></div>`;
+  }
+  el.innerHTML = html || '<div class="s0-flat"><div class="sub">No data yet.</div></div>';
+}
+
+function renderIcTierResearch(d) {
+  const el = document.getElementById('rs-ictier-body');
+  el.removeAttribute('aria-busy');
+  if (!d) { el.innerHTML = '<div class="s0-flat"><div class="sub">No data yet.</div></div>'; return; }
+  const tickers = ['NVDA', 'TSLA'];
   const tiers = [['low', '0.16Δ'], ['mid', '0.22Δ'], ['high', '0.30Δ']];
   let html = '';
   for (const tk of tickers) {
