@@ -1447,12 +1447,18 @@ function rsCellHtml(tierLabel, cell, isBest) {
   const pnl = cell.total_simulated_pnl_per_contract ?? cell.net_pnl ?? 0;
   const wr = cell.win_rate_pct ?? cell.win_rate ?? 0;
   const cls = pnl > 0 ? 'rs-positive' : (pnl < 0 ? 'rs-negative' : '');
+  // margin/credit only present on iron-condor cells (not plain delta-tier spreads) --
+  // shown so sizing is visible right alongside the P&L, not something you have to ask for
+  const sizing = (cell.avg_margin != null && n > 0)
+    ? `<div class="rs-cell-sub" style="margin-top:2px">avg credit $${cell.avg_combined_credit.toFixed(0)} &middot; margin $${cell.avg_margin.toFixed(0)}/contract</div>`
+    : '';
   return `
     <div class="rs-cell ${cls}">
       ${isBest ? '<div class="rs-cell-best">BEST</div>' : ''}
       <div class="rs-cell-tier">${tierLabel}</div>
       <div class="rs-cell-pnl">${rsMoney(pnl)}</div>
       <div class="rs-cell-sub">${wr}% WR &middot; n=${n}</div>
+      ${sizing}
     </div>
   `;
 }
@@ -1552,7 +1558,9 @@ function renderIronCondorResearch(d) {
     <div class="s0-metric"><div class="l">Trades</div><div class="v">${d.total_closed_trades || 0}</div></div>
     <div class="s0-metric"><div class="l">Win Rate</div><div class="v">${d.win_rate != null && d.total_closed_trades ? d.win_rate + '%' : '—'}</div></div>
     <div class="s0-metric"><div class="l">Net P&amp;L</div><div class="v" style="color:${(d.net_pnl || 0) >= 0 ? 'var(--green)' : 'var(--red)'}">${rsMoney(d.net_pnl)}</div></div>
-  </div>`;
+    <div class="s0-metric"><div class="l">Avg Margin/Contract</div><div class="v">${d.avg_margin ? '$' + d.avg_margin.toFixed(0) : '—'}</div></div>
+  </div>
+  <div style="font-size:11px;color:var(--muted);margin-top:6px">Always 1 contract, $${(d.spread_width || 1).toFixed(0)}-wide spreads. Margin = (width × 100) − combined credit, charged once per condor (not per side).</div>`;
 
   if (d.recent_trades && d.recent_trades.length) {
     html += '<div style="margin-top:12px">';
