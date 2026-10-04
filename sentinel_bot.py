@@ -900,6 +900,41 @@ REAL_OVERNIGHT_CFG = {
 REAL_STATE_FILE     = os.environ.get('SENTINEL_REAL_STATE_FILE', 'sentinel_real_state.json').strip()
 REAL_DASHBOARD_FILE = os.path.join(WEB_ROOT, 'data_sentinel_real.json')
 
+# Dashboard-driven exit controls (stop / take-profit / manual close), ported from Apex's
+# apply_mu_levels_request() / fetch_dashboard_config() / clear_flag() -- same mechanism,
+# same file (bot_config.json is a generic shared key/value store the frontend PUTs to and
+# any backend process reads), new keys namespaced "sentinel_<mu|mrvl>_..." so Apex's own
+# "futures_mu_..." keys are untouched. MU_LEVEL_MIN_GAP matches trading_bot_futures.py and
+# mu_levels.js exactly -- keep the three in sync if it ever changes.
+MU_LEVEL_MIN_GAP = 0.0005
+BOT_CONFIG_FILE  = os.path.join(WEB_ROOT, os.environ.get('BOT_CONFIG_FILE', 'bot_config.json').strip())
+
+
+def fetch_bot_config():
+    try:
+        with open(BOT_CONFIG_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def clear_bot_config_flag(flag_name):
+    try:
+        cfg = fetch_bot_config()
+        cfg[flag_name] = False
+        tmp = BOT_CONFIG_FILE + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(cfg, f, indent=2)
+        os.replace(tmp, BOT_CONFIG_FILE)
+    except Exception as e:
+        logger.warning('clear_bot_config_flag(%s) failed: %s', flag_name, e)
+
+
+def _net_at(pos, px):
+    """Net P&L (entry fee already paid + exit fee) if the long were closed at px."""
+    qty = pos.get('qty', 0.0)
+    return (px - pos['entry_price']) * qty - pos.get('entry_fee', 0.0) - qty * px * FEE_RATE
+
 
 def new_real_state():
     return {'version': 1, 'created_at': now_iso(),
@@ -977,9 +1012,46 @@ class RealOvernightEngine:
         pos = self.st['positions'].get(key)
         if pos:
             bid, _ask = self.feed.quote(sym)
-            if bid <= pos['sl_price']:
-                self._close(key, cfg, 'Stop Loss', now_utc, et, bid)
+            kk = key.lower()
+            # Dashboard exit controls (stop/take-profit/close), applied BEFORE the checks
+            # below so a change takes effect this very cycle -- mirrors Apex's
+            # run_overnight_strategy() ordering exactly.
+            bc = {}
+            try:
+                bc = fetch_bot_config()
+            except Exception as e:
+                logger.warning('[REAL:%s] dashboard config read failed (ignored): %s', key, e)
+            lv_req = bc.get('sentinel_%s_levels_request' % kk)
+            if lv_req:
+                try:
+                    self.apply_levels_request(key, cfg, lv_req, bid)
+                except Exception as e:
+                    logger.warning('[REAL:%s] exit-levels request failed (ignored): %s', key, e)
+                pos = self.st['positions'].get(key)
+                if not pos:
+                    return
+            if pos.get('sl_price') and bid <= pos['sl_price']:
+                reason = 'Custom Stop' if pos.get('sl_custom') else 'Stop Loss'
+                self._close(key, cfg, reason, now_utc, et, bid)
                 return
+            if pos.get('target_price') and bid >= pos['target_price']:
+                self._close(key, cfg, 'Target Hit', now_utc, et, bid)
+                return
+            if bc.get('sentinel_%s_close_requested' % kk):
+                req_at = bc.get('sentinel_%s_close_requested_at' % kk)
+                age = 999
+                try:
+                    if req_at:
+                        age = (now_utc - datetime.fromisoformat(req_at.replace('Z', '+00:00'))).total_seconds()
+                except Exception:
+                    pass
+                if age < 300:
+                    self.notify('📱 <b>Dashboard Close</b>\nClosing %s at market' % key)
+                    if self._close(key, cfg, 'Dashboard Close', now_utc, et, bid):
+                        clear_bot_config_flag('sentinel_%s_close_requested' % kk)
+                    return
+                else:
+                    clear_bot_config_flag('sentinel_%s_close_requested' % kk)
             reason = self._exit_reason(pos, et)
             if reason:
                 self._close(key, cfg, reason, now_utc, et, bid)
@@ -989,6 +1061,60 @@ class RealOvernightEngine:
             if self.st['last_entry_day'].get(key) == today:
                 return
             self._open(key, cfg, now_utc, et)
+
+    def apply_levels_request(self, key, cfg, req, price):
+        """Ported from trading_bot_futures.py's apply_mu_levels_request() -- same validation,
+        same two-sided (price or net-$) request shape, same safety rails: a stop can only be
+        tightened above the default (never loosened), both stop and target need a minimum gap
+        from the current price so they can't fire immediately, and a stale request (for a
+        position that already closed) is rejected rather than silently misapplied."""
+        pos = self.st['positions'].get(key)
+        if not pos:
+            clear_bot_config_flag('sentinel_%s_levels_request' % key.lower())
+            return
+        applied, rejected = [], []
+        try:
+            if req.get('for_opened_at') != pos.get('opened_at'):
+                rejected.append('ignored: the request was for a different position')
+            else:
+                default_sl = round(pos['entry_price'] * (1 - cfg['sl_pct']), 4)
+                if req.get('reset_stop'):
+                    pos['sl_price'] = default_sl
+                    pos.pop('sl_custom', None)
+                    applied.append('stop reset to the default $%.2f' % default_sl)
+                if req.get('stop') is not None:
+                    stop = float(req.get('stop') or 0)
+                    if stop <= default_sl:
+                        rejected.append('stop $%.2f is not above the default stop $%.2f' % (stop, default_sl))
+                    elif stop >= price * (1 - MU_LEVEL_MIN_GAP):
+                        rejected.append('stop $%.2f is at or above the current price $%.2f -- it would close '
+                                        'immediately (use Close instead)' % (stop, price))
+                    else:
+                        pos['sl_price'] = round(stop, 4)
+                        pos['sl_custom'] = True
+                        applied.append('stop set to $%.2f (about %+.2f USDT net if it fills there)' % (stop, _net_at(pos, stop)))
+                if req.get('clear_target'):
+                    if pos.pop('target_price', None) is not None:
+                        applied.append('take-profit target cleared')
+                if req.get('target') is not None:
+                    target = float(req.get('target') or 0)
+                    if target <= price * (1 + MU_LEVEL_MIN_GAP):
+                        rejected.append('target $%.2f is at or below the current price $%.2f -- it would close '
+                                        'immediately (use Close instead)' % (target, price))
+                    else:
+                        pos['target_price'] = round(target, 4)
+                        applied.append('take-profit set to $%.2f (about %+.2f USDT net)' % (target, _net_at(pos, target)))
+        except Exception as e:
+            rejected.append('error while applying: %s' % e)
+        msg = '; '.join(applied + rejected) or 'no change'
+        pos['levels_status'] = {'at': now_iso(), 'ok': bool(applied) and not rejected, 'msg': msg}
+        self.st['positions'][key] = pos
+        self.save()
+        logger.info('[REAL:%s] exit levels request: %s', key, msg)
+        self.notify(('🛡 <b>%s exit levels updated</b>\n' % key if not rejected else '⚠️ <b>%s exit levels request</b>\n' % key)
+                    + '\n'.join('• ' + m for m in applied + rejected))
+        clear_bot_config_flag('sentinel_%s_levels_request' % key.lower())
+        self.write_dashboard(datetime.now(timezone.utc))
 
     @staticmethod
     def _exit_reason(pos, et):
@@ -1035,7 +1161,7 @@ class RealOvernightEngine:
         sym = cfg['symbol']
         pos = self.st['positions'].get(key)
         if not pos:
-            return
+            return False
         try:
             pr = self.feed.position_risk(sym)
             step = self.feed.step_size(sym)
@@ -1044,7 +1170,7 @@ class RealOvernightEngine:
                 logger.warning('[REAL:%s] no exchange position found at close -- clearing local state', key)
                 self.st['positions'][key] = None
                 self.save()
-                return
+                return True
             resp = self.feed.market_order(sym, 'SELL', qty, reduce_only=True)
             actual_close = self.feed.fill_price(resp, hint_price)
             entry_price = pos['entry_price']
@@ -1064,10 +1190,12 @@ class RealOvernightEngine:
                         '✅ Gross: %+.4f | 💸 Fees: -%.4f\n\n<i>Executed by Sentinel.</i>'
                         % (emoji, net, key, reason, actual_close, entry_price, gross, total_fee))
             self.write_dashboard(now_utc)
+            return True
         except Exception as e:
             logger.error('[REAL:%s] close failed: %s', key, e)
             self.notify('❌ <b>REAL %s close FAILED</b>\n%s\n\nPosition may still be open on the '
                         'exchange -- check manually.' % (key, e))
+            return False
 
     def write_dashboard(self, now_utc):
         out = {'generated_at': now_iso(now_utc.timestamp()), 'real_money': True}
@@ -1088,7 +1216,13 @@ class RealOvernightEngine:
                 'base': key, 'symbol': cfg['symbol'], 'real_money': True,
                 'position': ({'direction': 'LONG', 'entry_price': pos['entry_price'], 'current_price': current_price,
                               'unrealized_pnl': unrealized_pnl, 'sl_price': pos['sl_price'], 'qty': pos['qty'],
-                              'leverage': pos.get('leverage'), 'opened_at': pos.get('opened_at')} if pos else None),
+                              'leverage': pos.get('leverage'), 'opened_at': pos.get('opened_at'),
+                              # exit-controls fields -- consumed by mu_levels.js, same contract as Apex's
+                              # data_overnight_mu.json (see trading_bot_futures.py write_overnight_dashboard())
+                              'sl_default': round(pos['entry_price'] * (1 - cfg['sl_pct']), 4),
+                              'sl_custom': bool(pos.get('sl_custom')), 'target_price': pos.get('target_price'),
+                              'entry_fee': pos.get('entry_fee'), 'fee_rate': FEE_RATE,
+                              'levels_status': pos.get('levels_status')} if pos else None),
                 'performance': {
                     'total': len(trades), 'wins': len(wins), 'losses': len(losses),
                     'win_rate': round(len(wins) / len(trades) * 100, 1) if trades else 0,

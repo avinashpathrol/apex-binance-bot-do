@@ -76,9 +76,11 @@ tr:last-child td{border-bottom:none}
 }
 .skel{border-radius:8px;background:linear-gradient(90deg,var(--card2) 25%,var(--border) 37%,var(--card2) 63%);background-size:400% 100%;animation:sentshimmer 1.4s ease infinite}
 @keyframes sentshimmer{0%{background-position:100% 0}100%{background-position:0 0}}
+.toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:#1c2130;border:1px solid var(--border2,var(--border));padding:10px 18px;border-radius:10px;font-size:13px;display:none;z-index:99;max-width:90vw}
 </style>
 </head>
 <body>
+<div class="toast" id="toast"></div>
 <div class="wrap">
 <div id="header">
   <div class="hdr-top">
@@ -111,8 +113,10 @@ tr:last-child td{border-bottom:none}
 </div>
 </div>
 
+<script src="mu_levels.js?v=3" defer></script>
 <script>
 const SD = '/data_sentinel.json', REALD = '/data_sentinel_real.json';
+const CONFIG_API = '/bot_config.json';
 // net avg per night after fees+funding, 2 years of stock data (2026-09-20 backtest) -- reference only
 const BACKTEST = {SNDK: 0.42, WDC: 0.22, LITE: 0.35, MRVL: 0.23, CRDO: 0.36, MU: 0.24};
 let S = null, MU = null, MRVL_REAL = null, tab = 'ALL', calY, calM;
@@ -129,6 +133,65 @@ const ago = iso => { if (!iso) return '—'; const s = (Date.now() - new Date(is
 const et = iso => iso ? new Date(iso).toLocaleString('en-US', {timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'}) + ' ET' : '—';
 
 async function getJSON(u) { const r = await fetch(u + '?t=' + Date.now(), {cache: 'no-store'}); if (!r.ok) throw new Error(u + ' ' + r.status); return r.json(); }
+
+// ── Auth + config writes (identical pattern to command.html / index.html) -- used by the
+// MU/MRVL exit controls (mu_levels.js) to set a stop / take-profit / manual close -------
+function getStoredAuth() { try { return localStorage.getItem('apex_dash_auth') || ''; } catch (e) { return ''; } }
+function setStoredAuth(v) { try { localStorage.setItem('apex_dash_auth', v); } catch (e) {} }
+async function authedFetch(url, options = {}) {
+  options.headers = Object.assign({}, options.headers);
+  let auth = getStoredAuth();
+  if (auth) options.headers['Authorization'] = 'Basic ' + auth;
+  let res = await fetch(url, options);
+  if (res.status === 401) {
+    const user = prompt('Dashboard login required — username:', 'apex');
+    if (user === null) return res;
+    const pass = prompt('Password:');
+    if (pass === null) return res;
+    auth = btoa(user + ':' + pass);
+    options.headers['Authorization'] = 'Basic ' + auth;
+    res = await fetch(url, options);
+    if (res.ok) setStoredAuth(auth);
+  }
+  return res;
+}
+async function writeConfig(patch) {
+  const r = await fetch(CONFIG_API + '?t=' + Date.now(), {cache: 'no-store'});
+  const cur = r.ok ? await r.json() : {};
+  const up = Object.assign({}, cur, patch, {updated_at: new Date().toISOString()});
+  const wr = await authedFetch(CONFIG_API, {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(up, null, 2)});
+  if (!wr.ok) throw new Error('Server ' + wr.status);
+}
+async function closeReal(key) {
+  const d = key === 'MU' ? MU : MRVL_REAL;
+  if (!d || !d.position) return;
+  if (!confirm('Close ' + key + ' overnight ' + d.position.direction + ' at market?')) return;
+  try {
+    const field = 'sentinel_' + key.toLowerCase() + '_close_requested';
+    await writeConfig({[field]: true, [field + '_at']: new Date().toISOString()});
+    toast('✅ Close sent — executes within 60s');
+  } catch (e) { toast('⚠️ Failed: ' + e.message); }
+}
+// MU/MRVL exit controls -- real capital, same rails as mu_levels.js already enforces for Apex
+// (stop can only tighten, min gap from current price, stale requests rejected). getData()
+// flattens the position sub-object + sets position:'LONG' since mu_levels.js's own contract
+// checks d.position === 'LONG' as a plain field (matches Apex's data_overnight_mu.json shape).
+const realExitCtl = {};
+function mountRealExit(key) {
+  if (!window.MuLevels) return;
+  const el = document.getElementById('real-exit-' + key);
+  if (!el) return;
+  if (!realExitCtl[key]) {
+    realExitCtl[key] = MuLevels.mount(el, {
+      getData: () => { const d = key === 'MU' ? MU : MRVL_REAL; return (d && d.position) ? Object.assign({}, d.position, {position: 'LONG'}) : null; },
+      send: writeConfig, toast: m => toast(m), confirm: m => confirm(m), closeNow: () => closeReal(key),
+      levelsField: 'sentinel_' + key.toLowerCase() + '_levels_request',
+      onSent: () => [3000, 9000, 20000].forEach(ms => setTimeout(loadAll, ms)),
+    });
+  }
+  realExitCtl[key].update();
+}
+function toast(msg, dur = 2600) { const t = document.getElementById('toast'); if (!t) return; t.textContent = msg; t.style.display = 'block'; setTimeout(() => t.style.display = 'none', dur); }
 
 async function loadAll() {
   try {
@@ -171,20 +234,22 @@ function render() {
   let h = '';
   if (tab === 'MU') {
     h += realCard(MU, 'MU', 'Micron Technology');
+    h += calendarCard();
   } else if (tab === 'MRVLUSDT') {
     // MRVL migrated to real trading 2026-10-03 -- primary content is now its real
-    // track record, same as MU. Its PAPER validation history (the run that justified
-    // going live: 3 trades, 100% WR, +$238.51) stays visible below as a clearly
-    // separate, dated reference -- never merged into the real numbers above it.
+    // track record, same as MU (including the same monthly calendar, sliders and
+    // all). Its PAPER validation history (the run that justified going live: 3
+    // trades, 100% WR, +$238.51) stays visible below as a clearly separate, dated
+    // reference -- never merged into the real numbers or calendar above it.
     h += realCard(MRVL_REAL, 'MRVL', 'Marvell');
+    h += calendarCard();
     const paperTrades_ = (S.symbols['MRVLUSDT'] || {trades: []}).trades;
     if (paperTrades_.length) {
       h += `<div class="card"><div class="card-title">Paper validation history <span class="mut" style="font-weight:500;font-size:11px">(pre-launch reference, not live)</span></div>`;
-      h += `<div class="note">${paperTrades_.length} paper trades before real trading started -- this is what justified going live, kept here for reference only. Not part of the real performance above.</div>`;
+      h += `<div class="note">${paperTrades_.length} paper trades before real trading started -- this is what justified going live, kept here for reference only. Not part of the real performance or calendar above.</div>`;
       h += `</div>`;
       h += posCard('MRVLUSDT');
       h += perfCard();
-      h += calendarCard();
       h += tradesCard();
     }
   } else {
@@ -198,13 +263,12 @@ function render() {
   h += rulesCard();
   document.getElementById('content').innerHTML = h;
   buildCalendar();
+  if (tab === 'MU') mountRealExit('MU');
+  if (tab === 'MRVLUSDT') mountRealExit('MRVL');
 }
 
 function setTab(k) { tab = k; render(); }
 
-// MU -- real money, read-only, executed by Apex's trading_bot_futures.py, copied in via
-// Sentinel's own write_dashboard() (data_overnight_mu.json). Fully separate render path
-// from the paper tickers below so nothing about their tested logic is touched.
 // Generic real-money card -- MU and MRVL both execute through RealOvernightEngine in
 // sentinel_bot.py now (migrated 2026-10-03, "separation of concerns, one bot one
 // strategy"). Real orders ARE placed for these two -- see the module docstring in
@@ -227,10 +291,12 @@ function realCard(data, key, name) {
   } else {
     body = `<div class="note" style="margin-top:10px">No open position. Enters ~3:55 PM ET, exits ~9:28 AM ET next session.</div>`;
   }
+  const exitCtl = p ? `<div class="card" id="real-exit-${key}"></div>` : '';
   const perf = data.performance || {};
   const trades = data.trades || [];
   const rows = trades.slice(0, 40).map(t => `<tr><td>${esc((t.closed_at || '').slice(0, 10))}</td><td>${usd(t.entry_price)} → ${usd(t.exit_price)}</td><td class="${cls(t.net)}">${pnl(t.net)}</td><td class="mut">${esc(t.reason || '')}</td></tr>`).join('');
   return `<div class="card"><div class="card-title">${key} <span style="font-size:10px;font-weight:800;padding:2px 8px;border-radius:10px;background:rgba(245,158,11,.22);color:#f59e0b;margin-left:6px">REAL MONEY</span></div>${head}${body}</div>
+    ${exitCtl}
     <div class="card"><div class="card-title">Performance — ${key} (real)</div><div class="stats-row">
       <div class="stat"><div class="num">${perf.total || 0}</div><div class="lbl">Trades</div></div>
       <div class="stat"><div class="num">${num(perf.win_rate, 0)}%</div><div class="lbl">Win rate</div></div>
@@ -304,7 +370,8 @@ function compareCard() {
 }
 
 function calendarCard() {
-  return `<div class="card"><div class="card-title">Daily paper P&amp;L</div>
+  const title = (tab === 'MU' || tab === 'MRVLUSDT') ? 'Daily P&amp;L (real)' : 'Daily paper P&amp;L';
+  return `<div class="card"><div class="card-title">${title}</div>
     <div class="cal-nav"><button class="btn" onclick="calShift(-1)">‹</button><div id="cal-label" style="font-size:13px;font-weight:700"></div><button class="btn" onclick="calShift(1)">›</button></div>
     <div class="cal-grid" id="cal-dow"></div><div class="cal-grid" id="cal-grid" style="margin-top:4px"></div></div>`;
 }
@@ -313,7 +380,18 @@ function buildCalendar() {
   const g = document.getElementById('cal-grid'); if (!g) return;
   if (calY === undefined) { const n = new Date(); calY = n.getFullYear(); calM = n.getMonth(); }
   const daily = {};
-  paperTrades(tab).forEach(t => { if (t.exit_day) daily[t.exit_day] = (daily[t.exit_day] || 0) + t.net; });
+  // Real tabs (MU/MRVL) key by closed_at's date (real trades have no exit_day field);
+  // every other tab keeps the existing paper behavior, keyed by exit_day.
+  if (tab === 'MU' || tab === 'MRVLUSDT') {
+    const real = tab === 'MU' ? MU : MRVL_REAL;
+    (real && real.trades ? real.trades : []).forEach(t => {
+      if (!t.closed_at) return;
+      const key = t.closed_at.slice(0, 10);
+      daily[key] = (daily[key] || 0) + t.net;
+    });
+  } else {
+    paperTrades(tab).forEach(t => { if (t.exit_day) daily[t.exit_day] = (daily[t.exit_day] || 0) + t.net; });
+  }
   const names = ['January','February','March','April','May','June','July','August','September','October','November','December'];
   document.getElementById('cal-label').textContent = names[calM] + ' ' + calY;
   document.getElementById('cal-dow').innerHTML = ['S','M','T','W','T','F','S'].map(d => `<div class="cal-dow">${d}</div>`).join('');

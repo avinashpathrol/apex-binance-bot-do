@@ -153,7 +153,9 @@
       if (busy || !open()) return;
       busy = true;
       req.for_opened_at = x.opened_at; req.requested_at = new Date().toISOString();
-      Promise.resolve(opts.send({ futures_mu_levels_request: req })).then(function () {
+      var field = opts.levelsField || 'futures_mu_levels_request';
+      var patch = {}; patch[field] = req;
+      Promise.resolve(opts.send(patch)).then(function () {
         opts.toast(okMsg || 'Sent -- the bot applies it within about a minute');
         if (opts.onSent) opts.onSent();
       }).catch(function (e) { opts.toast('Failed: ' + (e && e.message || e)); }).then(function () { busy = false; });
