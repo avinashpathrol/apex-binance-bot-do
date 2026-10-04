@@ -909,6 +909,16 @@ REAL_DASHBOARD_FILE = os.path.join(WEB_ROOT, 'data_sentinel_real.json')
 MU_LEVEL_MIN_GAP = 0.0005
 BOT_CONFIG_FILE  = os.path.join(WEB_ROOT, os.environ.get('BOT_CONFIG_FILE', 'bot_config.json').strip())
 
+# Profit-protection trail (user request 2026-10-04, backtested against the real 26-trade MU
+# history before building: of 26 overnight holds, 3 peaked above $40 unrealized and gave most
+# or all of it back by the fixed morning exit -- worst case Sep 30 peaked +$113 and closed
+# -$61. Continuous trail: once peak net first crosses TRAIL_ACTIVATE_NET the stop locks to
+# +$40, then keeps following the peak at a fixed TRAIL_GIVEBACK_NET below it, only ever moving
+# up (never chases price back down). Same $ thresholds for MU and MRVL since both run the same
+# $100-margin-at-max-leverage sizing.
+TRAIL_ACTIVATE_NET  = 40.0
+TRAIL_GIVEBACK_NET  = 15.0
+
 
 def fetch_bot_config():
     try:
@@ -934,6 +944,12 @@ def _net_at(pos, px):
     """Net P&L (entry fee already paid + exit fee) if the long were closed at px."""
     qty = pos.get('qty', 0.0)
     return (px - pos['entry_price']) * qty - pos.get('entry_fee', 0.0) - qty * px * FEE_RATE
+
+
+def _price_for_net(pos, target_net):
+    """Inverse of _net_at: the price that nets exactly target_net (exit fee included)."""
+    qty = pos.get('qty', 0.0)
+    return (target_net + pos['entry_price'] * qty + pos.get('entry_fee', 0.0)) / (qty * (1 - FEE_RATE))
 
 
 def new_real_state():
@@ -1030,8 +1046,29 @@ class RealOvernightEngine:
                 pos = self.st['positions'].get(key)
                 if not pos:
                     return
+            # Profit-protection trail (revised per user clarification 2026-10-04: continuous,
+            # not a one-time ratchet -- "after 40, stop should move with trail"). Tracks the
+            # running peak price since entry; once peak unrealized net first crosses the
+            # activation threshold, the stop locks to +$40 immediately, then on every later
+            # cycle keeps following the peak at a fixed $15 give-back, only ever moving up.
+            # Sep 30 reconstruction: peaked +$113 net, actually closed -$61 (fixed exit, no
+            # protection) -- this design would have trailed the stop up to roughly +$98 instead.
+            pos['high_bid'] = max(pos.get('high_bid', bid), bid)
+            peak_net = _net_at(pos, pos['high_bid'])
+            if peak_net >= TRAIL_ACTIVATE_NET:
+                just_armed = not pos.get('trail_armed')
+                pos['trail_armed'] = True
+                target_net = max(TRAIL_ACTIVATE_NET, peak_net - TRAIL_GIVEBACK_NET)
+                trail_price = round(_price_for_net(pos, target_net), 4)
+                if trail_price > pos.get('sl_price', 0):
+                    pos['sl_price'] = trail_price
+                    self.save()
+                    logger.info('[REAL:%s] trail -- stop raised to $%.4f (locks +$%.2f, peak +$%.2f)', key, trail_price, target_net, peak_net)
+                    if just_armed:
+                        self.notify('🔒 <b>%s trail armed</b>\nPeak hit +$%.0f unrealized -- stop now trails $%.0f below the peak '
+                                    '(locked in at least +$%.2f net right now).' % (key, TRAIL_ACTIVATE_NET, TRAIL_GIVEBACK_NET, target_net))
             if pos.get('sl_price') and bid <= pos['sl_price']:
-                reason = 'Custom Stop' if pos.get('sl_custom') else 'Stop Loss'
+                reason = 'Trail Stop' if pos.get('trail_armed') else ('Custom Stop' if pos.get('sl_custom') else 'Stop Loss')
                 self._close(key, cfg, reason, now_utc, et, bid)
                 return
             if pos.get('target_price') and bid >= pos['target_price']:
