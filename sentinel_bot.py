@@ -917,7 +917,7 @@ BOT_CONFIG_FILE  = os.path.join(WEB_ROOT, os.environ.get('BOT_CONFIG_FILE', 'bot
 # up (never chases price back down). Same $ thresholds for MU and MRVL since both run the same
 # $100-margin-at-max-leverage sizing.
 TRAIL_ACTIVATE_NET  = 40.0
-TRAIL_GIVEBACK_NET  = 15.0
+TRAIL_GIVEBACK_NET  = 8.0
 
 
 def fetch_bot_config():
