@@ -1,27 +1,37 @@
 #!/usr/bin/env python3
 """
-Sentinel -- overnight-hold PAPER trader for SNDK / WDC / LITE (Binance TradFi perps).
+Sentinel -- overnight-hold trader. TWO separate engines in this one process:
 
-Same rules the live MU overnight strategy uses in trading_bot_futures.py:
+1. REAL money: MU and MRVL (class RealOvernightEngine, added 2026-10-03).
+   Places actual Binance orders -- migrated from trading_bot_futures.py for MU
+   ("separation of concerns, one bot one strategy"); MRVL starts here directly.
+   Own state file (sentinel_real_state.json), own signed-POST allow-list
+   (BinanceFeed.SIGNED_POST_PATHS: /fapi/v1/leverage, /fapi/v1/order). MU's
+   trade history was carried forward from Apex on migration so its win-rate/
+   P&L track record reads as one continuous series, not a restart.
+
+2. PAPER only: SNDK / WDC / LITE / CRDO (class Sentinel, the original engine).
+   Fills are simulated by walking the live order book -- no real orders, ever,
+   for these. The only signed calls this half makes are GETs
+   (BinanceFeed.SIGNED_PATHS: leverageBracket / positionRisk / order-status).
+
+Both share the same rules as the live MU overnight strategy always has:
   * enter LONG at market 15:55-16:05 ET on US trading days (never on holidays;
     early-close days use close-5min instead of 15:55)
   * hard stop 3.5% below the fill, checked in software every cycle (~30s) --
-    exactly like MU: there is no exchange-side stop order
+    no exchange-side stop order
   * exit at market 9:28-9:40 ET on the next trading day (holds through weekends
     and holidays); no trailing stop
   * fees 0.05% taker per side; real funding paid/received while the position is open
 
 Sized at $100 margin x the MAXIMUM leverage Binance allows for that symbol at that
-size (read from /fapi/v1/leverageBracket, re-checked daily).
+size (read from /fapi/v1/leverageBracket, re-checked daily) -- both real and paper.
 
-PAPER ONLY. This process contains no order-placement code at all. The only signed
-request it can make is a GET of /fapi/v1/leverageBracket (enforced in
-BinanceFeed.signed_get). Fills are simulated by walking the live order book, so thin
-symbols pay realistic slippage. Liquidation is NOT modeled: like MU's live cross-margin
-account, P&L is simply notional x return (a stop-out can lose more than the $100 stake).
+Liquidation is NOT modeled in either engine: like MU's live cross-margin account,
+P&L is simply notional x return (a stop-out can lose more than the $100 stake).
 
-Standalone: does not import trading_bot_futures.py. Replaces the old NBIS/RKLB
-price-action "Sentinel" (retired 2026-09-20).
+Standalone: does not import trading_bot_futures.py. The paper half replaces the
+old NBIS/RKLB price-action "Sentinel" (retired 2026-09-20).
 """
 
 import json
@@ -264,7 +274,12 @@ class RateLimited(Exception):
 class BinanceFeed:
     PUBLIC_PATHS = {'/fapi/v1/ticker/bookTicker', '/fapi/v1/depth', '/fapi/v1/exchangeInfo', '/fapi/v1/fundingRate',
                     '/fapi/v1/premiumIndex'}
-    SIGNED_PATHS = {'/fapi/v1/leverageBracket'}          # the ONLY signed call this bot may ever make
+    # Real trading added 2026-10-03 (user request -- MU + MRVL migrating from Apex's
+    # trading_bot_futures.py, "separation of concerns, one bot one strategy"). Explicit
+    # allow-lists stay the governing safety fence, same pattern as before, just widened to
+    # what the real engine actually needs -- never an open-ended "any signed call allowed."
+    SIGNED_PATHS      = {'/fapi/v1/leverageBracket', '/fapi/v2/positionRisk', '/fapi/v1/order'}   # signed GETs
+    SIGNED_POST_PATHS = {'/fapi/v1/leverage', '/fapi/v1/order'}                                    # signed POSTs
 
     def __init__(self):
         self.s = requests.Session()
@@ -306,6 +321,112 @@ class BinanceFeed:
         q = urllib.parse.urlencode(p)
         sig = hmac.new(BINANCE_API_SECRET.encode(), q.encode(), hashlib.sha256).hexdigest()
         return self._get('%s%s?%s&signature=%s' % (FUTURES_BASE_URL, path, q, sig), None, {'X-MBX-APIKEY': BINANCE_API_KEY})
+
+    def _post(self, url, params, headers):
+        last = None
+        for attempt in range(3):
+            try:
+                r = self.s.post(url, params=params, headers=headers, timeout=15)
+                if r.status_code in (418, 429):
+                    raise RateLimited('HTTP %d from Binance (Retry-After %s)' % (r.status_code, r.headers.get('Retry-After')))
+                if r.status_code >= 500:
+                    last = RuntimeError('HTTP %d' % r.status_code)
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                if not r.ok:
+                    logger.error('SIGNED POST %s | %s | %s', url, r.status_code, r.text[:300])
+                    raise RuntimeError('HTTP %d: %s' % (r.status_code, r.text[:300]))
+                return r.json()
+            except (requests.ConnectionError, requests.Timeout) as e:
+                last = e
+                time.sleep(0.5 * (attempt + 1))
+        raise RuntimeError('request failed: %s' % (last,))
+
+    def signed_post(self, path, params=None):
+        """Real order-placement / leverage-set calls -- allow-listed, same pattern as
+        signed_get(). Added 2026-10-03 for MU/MRVL real trading (see module docstring)."""
+        if path not in self.SIGNED_POST_PATHS:
+            raise PermissionError('signed POST path not allow-listed: %s' % path)
+        if not (BINANCE_API_KEY and BINANCE_API_SECRET):
+            raise RuntimeError('no Binance API key configured')
+        p = dict(params or {})
+        p['timestamp'] = int(time.time() * 1000)
+        p['recvWindow'] = 10000
+        q = urllib.parse.urlencode(p)
+        sig = hmac.new(BINANCE_API_SECRET.encode(), q.encode(), hashlib.sha256).hexdigest()
+        return self._post('%s%s?%s&signature=%s' % (FUTURES_BASE_URL, path, q, sig), None, {'X-MBX-APIKEY': BINANCE_API_KEY})
+
+    # ---- real trading (MU/MRVL) -- places actual Binance orders ----
+    def set_leverage(self, sym, lev):
+        self.signed_post('/fapi/v1/leverage', {'symbol': sym, 'leverage': int(lev)})
+
+    def position_risk(self, sym):
+        rows = self.signed_get('/fapi/v2/positionRisk', {'symbol': sym})
+        for p in rows:
+            if p['symbol'] == sym:
+                amt = float(p['positionAmt'])
+                return {'qty': abs(amt), 'side': 'LONG' if amt > 1e-8 else None,
+                        'entry_price': float(p.get('entryPrice') or 0), 'unrealized_pnl': float(p.get('unRealizedProfit') or 0)}
+        return {'qty': 0.0, 'side': None, 'entry_price': 0.0, 'unrealized_pnl': 0.0}
+
+    def market_order(self, sym, side, qty, reduce_only=False):
+        """One-way position mode (account-wide setting, same as Apex's MUUSDT/MRVL config)
+        -- no positionSide param, reduceOnly on closes only. Mirrors
+        trading_bot_futures.py's futures_market_order() exactly."""
+        params = {'symbol': sym, 'side': side, 'type': 'MARKET', 'quantity': str(qty)}
+        if reduce_only:
+            params['reduceOnly'] = 'true'
+        resp = self.signed_post('/fapi/v1/order', params)
+        return self._with_actual_fill(sym, resp)
+
+    def _with_actual_fill(self, sym, resp):
+        """Market-order responses often carry avgPrice=0 -- look the order back up to get
+        the real fill. Mirrors trading_bot_futures.py's _with_actual_fill() exactly (found
+        there 2026-09-19: recorded price vs real fill differed by ~$5 on MU once).
+        Fail-safe: the order is already placed by the time this runs, so any problem here
+        just returns the original response unchanged, never raises."""
+        try:
+            if float(resp.get('avgPrice') or 0) > 0 or float(resp.get('cumQuote') or 0) > 0:
+                return resp
+            order_id = resp.get('orderId')
+            if not order_id:
+                return resp
+            for attempt in range(4):
+                if attempt:
+                    time.sleep(0.25)
+                o = self.signed_get('/fapi/v1/order', {'symbol': sym, 'orderId': order_id})
+                if o.get('status') == 'FILLED' and float(o.get('avgPrice') or 0) > 0:
+                    merged = dict(resp)
+                    for k in ('avgPrice', 'executedQty', 'cumQuote', 'status'):
+                        if k in o:
+                            merged[k] = o[k]
+                    return merged
+            return resp
+        except Exception as e:
+            logger.warning('[%s] actual-fill lookup failed (using order response as-is): %s', sym, e)
+            return resp
+
+    @staticmethod
+    def fill_price(resp, fallback):
+        try:
+            avg = float(resp.get('avgPrice', 0))
+            if avg > 0:
+                return avg
+            cq, eq = float(resp.get('cumQuote', 0)), float(resp.get('executedQty', 0))
+            if cq > 0 and eq > 0:
+                return cq / eq
+        except Exception:
+            pass
+        return fallback
+
+    def step_size(self, sym):
+        filt = self.filters(sym)
+        return filt.get('step', 0.001)
+
+    @staticmethod
+    def round_step(qty, step):
+        precision = len(str(step).rstrip('0').split('.')[-1]) if '.' in str(step) else 0
+        return round(qty - (qty % step), precision)
 
     # ---- feed interface used by the engine ----
     def quote(self, sym):
@@ -720,39 +841,12 @@ class Sentinel:
             syms[sym] = {'base': meta['base'], 'name': meta['name'], 'note': meta['note'], 'stake': STAKE_USDT, 'leverage': lev,
                          'notional_target': round(STAKE_USDT * lev, 2) if lev else None, 'position': view,
                          'performance': self.perf(trades), 'trades': list(reversed(trades[-150:])), 'error': self.errors.get(sym)}
-        # MU (real money) -- read-only, copied from Apex's own live dashboard file for display
-        # here alongside the paper candidates. Sentinel never trades MU itself (no order-placement
-        # code exists in this process at all, by design -- see module docstring); the real
-        # trading_bot_futures.py / apexbot-futures service is untouched and keeps actually
-        # executing it. Added 2026-10-03 per user request so overnight-hold strategies can be
-        # compared in one place. Any failure here is silent and never affects Sentinel's own
-        # paper trading.
-        mu_real = None
-        try:
-            mu_path = os.path.join(WEB_ROOT, 'data_overnight_mu.json')
-            if os.path.exists(mu_path):
-                with open(mu_path) as f:
-                    mu_data = json.load(f)
-                mu_real = {
-                    'base': 'MU', 'name': 'Micron Technology', 'real_money': True,
-                    'note': 'REAL MONEY -- actually traded by Apex (trading_bot_futures.py), shown '
-                            'here read-only for comparison against the paper candidates.',
-                    'position': {
-                        'direction': mu_data.get('position'), 'entry_price': mu_data.get('entry_price'),
-                        'current_price': mu_data.get('current_price'), 'unrealized_pnl': mu_data.get('unrealized_pnl'),
-                        'sl_price': mu_data.get('sl_price'), 'qty': mu_data.get('qty'),
-                        'leverage': mu_data.get('leverage'), 'opened_at': mu_data.get('opened_at'),
-                    } if mu_data.get('position') else None,
-                    'performance': mu_data.get('performance'),
-                    'trades': list(reversed((mu_data.get('trades') or [])[-150:])),
-                }
-        except Exception as e:
-            logger.info('mu_real section skipped (non-critical): %s', e)
-
+        # NOTE: real MU/MRVL data lives in data_sentinel_real.json now (written by
+        # RealOvernightEngine.write_dashboard(), see bottom of this file) -- this payload
+        # covers only the paper candidates below. The dashboard frontend fetches both files.
         nxt = next_entry_utc(now_utc)
         payload = {
             'generated_at': now_iso(now_utc.timestamp()), 'mode': 'paper', 'live_orders': False,
-            'mu_real': mu_real,
             'rules': {'stake': STAKE_USDT, 'sl_pct': round(SL_PCT * 100, 4), 'fee_per_side_pct': round(FEE_RATE * 100, 4),
                       'entry': '15:55-16:05 ET (close-5min on early-close days), trading days only',
                       'exit': '9:28-9:40 ET next trading day at market', 'trail': None,
@@ -785,8 +879,230 @@ class Sentinel:
             return
         self.st['last_start_msg_ts'] = time.time()
         self.save()
-        self.notify('📝 <b>Sentinel started (PAPER only — no real orders)</b>\nOvernight hold, MU rules, $%d stake at max leverage:\n%s%s'
+        self.notify('📝 <b>Sentinel started — paper candidates below (PAPER, no real orders)</b>\nOvernight hold, MU rules, $%d stake at max leverage:\n%s%s'
                     % (STAKE_USDT, '\n'.join(lines), ('\nResuming open paper positions: ' + ', '.join(SYMBOLS[s]['base'] for s in held)) if held else ''))
+
+
+# ══ REAL trading: MU + MRVL (migrated from Apex 2026-10-03) ═══════════════════
+# Separation of concerns, user request: MU's real overnight-hold trading moves
+# here from trading_bot_futures.py (which gets a one-time auto-disable the
+# instant its current MU position next closes, see close_overnight_mu() there);
+# MRVL starts here directly, never lived in Apex. Fully independent of the
+# Sentinel/paper engine above: own state file, own cycle, zero shared mutable
+# state -- a bug here cannot corrupt the paper simulation and vice versa.
+# Leverage is looked up dynamically via feed.leverage() (same mechanism the
+# paper engine already uses for every symbol, re-checked daily) rather than
+# hardcoded, matching this file's existing "re-checked daily" philosophy.
+REAL_OVERNIGHT_CFG = {
+    'MU':   {'symbol': 'MUUSDT',   'amount': 100.0, 'sl_pct': 0.035},
+    'MRVL': {'symbol': 'MRVLUSDT', 'amount': 100.0, 'sl_pct': 0.035},
+}
+REAL_STATE_FILE     = os.environ.get('SENTINEL_REAL_STATE_FILE', 'sentinel_real_state.json').strip()
+REAL_DASHBOARD_FILE = os.path.join(WEB_ROOT, 'data_sentinel_real.json')
+
+
+def new_real_state():
+    return {'version': 1, 'created_at': now_iso(),
+            'positions': {k: None for k in REAL_OVERNIGHT_CFG},
+            'trades': {k: [] for k in REAL_OVERNIGHT_CFG},
+            'last_entry_day': {}}
+
+
+def load_real_state(path=None):
+    path = path or REAL_STATE_FILE
+    try:
+        with open(path) as f:
+            st = json.load(f)
+    except FileNotFoundError:
+        return new_real_state()
+    except Exception as e:
+        bad = '%s.corrupt.%d' % (path, int(time.time()))
+        try:
+            os.replace(path, bad)
+        except Exception:
+            pass
+        logger.error('real state file unreadable (%s) -- moved to %s and starting fresh', e, bad)
+        return new_real_state()
+    base = new_real_state()
+    for k, v in base.items():
+        st.setdefault(k, v)
+    for k in REAL_OVERNIGHT_CFG:
+        st['positions'].setdefault(k, None)
+        st['trades'].setdefault(k, [])
+    return st
+
+
+class RealOvernightEngine:
+    """Places actual Binance orders for MU and MRVL. Same rules as Apex's
+    trading_bot_futures.py OVERNIGHT_CFG (which this replaces for MU): enter
+    15:55-16:05 ET (close-5min window, Friday included for weekend hold,
+    never on a US holiday), hard stop 3.5% below fill checked every cycle
+    (software stop -- no exchange-side stop order, identical to Apex), exit
+    9:28-9:40 ET next trading day, no trailing stop. One-way position mode
+    (account-wide setting -- see BinanceFeed.market_order)."""
+
+    def __init__(self, feed, state, notify=send_telegram, state_path=None, write_files=True):
+        self.feed, self.st, self.notify = feed, state, notify
+        self.state_path = state_path or REAL_STATE_FILE
+        self.write_files = write_files
+        self.errors = {}
+        self._last_save = 0.0
+
+    def save(self):
+        if not self.write_files:
+            return
+        tmp = self.state_path + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(self.st, f)
+        os.replace(tmp, self.state_path)
+        self._last_save = time.time()
+
+    def cycle(self, now_utc):
+        et = et_from_utc(now_utc)
+        for key, cfg in REAL_OVERNIGHT_CFG.items():
+            try:
+                self._step(key, cfg, now_utc, et)
+                self.errors.pop(key, None)
+            except Exception as e:
+                self.errors[key] = '%s: %s' % (type(e).__name__, e)
+                logger.error('[REAL:%s] cycle error: %s', key, e)
+                if self.st['positions'].get(key):
+                    self.notify('⚠️ <b>REAL %s monitoring error</b>\n%s\nOpen position is NOT being checked '
+                                'this cycle -- investigate now.' % (key, e))
+        if time.time() - self._last_save >= 60:
+            self.save()
+
+    def _step(self, key, cfg, now_utc, et):
+        sym = cfg['symbol']
+        pos = self.st['positions'].get(key)
+        if pos:
+            bid, _ask = self.feed.quote(sym)
+            if bid <= pos['sl_price']:
+                self._close(key, cfg, 'Stop Loss', now_utc, et, bid)
+                return
+            reason = self._exit_reason(pos, et)
+            if reason:
+                self._close(key, cfg, reason, now_utc, et, bid)
+            return
+        today = et.date().isoformat()
+        if in_entry_window(et):
+            if self.st['last_entry_day'].get(key) == today:
+                return
+            self._open(key, cfg, now_utc, et)
+
+    @staticmethod
+    def _exit_reason(pos, et):
+        d = et.date()
+        entry_day = date(*[int(x) for x in pos['entry_day'].split('-')])
+        if not is_trading_day(d) or d <= entry_day or minute_of_day(et) < EXIT_START_MIN:
+            return None
+        return 'Market Open' if minute_of_day(et) <= EXIT_ONTIME_MIN else 'Late Exit'
+
+    def _open(self, key, cfg, now_utc, et):
+        sym, amount = cfg['symbol'], cfg['amount']
+        day = et.date().isoformat()
+        self.st['last_entry_day'][key] = day   # mark attempted regardless of outcome -- once/day, matches Apex
+        try:
+            lev = self.feed.leverage(sym, amount)
+            self.feed.set_leverage(sym, lev)
+            step = self.feed.step_size(sym)
+            price_now = self.feed.quote(sym)[1]   # ask -- conservative for sizing a BUY
+            qty = self.feed.round_step((amount * lev * 0.995) / price_now, step)
+            if qty < step:
+                logger.warning('[REAL:%s] quantity too small, skipping entry', key)
+                return
+            resp = self.feed.market_order(sym, 'BUY', qty)
+            actual_price = self.feed.fill_price(resp, price_now)
+            qty_filled = float(resp.get('executedQty') or 0) or qty
+            sl_price = round(actual_price * (1 - cfg['sl_pct']), 4)
+            self.st['positions'][key] = {
+                'entry_price': actual_price, 'qty': qty_filled,
+                'entry_fee': qty_filled * actual_price * FEE_RATE,
+                'sl_price': sl_price, 'leverage': lev, 'amount': amount,
+                'opened_at': now_iso(now_utc.timestamp()), 'entry_day': day,
+            }
+            self.save()
+            logger.info('🌙 [REAL:%s] OPEN %.4f @ $%.4f SL=$%.4f (%sx)', key, qty_filled, actual_price, sl_price, lev)
+            self.notify('🌙 <b>REAL — %s LONG OPEN (%sx)</b>\n\n💰 Entry: $%.4f\n💵 Collateral: $%.2f | Notional: $%.2f\n'
+                        '🛑 Stop Loss: $%.4f (3.5%%)\n⏰ Exit at market open ~9:28 AM ET\n\n<i>Executed by Sentinel.</i>'
+                        % (key, lev, actual_price, amount, amount * lev, sl_price))
+            self.write_dashboard(now_utc)
+        except Exception as e:
+            logger.error('[REAL:%s] open failed: %s', key, e)
+            self.notify('❌ <b>REAL %s open FAILED</b>\n%s' % (key, e))
+
+    def _close(self, key, cfg, reason, now_utc, et, hint_price):
+        sym = cfg['symbol']
+        pos = self.st['positions'].get(key)
+        if not pos:
+            return
+        try:
+            pr = self.feed.position_risk(sym)
+            step = self.feed.step_size(sym)
+            qty = self.feed.round_step(pr['qty'], step)
+            if qty < step:
+                logger.warning('[REAL:%s] no exchange position found at close -- clearing local state', key)
+                self.st['positions'][key] = None
+                self.save()
+                return
+            resp = self.feed.market_order(sym, 'SELL', qty, reduce_only=True)
+            actual_close = self.feed.fill_price(resp, hint_price)
+            entry_price = pos['entry_price']
+            total_fee = pos.get('entry_fee', 0.0) + qty * actual_close * FEE_RATE
+            gross = (actual_close - entry_price) * qty
+            net = gross - total_fee
+            self.st.setdefault('trades', {}).setdefault(key, []).append({
+                'opened_at': pos.get('opened_at'), 'closed_at': now_iso(now_utc.timestamp()),
+                'entry_price': entry_price, 'exit_price': actual_close, 'qty': qty,
+                'gross': round(gross, 4), 'fee': round(total_fee, 4), 'net': round(net, 4), 'reason': reason,
+            })
+            self.st['positions'][key] = None
+            self.save()
+            emoji = '🟢' if net >= 0 else '🔴'
+            logger.info('🌅 [REAL:%s] CLOSE @ $%.4f net=%+.4f reason=%s', key, actual_close, net, reason)
+            self.notify('%s $%+.2f\n🌅 <b>REAL — %s CLOSED (%s)</b>\n\n💰 Exit: $%.4f | Entry: $%.4f\n'
+                        '✅ Gross: %+.4f | 💸 Fees: -%.4f\n\n<i>Executed by Sentinel.</i>'
+                        % (emoji, net, key, reason, actual_close, entry_price, gross, total_fee))
+            self.write_dashboard(now_utc)
+        except Exception as e:
+            logger.error('[REAL:%s] close failed: %s', key, e)
+            self.notify('❌ <b>REAL %s close FAILED</b>\n%s\n\nPosition may still be open on the '
+                        'exchange -- check manually.' % (key, e))
+
+    def write_dashboard(self, now_utc):
+        out = {'generated_at': now_iso(now_utc.timestamp()), 'real_money': True}
+        for key, cfg in REAL_OVERNIGHT_CFG.items():
+            pos = self.st['positions'].get(key)
+            trades = self.st.get('trades', {}).get(key, [])
+            current_price = unrealized_pnl = None
+            if pos:
+                try:
+                    pr = self.feed.position_risk(cfg['symbol'])
+                    current_price = self.feed.quote(cfg['symbol'])[0]
+                    unrealized_pnl = pr.get('unrealized_pnl')
+                except Exception:
+                    pass
+            wins   = [t for t in trades if t.get('net', 0) > 0]
+            losses = [t for t in trades if t.get('net', 0) <= 0]
+            out[key] = {
+                'base': key, 'symbol': cfg['symbol'], 'real_money': True,
+                'position': ({'direction': 'LONG', 'entry_price': pos['entry_price'], 'current_price': current_price,
+                              'unrealized_pnl': unrealized_pnl, 'sl_price': pos['sl_price'], 'qty': pos['qty'],
+                              'leverage': pos.get('leverage'), 'opened_at': pos.get('opened_at')} if pos else None),
+                'performance': {
+                    'total': len(trades), 'wins': len(wins), 'losses': len(losses),
+                    'win_rate': round(len(wins) / len(trades) * 100, 1) if trades else 0,
+                    'win_pnl': round(sum(t['net'] for t in wins), 2), 'loss_pnl': round(sum(t['net'] for t in losses), 2),
+                    'total_fees': round(sum(t.get('fee', 0) for t in trades), 2),
+                    'net_pnl': round(sum(t.get('net', 0) for t in trades), 2),
+                },
+                'trades': list(reversed(trades[-150:])),
+            }
+        if self.write_files:
+            tmp = REAL_DASHBOARD_FILE + '.tmp'
+            with open(tmp, 'w') as f:
+                json.dump(out, f, indent=2)
+            os.replace(tmp, REAL_DASHBOARD_FILE)
 
 
 # ══ entry points ══════════════════════════════════════════════════════════════
@@ -829,13 +1145,25 @@ def main():
     feed = BinanceFeed()
     bot = Sentinel(feed, st)
     bot.startup(datetime.now(timezone.utc))
-    logger.info('Sentinel running (PAPER). symbols=%s stake=$%s', ','.join(SYMBOLS), STAKE_USDT)
+
+    real_st = load_real_state()
+    real_engine = RealOvernightEngine(feed, real_st)   # same feed instance -- shares the leverage/filters cache, zero other coupling
+    real_engine.write_dashboard(datetime.now(timezone.utc))
+    held_real = [k for k, v in real_st['positions'].items() if v]
+    logger.info('Sentinel running. PAPER symbols=%s stake=$%s | REAL symbols=%s%s',
+                ','.join(SYMBOLS), STAKE_USDT, ','.join(REAL_OVERNIGHT_CFG),
+                (' (resuming open: %s)' % ','.join(held_real)) if held_real else '')
+
     while True:
         t0 = time.time()
         try:
             bot.cycle(datetime.now(timezone.utc))
         except Exception as e:                        # never let the loop die
-            logger.error('cycle crashed: %s', e, exc_info=True)
+            logger.error('paper cycle crashed: %s', e, exc_info=True)
+        try:
+            real_engine.cycle(datetime.now(timezone.utc))
+        except Exception as e:                        # never let the loop die -- paper trading must keep running even if this fails
+            logger.error('real cycle crashed: %s', e, exc_info=True)
         extra, bot.backoff_s = bot.backoff_s, 0
         time.sleep(max(1.0, CYCLE_SECONDS - (time.time() - t0)) + extra)
 

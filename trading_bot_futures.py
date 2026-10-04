@@ -3590,7 +3590,20 @@ def close_overnight_mu(reason: str) -> bool:
         })
         state['overnight_mu'] = {}
         clear_trail(sym)
+        # One-time migration cutover -- user request 2026-10-03: MU's real
+        # trading is moving to Sentinel (separation of concerns, one bot one
+        # strategy). Rather than rely on flipping a switch at the right
+        # moment, this disables Apex's own entry path the instant MU next
+        # closes for ANY reason (this normal exit, a stop-loss, a manual
+        # close) -- Sentinel's replica engine picks up the next entry window
+        # from here on. Does not touch the close that's already in progress
+        # above; only prevents a FUTURE entry. Remove this block (and the
+        # guard in run_overnight_strategy's entry section) once Apex's MU
+        # code is fully retired.
+        state['overnight_mu_disabled'] = True
         save_state()
+        logger.info('[OVERNIGHT] MU disabled on Apex after this close -- Sentinel takes over entries from here')
+        send_telegram('🔁 <b>MU migration cutover</b>\nApex will not open another MU position. Sentinel takes the next entry window.')
         write_overnight_dashboard()
         return True
     except Exception as e:
@@ -4375,14 +4388,17 @@ def run_overnight_strategy() -> None:
     # when NASDAQ is closed, so entering then means trading a synthetic price
     # with no real market behind it.
     is_holiday = (et.month, et.day) in US_MARKET_HOLIDAYS
-    if not has_pos and weekday < 5 and not is_holiday:
+    mu_disabled = state.get('overnight_mu_disabled', False)   # see close_overnight_mu: set once MU migrates to Sentinel
+    if mu_disabled and not has_pos and weekday < 5 and not is_holiday and hour == 15 and minute == 55:
+        logger.info('[OVERNIGHT] MU entry skipped -- disabled, Sentinel owns entries now')
+    elif not mu_disabled and not has_pos and weekday < 5 and not is_holiday:
         if hour == 15 and minute >= 55:
             logger.info('[OVERNIGHT] Entry window — opening MU')
             open_overnight_mu()
         elif hour == 16 and minute <= 5:
             logger.info('[OVERNIGHT] Entry window (just after close) — opening MU')
             open_overnight_mu()
-    elif not has_pos and weekday < 5 and is_holiday and hour == 15 and minute == 55:
+    elif not mu_disabled and not has_pos and weekday < 5 and is_holiday and hour == 15 and minute == 55:
         logger.info('[OVERNIGHT] Skipping MU entry — US market holiday today')
 
     # Exit: 9:28–9:40 AM ET any weekday — always close flat at market open.
