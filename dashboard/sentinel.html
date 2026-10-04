@@ -288,8 +288,10 @@ function realCard(data, key, name) {
       <div class="metric"><div class="label">Size</div><div class="val">${num(p.qty, 2)} @ ${p.leverage || '—'}x</div></div>
     </div>
     <div class="note" style="margin-top:10px">Opened ${et(p.opened_at)}. <b>Real capital</b> — executed by Sentinel.</div>`;
+  } else if (key === 'MU') {
+    body = `<div class="note" style="margin-top:10px">No Sentinel-owned position yet. <b>This weekend's open MU position is still owned by Apex</b> — its stop/take-profit/close controls are on the Apex dashboard (command.html), unchanged. Sentinel takes over the <b>next</b> entry (Monday ~3:55–4:05 PM ET, after Apex's current position closes Monday morning) — exit controls will appear here once Sentinel opens that position.</div>`;
   } else {
-    body = `<div class="note" style="margin-top:10px">No open position. Enters ~3:55 PM ET, exits ~9:28 AM ET next session.</div>`;
+    body = `<div class="note" style="margin-top:10px">No open position yet. <b>MRVL has never been traded for real</b> — this is a fresh start directly in Sentinel (it never ran live on Apex). It enters at the next window, ~3:55–4:05 PM ET on a trading day, and exits ~9:28 AM ET the following session. The stop/take-profit/close controls will appear right here, same as MU's, the moment Sentinel opens MRVL's first real position.</div>`;
   }
   const exitCtl = p ? `<div class="card" id="real-exit-${key}"></div>` : '';
   const perf = data.performance || {};
