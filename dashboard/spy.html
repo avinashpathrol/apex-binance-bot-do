@@ -566,6 +566,7 @@ body {
     <div class="ticker-toggle">
       <button class="tt-btn active" id="tt-s0-open" onclick="switchSpy0dteVariant('open')">9:45 Open</button>
       <button class="tt-btn" id="tt-s0-tenmst" onclick="switchSpy0dteVariant('ten_mst')">10 MST</button>
+      <button class="tt-btn" id="tt-s0-anytime" onclick="switchSpy0dteVariant('anytime')">Anytime</button>
     </div>
     <div id="s0-variant-label" style="font-size:11.5px;color:var(--muted);margin-top:8px;">—</div>
   </div>
@@ -1168,6 +1169,7 @@ function switchSpy0dteVariant(key) {
   _spy0dteVariant = key;
   document.getElementById('tt-s0-open').classList.toggle('active', key === 'open');
   document.getElementById('tt-s0-tenmst').classList.toggle('active', key === 'ten_mst');
+  document.getElementById('tt-s0-anytime').classList.toggle('active', key === 'anytime');
   renderSpy0dte();
 }
 

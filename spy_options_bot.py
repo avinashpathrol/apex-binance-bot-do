@@ -171,6 +171,13 @@ SPYM_FORCE_CLOSE_MINUTE    = 45     # settle/force-close ahead of the close auct
 SPYM_VARIANTS = {
     'open':    {'entry_hour': 9,  'entry_minute': 45, 'label': 'Market open (9:45 ET / 7:45 MST)'},
     'ten_mst': {'entry_hour': 12, 'entry_minute': 0,  'label': '10:00 AM MST (12:00 PM ET)'},
+    # User request 2026-10-05: the two fixed-time variants above get exactly ONE shot per day --
+    # if that one snapshot fails the credit-too-low check (a frequent occurrence), that variant
+    # is done for the day even though conditions often improve later. This variant instead keeps
+    # retrying every cycle from 9:35 ET through SPYM_LAST_ENTRY_HOUR until it finds a qualifying
+    # spread or the window closes -- same entry/exit mechanics and risk controls as the other two,
+    # just opportunistic about timing instead of locked to one moment.
+    'anytime': {'entry_hour': 9, 'entry_minute': 35, 'label': 'Anytime (opportunistic 0DTE)', 'retry_on_skip': True},
 }
 
 # ── Economic calendar ─────────────────────────────────────────────────────────
@@ -3281,7 +3288,12 @@ def spym_open_new_position(state: dict, vkey: str):
         tier_idx = sizing.get('tier_idx', 0) if SPYM_AUTO_SCALE_PAPER_ONLY else 0
         contracts = SPYM_CONTRACT_TIERS[min(tier_idx, len(SPYM_CONTRACT_TIERS) - 1)]
         spread = spym_build_spread(direction, chain, spot, diag=diag, contracts=contracts)
-        vstate['last_entry_date'] = today   # mark attempted regardless of outcome
+        if spread is not None or not vcfg.get('retry_on_skip'):
+            # Normal variants: mark attempted regardless of outcome, at most one shot/day.
+            # retry_on_skip variants: only mark attempted once a position actually opens --
+            # a skip (e.g. credit too low) leaves last_entry_date untouched so the next cycle
+            # tries again, instead of locking out the rest of the day over one bad snapshot.
+            vstate['last_entry_date'] = today
         if spread is None:
             logger.info(f'[SPY0DTE-moomoo:{vkey}] no qualifying spread this cycle ({diag.get("reason")}: {diag.get("detail")})')
             vstate['last_skip'] = {'date': today, 'at': datetime.now(timezone.utc).isoformat(),
@@ -3988,7 +4000,9 @@ def push_hermes_spy_snapshot(state: dict) -> None:
             },
             'spy0dte_moomoo': {
                 'note': 'PAPER TRADING ONLY -- automated SPY 0DTE credit-spread bot via moomoo '
-                        'Open API, 2 entry-time variants (market open, 10am MST/noon ET). Always '
+                        'Open API, 3 entry-time variants (market open, 10am MST/noon ET, and an '
+                        'opportunistic "anytime" variant that retries all day instead of taking '
+                        'one shot). Always '
                         'exactly 1 contract today (real equity options can\'t be fractional); '
                         'per-variant last_skip explains why a cycle declined to enter (no '
                         'qualifying spread, no GEX direction, etc.) even on days with zero trades.',
