@@ -1022,6 +1022,14 @@ class RealOvernightEngine:
                                 'this cycle -- investigate now.' % (key, e))
         if time.time() - self._last_save >= 60:
             self.save()
+        # Bug found 2026-10-05: write_dashboard() was previously only called from _open()/
+        # _close()/apply_levels_request() -- on state-CHANGING events. While a position sat open
+        # with nothing changing, unrealized P&L/current_price froze at whatever they were at the
+        # last event, unlike Apex's write_overnight_dashboard() which refreshes every cycle while
+        # a position is open. Write every cycle (only 2 symbols here, cheap) so live P&L actually
+        # tracks price the way it did on Apex.
+        if any(self.st['positions'].values()):
+            self.write_dashboard(now_utc)
 
     def _step(self, key, cfg, now_utc, et):
         sym = cfg['symbol']

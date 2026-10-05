@@ -176,20 +176,22 @@ async function closeReal(key) {
 // (stop can only tighten, min gap from current price, stale requests rejected). getData()
 // flattens the position sub-object + sets position:'LONG' since mu_levels.js's own contract
 // checks d.position === 'LONG' as a plain field (matches Apex's data_overnight_mu.json shape).
-const realExitCtl = {};
+// Bug found 2026-10-05: render() rebuilds #content's innerHTML from scratch every refresh
+// (unlike command.html, where #mu-exit is a static DOM node that persists), so realCard()
+// hands back a brand-new, EMPTY #real-exit-${key} div every single call. Caching the mounted
+// controller here and skipping re-mount on later calls left that fresh div never populated
+// after the first render -- exit controls worked once, then went blank on every refresh after.
+// No controller caching: mount fresh into whatever div exists right now, every time.
 function mountRealExit(key) {
   if (!window.MuLevels) return;
   const el = document.getElementById('real-exit-' + key);
   if (!el) return;
-  if (!realExitCtl[key]) {
-    realExitCtl[key] = MuLevels.mount(el, {
-      getData: () => { const d = key === 'MU' ? MU : MRVL_REAL; return (d && d.position) ? Object.assign({}, d.position, {position: 'LONG'}) : null; },
-      send: writeConfig, toast: m => toast(m), confirm: m => confirm(m), closeNow: () => closeReal(key),
-      levelsField: 'sentinel_' + key.toLowerCase() + '_levels_request',
-      onSent: () => [3000, 9000, 20000].forEach(ms => setTimeout(loadAll, ms)),
-    });
-  }
-  realExitCtl[key].update();
+  MuLevels.mount(el, {
+    getData: () => { const d = key === 'MU' ? MU : MRVL_REAL; return (d && d.position) ? Object.assign({}, d.position, {position: 'LONG'}) : null; },
+    send: writeConfig, toast: m => toast(m), confirm: m => confirm(m), closeNow: () => closeReal(key),
+    levelsField: 'sentinel_' + key.toLowerCase() + '_levels_request',
+    onSent: () => [3000, 9000, 20000].forEach(ms => setTimeout(loadAll, ms)),
+  });
 }
 function toast(msg, dur = 2600) { const t = document.getElementById('toast'); if (!t) return; t.textContent = msg; t.style.display = 'block'; setTimeout(() => t.style.display = 'none', dur); }
 
