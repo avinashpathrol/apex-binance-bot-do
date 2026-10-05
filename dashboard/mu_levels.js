@@ -96,26 +96,30 @@
     '.mxl-note{margin-top:8px;font-size:10.5px;line-height:1.45;color:var(--muted,#9ca3af)}' +
     '.mxl-status{float:right;text-transform:none;letter-spacing:0;font-weight:500}';
 
-  var TEMPLATE =
-    '<div class="mxl"><div class="mxl-title">Exit controls <span class="mxl-status" data-r="status"></span></div>' +
-    '<div class="mxl-active" data-r="active"></div>' +
-    '<div class="mxl-row"><label>Stop -- sell if MU falls to</label>' +
-    '<div class="mxl-in"><span>$</span><input type="number" inputmode="decimal" step="0.01" data-r="stopPrice" placeholder="price">' +
-    '<span>or keep</span><span>$</span><input type="number" inputmode="decimal" step="0.01" data-r="stopProfit" placeholder="profit"></div>' +
-    '<div class="mxl-chips" data-r="chips"></div><div class="mxl-help" data-r="stopHelp"></div>' +
-    '<button class="mxl-btn" data-r="setStop" disabled>Set stop</button></div>' +
-    '<div class="mxl-row"><label>Take profit -- sell if MU rises to</label>' +
-    '<div class="mxl-in"><span>$</span><input type="number" inputmode="decimal" step="0.01" data-r="tgtPrice" placeholder="price">' +
-    '<span>or reach</span><span>$</span><input type="number" inputmode="decimal" step="0.01" data-r="tgtProfit" placeholder="profit"></div>' +
-    '<div class="mxl-help" data-r="tgtHelp"></div><button class="mxl-btn" data-r="setTgt" disabled>Set take-profit</button></div>' +
-    '<button class="mxl-btn danger" data-r="closeNow">Close MU now at market</button>' +
-    '<div class="mxl-note">The bot enforces these in software, checking about every 40 s. If MU falls faster than that it can slip past your stop and sell lower, so the price you set is a trigger, not a guaranteed fill. Profit figures are after fees.</div></div>';
+  function buildTemplate(symLabel) {
+    var S = symLabel || 'MU';
+    return (
+      '<div class="mxl"><div class="mxl-title">Exit controls <span class="mxl-status" data-r="status"></span></div>' +
+      '<div class="mxl-active" data-r="active"></div>' +
+      '<div class="mxl-row"><label>Stop -- sell if ' + S + ' falls to</label>' +
+      '<div class="mxl-in"><span>$</span><input type="number" inputmode="decimal" step="0.01" data-r="stopPrice" placeholder="price">' +
+      '<span>or keep</span><span>$</span><input type="number" inputmode="decimal" step="0.01" data-r="stopProfit" placeholder="profit"></div>' +
+      '<div class="mxl-chips" data-r="chips"></div><div class="mxl-help" data-r="stopHelp"></div>' +
+      '<button class="mxl-btn" data-r="setStop" disabled>Set stop</button></div>' +
+      '<div class="mxl-row"><label>Take profit -- sell if ' + S + ' rises to</label>' +
+      '<div class="mxl-in"><span>$</span><input type="number" inputmode="decimal" step="0.01" data-r="tgtPrice" placeholder="price">' +
+      '<span>or reach</span><span>$</span><input type="number" inputmode="decimal" step="0.01" data-r="tgtProfit" placeholder="profit"></div>' +
+      '<div class="mxl-help" data-r="tgtHelp"></div><button class="mxl-btn" data-r="setTgt" disabled>Set take-profit</button></div>' +
+      '<button class="mxl-btn danger" data-r="closeNow">Close ' + S + ' now at market</button>' +
+      '<div class="mxl-note">The bot enforces these in software, checking about every 40 s. If ' + S + ' falls faster than that it can slip past your stop and sell lower, so the price you set is a trigger, not a guaranteed fill. Profit figures are after fees.</div></div>'
+    );
+  }
 
   function mount(el, opts) {
     if (!document.getElementById('mxl-css')) {
       var st = document.createElement('style'); st.id = 'mxl-css'; st.textContent = CSS; document.head.appendChild(st);
     }
-    el.innerHTML = TEMPLATE;
+    el.innerHTML = buildTemplate(opts.symbolLabel);
     var r = {};
     [].forEach.call(el.querySelectorAll('[data-r]'), function (n) { r[n.getAttribute('data-r')] = n; });
     var busy = false;

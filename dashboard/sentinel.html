@@ -119,7 +119,7 @@ const SD = '/data_sentinel.json', REALD = '/data_sentinel_real.json';
 const CONFIG_API = '/bot_config.json';
 // net avg per night after fees+funding, 2 years of stock data (2026-09-20 backtest) -- reference only
 const BACKTEST = {SNDK: 0.42, WDC: 0.22, LITE: 0.35, MRVL: 0.23, CRDO: 0.36, MU: 0.24};
-let S = null, MU = null, MRVL_REAL = null, tab = 'ALL', calY, calM;
+let S = null, MU = null, MRVL_REAL = null, tab = 'MRVLUSDT', calY, calM;
 
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const num = (x, d = 2) => x == null || isNaN(x) ? '—' : Number(x).toLocaleString('en-US', {minimumFractionDigits: d, maximumFractionDigits: d});
@@ -190,6 +190,7 @@ function mountRealExit(key) {
     getData: () => { const d = key === 'MU' ? MU : MRVL_REAL; return (d && d.position) ? Object.assign({}, d.position, {position: 'LONG'}) : null; },
     send: writeConfig, toast: m => toast(m), confirm: m => confirm(m), closeNow: () => closeReal(key),
     levelsField: 'sentinel_' + key.toLowerCase() + '_levels_request',
+    symbolLabel: key,
     onSent: () => [3000, 9000, 20000].forEach(ms => setTimeout(loadAll, ms)),
   });
 }
