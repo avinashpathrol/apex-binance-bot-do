@@ -526,6 +526,13 @@ def load_state() -> None:
         state['overnight_mu'].update(loaded['overnight_mu'])
     if 'overnight_mu_trades' in loaded:
         state['overnight_mu_trades'] = loaded['overnight_mu_trades']
+    if 'overnight_mu_disabled' in loaded:
+        # Bug found 2026-10-05: load_state() is an explicit per-key allowlist and this key was
+        # missing from it -- close_overnight_mu() set it correctly in memory and saved it, but a
+        # restart silently dropped it (not copied from disk) and the next save_state() call
+        # overwrote the file with the fresh default, erasing it. Caught during the MU->Sentinel
+        # migration cutover when a manual disk edit reverted right after a restart.
+        state['overnight_mu_disabled'] = loaded['overnight_mu_disabled']
     if 'hermes_picks' in loaded:
         state['hermes_picks'].update(loaded['hermes_picks'])
     if 'hermes_picks_trades' in loaded:
