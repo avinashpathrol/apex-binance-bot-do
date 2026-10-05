@@ -70,7 +70,9 @@ SYMBOLS = {
 STAKE_USDT       = 100.0     # margin per trade (user request 2026-09-20)
 SL_PCT           = 0.035     # same hard stop as MU
 FEE_RATE         = 0.0005    # 0.05% taker per side, same as Apex/MU accounting
-CYCLE_SECONDS    = 30
+CYCLE_SECONDS    = 10   # was 30 -- user wants fresher live price updates (user request 2026-10-05).
+                        # 7 symbols (5 paper + MU/MRVL real) x ~1-2 public API calls/cycle is well
+                        # within Binance's public rate limits even at this cadence.
 ENTRY_LEAD_MIN   = 5         # window = close-5min .. close+5min (MU: 15:55-16:05)
 ENTRY_LAG_MIN    = 5
 EXIT_START_MIN   = 9 * 60 + 28    # 9:28 ET
