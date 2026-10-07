@@ -905,13 +905,19 @@ class Sentinel:
 # paper engine already uses for every symbol, re-checked daily) rather than
 # hardcoded, matching this file's existing "re-checked daily" philosophy.
 # Sizing + trail changed 2026-10-07 (user request): MU $100->$75, MRVL $100->$200. The
-# $40 activate / $8 giveback trail (see note below) was derived from MU's real price action at
-# $100 margin -- dollar P&L for a given price move scales linearly with position size, so both
-# symbols' trail $ targets are scaled by the same ratio as their size change to keep triggering
-# at the same underlying price move: MU 0.75x -> $30/$6, MRVL 2x -> $80/$16.
+# $40 activate / $8 giveback trail was derived from MU's real price action at $100 margin x 50x
+# (=$5000 notional) -- dollar P&L for a given price move scales with NOTIONAL, so every symbol's
+# trail $ targets are scaled by (its notional / $5000) to keep triggering at the same underlying
+# price move: MU $75x50=$3750 -> $30/$6, MRVL $200x50=$10,000 -> $80/$16.
+#
+# MRVL sl_pct tightened same day (user request): the standard 3.5% stop at $200/50x put the hard
+# stop loss at ~$358 -- "too much, should not be more than 80-100". User explicitly wants full
+# size/leverage kept (tried a leverage cap first; told directly not to -- just tighten the stop).
+# 0.8% confirmed live: puts the stop loss at ~$89.50, same $200 margin, same dynamic max (50x)
+# leverage, nothing else changed.
 REAL_OVERNIGHT_CFG = {
-    'MU':   {'symbol': 'MUUSDT',   'amount': 75.0,  'sl_pct': 0.035, 'trail_activate_net': 30.0, 'trail_giveback_net': 6.0},
-    'MRVL': {'symbol': 'MRVLUSDT', 'amount': 200.0, 'sl_pct': 0.035, 'trail_activate_net': 80.0, 'trail_giveback_net': 16.0},
+    'MU':   {'symbol': 'MUUSDT',   'amount': 75.0,  'sl_pct': 0.035,  'trail_activate_net': 30.0, 'trail_giveback_net': 6.0},
+    'MRVL': {'symbol': 'MRVLUSDT', 'amount': 200.0, 'sl_pct': 0.008,  'trail_activate_net': 80.0, 'trail_giveback_net': 16.0},
 }
 REAL_STATE_FILE     = os.environ.get('SENTINEL_REAL_STATE_FILE', 'sentinel_real_state.json').strip()
 REAL_DASHBOARD_FILE = os.path.join(WEB_ROOT, 'data_sentinel_real.json')
