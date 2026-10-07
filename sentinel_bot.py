@@ -194,9 +194,18 @@ def minute_of_day(et):
     return et.hour * 60 + et.minute
 
 
+# One-off manual entry skips (user request, NOT real NYSE closures -- nyse_holidays() stays an
+# accurate calendar, this is a separate personal override so the two never get confused).
+MANUAL_SKIP_DAYS = {
+    date(2026, 10, 9),   # user request 2026-10-07: skip the Friday entry -- Oct 12 (Thanksgiving)
+                         # is Monday, and holding a fresh Friday position into that long weekend
+                         # wasn't wanted even though Oct 12 isn't an actual NYSE closure.
+}
+
+
 def in_entry_window(et):
     d = et.date()
-    if not is_trading_day(d):
+    if not is_trading_day(d) or d in MANUAL_SKIP_DAYS:
         return False
     m, c = minute_of_day(et), close_minute(d)
     return c - ENTRY_LEAD_MIN <= m <= c + ENTRY_LAG_MIN
@@ -895,9 +904,14 @@ class Sentinel:
 # Leverage is looked up dynamically via feed.leverage() (same mechanism the
 # paper engine already uses for every symbol, re-checked daily) rather than
 # hardcoded, matching this file's existing "re-checked daily" philosophy.
+# Sizing + trail changed 2026-10-07 (user request): MU $100->$75, MRVL $100->$200. The
+# $40 activate / $8 giveback trail (see note below) was derived from MU's real price action at
+# $100 margin -- dollar P&L for a given price move scales linearly with position size, so both
+# symbols' trail $ targets are scaled by the same ratio as their size change to keep triggering
+# at the same underlying price move: MU 0.75x -> $30/$6, MRVL 2x -> $80/$16.
 REAL_OVERNIGHT_CFG = {
-    'MU':   {'symbol': 'MUUSDT',   'amount': 100.0, 'sl_pct': 0.035},
-    'MRVL': {'symbol': 'MRVLUSDT', 'amount': 100.0, 'sl_pct': 0.035},
+    'MU':   {'symbol': 'MUUSDT',   'amount': 75.0,  'sl_pct': 0.035, 'trail_activate_net': 30.0, 'trail_giveback_net': 6.0},
+    'MRVL': {'symbol': 'MRVLUSDT', 'amount': 200.0, 'sl_pct': 0.035, 'trail_activate_net': 80.0, 'trail_giveback_net': 16.0},
 }
 REAL_STATE_FILE     = os.environ.get('SENTINEL_REAL_STATE_FILE', 'sentinel_real_state.json').strip()
 REAL_DASHBOARD_FILE = os.path.join(WEB_ROOT, 'data_sentinel_real.json')
@@ -913,13 +927,12 @@ BOT_CONFIG_FILE  = os.path.join(WEB_ROOT, os.environ.get('BOT_CONFIG_FILE', 'bot
 
 # Profit-protection trail (user request 2026-10-04, backtested against the real 26-trade MU
 # history before building: of 26 overnight holds, 3 peaked above $40 unrealized and gave most
-# or all of it back by the fixed morning exit -- worst case Sep 30 peaked +$113 and closed
-# -$61. Continuous trail: once peak net first crosses TRAIL_ACTIVATE_NET the stop locks to
-# +$40, then keeps following the peak at a fixed TRAIL_GIVEBACK_NET below it, only ever moving
-# up (never chases price back down). Same $ thresholds for MU and MRVL since both run the same
-# $100-margin-at-max-leverage sizing.
-TRAIL_ACTIVATE_NET  = 40.0
-TRAIL_GIVEBACK_NET  = 8.0
+# or all of it back by the fixed morning exit -- worst case Sep 30 peaked +$113 and closed -$61.
+# Continuous trail: once peak net first crosses the activation target the stop locks there, then
+# keeps following the peak at a fixed giveback below it, only ever moving up (never chases price
+# back down). Per-symbol targets now live in REAL_OVERNIGHT_CFG (trail_activate_net /
+# trail_giveback_net) since MU and MRVL no longer share the same position size -- see the
+# 2026-10-07 comment on REAL_OVERNIGHT_CFG for how each symbol's target was derived.
 
 
 def fetch_bot_config():
@@ -1063,12 +1076,14 @@ class RealOvernightEngine:
             # cycle keeps following the peak at a fixed $15 give-back, only ever moving up.
             # Sep 30 reconstruction: peaked +$113 net, actually closed -$61 (fixed exit, no
             # protection) -- this design would have trailed the stop up to roughly +$98 instead.
+            trail_activate_net = cfg['trail_activate_net']
+            trail_giveback_net = cfg['trail_giveback_net']
             pos['high_bid'] = max(pos.get('high_bid', bid), bid)
             peak_net = _net_at(pos, pos['high_bid'])
-            if peak_net >= TRAIL_ACTIVATE_NET:
+            if peak_net >= trail_activate_net:
                 just_armed = not pos.get('trail_armed')
                 pos['trail_armed'] = True
-                target_net = max(TRAIL_ACTIVATE_NET, peak_net - TRAIL_GIVEBACK_NET)
+                target_net = max(trail_activate_net, peak_net - trail_giveback_net)
                 trail_price = round(_price_for_net(pos, target_net), 4)
                 if trail_price > pos.get('sl_price', 0):
                     pos['sl_price'] = trail_price
@@ -1076,7 +1091,7 @@ class RealOvernightEngine:
                     logger.info('[REAL:%s] trail -- stop raised to $%.4f (locks +$%.2f, peak +$%.2f)', key, trail_price, target_net, peak_net)
                     if just_armed:
                         self.notify('🔒 <b>%s trail armed</b>\nPeak hit +$%.0f unrealized -- stop now trails $%.0f below the peak '
-                                    '(locked in at least +$%.2f net right now).' % (key, TRAIL_ACTIVATE_NET, TRAIL_GIVEBACK_NET, target_net))
+                                    '(locked in at least +$%.2f net right now).' % (key, trail_activate_net, trail_giveback_net, target_net))
             if pos.get('sl_price') and bid <= pos['sl_price']:
                 reason = 'Trail Stop' if pos.get('trail_armed') else ('Custom Stop' if pos.get('sl_custom') else 'Stop Loss')
                 self._close(key, cfg, reason, now_utc, et, bid)
