@@ -201,7 +201,7 @@ SYMBOLS_CONFIG = {
         'max_loss_pct': 0.35,
         'market_hours_only': True,
         'one_way': True,
-        'leverage': 40,
+        'leverage': 50,  # raised from 40 -- user request 2026-10-07, confirmed true max at $2800 notional
         'skip_margin_type': True,
         'daily_profit_lock': 6.0,
         'short_only': True,  # user request 2026-09-22: LONG net -$144/13 trades vs SHORT +$31/9 trades
