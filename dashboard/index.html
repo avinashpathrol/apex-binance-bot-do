@@ -990,7 +990,11 @@ function renderHome(d,price,pos,trail,pf,ind){
     const ep=n(trail.entry_price,0);
     const qty=n(d.active_qty,0);
     const _rawPnl = d.unrealized_pnl;
-    const upnl = (_rawPnl!=null && _rawPnl!==undefined && _rawPnl!==0)
+    // Bug fixed 2026-10-07: "!== 0" treated a genuinely flat position (real $0.00 P&L) the same
+    // as missing data, silently switching to a client-side recompute that isn't guaranteed to
+    // use the same price tick as the backend's exchange-sourced figure -- only fall back when
+    // the value is truly absent.
+    const upnl = (_rawPnl!=null)
       ? n(_rawPnl, 0)
       : (pos==='LONG'?(price-ep)*qty:(ep-price)*qty);
     qs('#pm-entry').textContent=fmtP(ep);
@@ -1520,12 +1524,13 @@ function hideLoader(){
 }
 
 async function autoSelectActiveSymbol(){
-  // Step 1: land on MU by default (user request 2026-10-01) — show dashboard ASAP
-  switchSym('mu');
+  // Step 1: land on NBIS by default (changed 2026-10-05 -- MU's real trading moved to Sentinel,
+  // so it no longer makes sense as Apex's default screen; was MU per the 2026-10-01 request).
+  switchSym('nbis');
   hideLoader();
 
   // Step 2: check all FUTURES symbols in parallel; if one actually has an open position,
-  // that's more urgent than MU's idle screen, so show it instead.
+  // that's more urgent than NBIS's idle screen, so show it instead.
   const syms = Object.keys(SOURCES);
   const results = await Promise.all(syms.map(sym=>
     fetch(SOURCES[sym].api+'?t='+Date.now(),{cache:'no-store'})
@@ -1534,7 +1539,7 @@ async function autoSelectActiveSymbol(){
   for(let i=0;i<syms.length;i++){
     const d=results[i];
     if(d && (d.position==='LONG'||d.position==='SHORT')){
-      switchSym(syms[i]);     // also flips tab-mu -> tab-home, which Step 1's MU default needs undone here
+      switchSym(syms[i]);     // also flips tab-nbis -> tab-home, which Step 1's default needs undone here
       botData = d;
       render(d);
       return;
