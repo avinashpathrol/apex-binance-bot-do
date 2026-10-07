@@ -437,6 +437,15 @@ DAILY_PROFIT_LOCK_CONFIDENCE = 85
 # ── Trail Parameters ──────────────────────────────────────────────────────────
 TRAIL_ACTIVATE_ATR = 0.75
 HARD_SL_ATR        = 1.25
+# Near-miss protection (added 2026-10-07): found via a real SOXL trade where peak profit reached
+# 97.6% of its (auto-tuned) activation threshold, missed arming the real trail by about $1.30,
+# then fully reversed into the hard stop -- the entire ~$52 peak gave back to a -$29 loss with
+# zero protection in between, since the trail never technically activated. This catches that
+# specific failure mode without touching any symbol's tuned activation threshold: once profit
+# gets within NEAR_MISS_ATR_FRAC of activating, protect against giving back more than
+# NEAR_MISS_GIVEBACK_FRAC of whatever peak was reached, even though the real trail never armed.
+NEAR_MISS_ATR_FRAC      = 0.85
+NEAR_MISS_GIVEBACK_FRAC = 0.5
 FEE_RATE           = 0.0005   # 0.05% futures taker fee
 
 # ── Per-symbol state ──────────────────────────────────────────────────────────
@@ -2479,6 +2488,18 @@ def check_sl_trail(symbol: str, position: str, price: float) -> Tuple[bool, str]
         return False, ''
 
     if profit_dist < activate_dist:
+        near_miss_dist = activate_dist * NEAR_MISS_ATR_FRAC
+        if profit_dist >= near_miss_dist:
+            # Peak profit got close to the real activation threshold but never quite reached it --
+            # protect against giving back more than half of that peak instead of leaving the
+            # position fully unprotected until the hard stop (see NEAR_MISS_ATR_FRAC comment).
+            near_miss_giveback = profit_dist * NEAR_MISS_GIVEBACK_FRAC
+            near_miss_stop = best - near_miss_giveback if is_long else best + near_miss_giveback
+            if (is_long and price <= near_miss_stop) or (not is_long and price >= near_miss_stop):
+                locked_pct = round((1 - NEAR_MISS_GIVEBACK_FRAC) * 100)
+                return True, (f'⚠️ Near-miss trail hit | best={best:.4f} stop={near_miss_stop:.4f} '
+                              f'price={price:.4f} | never fully armed ({profit_dist:.4f} < {activate_dist:.4f}) '
+                              f'but protected ~{locked_pct}% of the peak')
         logger.info(f'📐 [{symbol}] Trail not active | profit={profit_dist:.4f} < {activate_dist:.4f}')
         return False, ''
 
