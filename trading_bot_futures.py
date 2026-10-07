@@ -217,11 +217,11 @@ SYMBOLS_CONFIG = {
         'base': 'SOXL',
         'dashboard_file': 'data_futures_soxl.json',
         'min_atr': 0.8,
-        'trade_amount': 70.0,  # raised from 40 -- user request 2026-09-18, for the rest of the month
+        'trade_amount': 100.0,  # raised from 70 -- user request 2026-10-07
         'max_loss_pct': 0.35,
         'market_hours_only': True,
         'one_way': True,
-        'leverage': 50,  # max available at this position size (Binance bracket 1: 0-$50k notional)
+        'leverage': 50,  # max available at this position size (confirmed 2026-10-07 at $5000 notional)
         'skip_margin_type': True,
         'daily_profit_lock': 5.0,
         'short_only': True,  # user request 2026-09-22: LONG net -$29/5 trades (20%% win) vs SHORT +$26/5 trades (100%% win)
@@ -267,11 +267,11 @@ SYMBOLS_CONFIG = {
         'base': 'NBIS',
         'dashboard_file': 'data_futures_nbis.json',
         'min_atr': 1.40,
-        'trade_amount': 70.0,
+        'trade_amount': 100.0,  # raised from 70 -- user request 2026-10-07
         'max_loss_pct': 0.50,
         'market_hours_only': True,
         'one_way': True,
-        'leverage': 25,
+        'leverage': 25,  # max available at this position size (confirmed 2026-10-07 at $2500 notional)
         'skip_margin_type': True,
         'daily_profit_lock': 7.0,
         'trend_continuation_enabled': False,  # was True. 2026-09-22: trend-continuation entries (added Sep 13) buy already-extended moves -- pooled across symbols 33% win, -$100 net; August (off) LONG +$21 vs September (on) LONG -$267. Disabled bot-wide per user request.
