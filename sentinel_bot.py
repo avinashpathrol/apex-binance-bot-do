@@ -1081,22 +1081,56 @@ class RealOvernightEngine:
             # cycle keeps following the peak at a fixed $15 give-back, only ever moving up.
             # Sep 30 reconstruction: peaked +$113 net, actually closed -$61 (fixed exit, no
             # protection) -- this design would have trailed the stop up to roughly +$98 instead.
-            trail_activate_net = cfg['trail_activate_net']
-            trail_giveback_net = cfg['trail_giveback_net']
-            pos['high_bid'] = max(pos.get('high_bid', bid), bid)
-            peak_net = _net_at(pos, pos['high_bid'])
-            if peak_net >= trail_activate_net:
-                just_armed = not pos.get('trail_armed')
-                pos['trail_armed'] = True
-                target_net = max(trail_activate_net, peak_net - trail_giveback_net)
+            #
+            # Dashboard disable switch (user request 2026-10-09): "bumps" on the way to an
+            # expected bigger move -- mostly MRVL -- sometimes hit the trail stop before the
+            # real move plays out. When disabled, the stop is pulled back OUT to the plain
+            # default (not just frozen where it was) so a bump has normal room again, same as
+            # before the trail ever armed; re-enabling lets it re-arm fresh from the current peak.
+            trail_disabled = bool(bc.get('sentinel_%s_trail_disabled' % kk))
+            # Force-arm (user request 2026-10-09, "a button to start trail at a price as well"):
+            # one-shot action, arms the trail right now off the CURRENT peak instead of waiting
+            # for the normal $ activation threshold -- lets the user start protecting profit
+            # earlier than the automatic trigger if they judge the current level significant.
+            # Floors at breakeven (0), not the normal activation target, since this is an
+            # intentional early override, not the usual threshold crossing.
+            if bc.get('sentinel_%s_trail_force_arm' % kk) and not trail_disabled:
+                pos['high_bid'] = max(pos.get('high_bid', bid), bid)
+                peak_net = _net_at(pos, pos['high_bid'])
+                target_net = max(0.0, peak_net - cfg['trail_giveback_net'])
                 trail_price = round(_price_for_net(pos, target_net), 4)
                 if trail_price > pos.get('sl_price', 0):
                     pos['sl_price'] = trail_price
+                    pos['trail_armed'] = True
                     self.save()
-                    logger.info('[REAL:%s] trail -- stop raised to $%.4f (locks +$%.2f, peak +$%.2f)', key, trail_price, target_net, peak_net)
-                    if just_armed:
-                        self.notify('🔒 <b>%s trail armed</b>\nPeak hit +$%.0f unrealized -- stop now trails $%.0f below the peak '
-                                    '(locked in at least +$%.2f net right now).' % (key, trail_activate_net, trail_giveback_net, target_net))
+                    logger.info('[REAL:%s] trail force-armed from dashboard -- stop raised to $%.4f (locks +$%.2f, peak +$%.2f)', key, trail_price, target_net, peak_net)
+                    self.notify('🔒 <b>%s trail force-armed</b>\nManually started -- stop raised to $%.4f (locks +$%.2f net right now).' % (key, trail_price, target_net))
+                clear_bot_config_flag('sentinel_%s_trail_force_arm' % kk)
+            if trail_disabled:
+                if pos.get('trail_armed'):
+                    default_sl = round(pos['entry_price'] * (1 - cfg['sl_pct']), 4)
+                    if not pos.get('sl_custom'):   # a manual custom stop (if any) still wins
+                        pos['sl_price'] = default_sl
+                    pos['trail_armed'] = False
+                    self.save()
+                    logger.info('[REAL:%s] trail disabled from dashboard -- stop pulled back to default $%.4f', key, pos['sl_price'])
+            else:
+                trail_activate_net = cfg['trail_activate_net']
+                trail_giveback_net = cfg['trail_giveback_net']
+                pos['high_bid'] = max(pos.get('high_bid', bid), bid)
+                peak_net = _net_at(pos, pos['high_bid'])
+                if peak_net >= trail_activate_net:
+                    just_armed = not pos.get('trail_armed')
+                    pos['trail_armed'] = True
+                    target_net = max(trail_activate_net, peak_net - trail_giveback_net)
+                    trail_price = round(_price_for_net(pos, target_net), 4)
+                    if trail_price > pos.get('sl_price', 0):
+                        pos['sl_price'] = trail_price
+                        self.save()
+                        logger.info('[REAL:%s] trail -- stop raised to $%.4f (locks +$%.2f, peak +$%.2f)', key, trail_price, target_net, peak_net)
+                        if just_armed:
+                            self.notify('🔒 <b>%s trail armed</b>\nPeak hit +$%.0f unrealized -- stop now trails $%.0f below the peak '
+                                        '(locked in at least +$%.2f net right now).' % (key, trail_activate_net, trail_giveback_net, target_net))
             if pos.get('sl_price') and bid <= pos['sl_price']:
                 reason = 'Trail Stop' if pos.get('trail_armed') else ('Custom Stop' if pos.get('sl_custom') else 'Stop Loss')
                 self._close(key, cfg, reason, now_utc, et, bid)
@@ -1266,6 +1300,10 @@ class RealOvernightEngine:
 
     def write_dashboard(self, now_utc):
         out = {'generated_at': now_iso(now_utc.timestamp()), 'real_money': True}
+        try:
+            bc = fetch_bot_config()
+        except Exception:
+            bc = {}
         for key, cfg in REAL_OVERNIGHT_CFG.items():
             pos = self.st['positions'].get(key)
             trades = self.st.get('trades', {}).get(key, [])
@@ -1281,6 +1319,8 @@ class RealOvernightEngine:
             losses = [t for t in trades if t.get('net', 0) <= 0]
             out[key] = {
                 'base': key, 'symbol': cfg['symbol'], 'real_money': True,
+                'trail_disabled': bool(bc.get('sentinel_%s_trail_disabled' % key.lower())),
+                'trail_activate_net': cfg['trail_activate_net'], 'trail_giveback_net': cfg['trail_giveback_net'],
                 'position': ({'direction': 'LONG', 'entry_price': pos['entry_price'], 'current_price': current_price,
                               'unrealized_pnl': unrealized_pnl, 'sl_price': pos['sl_price'], 'qty': pos['qty'],
                               'leverage': pos.get('leverage'), 'opened_at': pos.get('opened_at'),
@@ -1289,6 +1329,7 @@ class RealOvernightEngine:
                               'sl_default': round(pos['entry_price'] * (1 - cfg['sl_pct']), 4),
                               'sl_custom': bool(pos.get('sl_custom')), 'target_price': pos.get('target_price'),
                               'entry_fee': pos.get('entry_fee'), 'fee_rate': FEE_RATE,
+                              'trail_armed': bool(pos.get('trail_armed')),
                               'levels_status': pos.get('levels_status')} if pos else None),
                 'performance': {
                     'total': len(trades), 'wins': len(wins), 'losses': len(losses),

@@ -172,6 +172,25 @@ async function closeReal(key) {
     toast('✅ Close sent — executes within 60s');
   } catch (e) { toast('⚠️ Failed: ' + e.message); }
 }
+async function toggleTrail(key, disable) {
+  try {
+    const field = 'sentinel_' + key.toLowerCase() + '_trail_disabled';
+    await writeConfig({[field]: disable});
+    toast(disable ? '🔓 Trail disabled — stop back to default' : '🔒 Trail re-enabled');
+    setTimeout(loadAll, 1500);
+  } catch (e) { toast('⚠️ Failed: ' + e.message); }
+}
+async function forceArmTrail(key) {
+  const d = key === 'MU' ? MU : MRVL_REAL;
+  if (!d || !d.position) return;
+  if (!confirm('Start the trail now off the current peak for ' + key + '? This arms it early, before the normal threshold.')) return;
+  try {
+    const field = 'sentinel_' + key.toLowerCase() + '_trail_force_arm';
+    await writeConfig({[field]: true});
+    toast('⚡ Force-arm sent — applies within 10s');
+    setTimeout(loadAll, 1500);
+  } catch (e) { toast('⚠️ Failed: ' + e.message); }
+}
 // MU/MRVL exit controls -- real capital, same rails as mu_levels.js already enforces for Apex
 // (stop can only tighten, min gap from current price, stale requests rejected). getData()
 // flattens the position sub-object + sets position:'LONG' since mu_levels.js's own contract
@@ -290,7 +309,19 @@ function realCard(data, key, name) {
       <div class="metric"><div class="label">Stop</div><div class="val" style="color:var(--red)">${usd(p.sl_price)}</div></div>
       <div class="metric"><div class="label">Size</div><div class="val">${num(p.qty, 2)} @ ${p.leverage || '—'}x</div></div>
     </div>
-    <div class="note" style="margin-top:10px">Opened ${et(p.opened_at)}. <b>Real capital</b> — executed by Sentinel.</div>`;
+    <div class="note" style="margin-top:10px">Opened ${et(p.opened_at)}. <b>Real capital</b> — executed by Sentinel.</div>
+    <button class="mxl-btn ${data.trail_disabled ? '' : 'ghost'}" style="margin-top:10px;width:100%;${data.trail_disabled ? 'background:#dc2626' : ''}"
+      onclick="toggleTrail('${key}', ${data.trail_disabled ? 'false' : 'true'})">
+      ${data.trail_disabled ? '🔓 Trail disabled — tap to re-enable' : '🔒 Trail ' + (p.trail_armed ? 'armed' : 'active') + ' — tap to disable'}
+    </button>
+    <div class="mut" style="font-size:10.5px;margin-top:6px;line-height:1.4">${data.trail_disabled
+      ? 'Trail is off — stop stays at the plain default, won\'t ratchet up or close on a bump.'
+      : 'Disable if you expect a bigger move and don\'t want a temporary pullback to trigger an early close.'}</div>
+    ${!data.trail_disabled && !p.trail_armed ? `
+    <button class="mxl-btn ghost" style="margin-top:8px;width:100%" onclick="forceArmTrail('${key}')">
+      ⚡ Start trail now (at current peak)
+    </button>
+    <div class="mut" style="font-size:10.5px;margin-top:4px;line-height:1.4">Arms the trail off whatever peak has been reached so far, instead of waiting for the normal $${num(data.trail_activate_net ?? 0,0)} threshold — only makes sense once you're already in some profit.</div>` : ''}`;
   } else if (key === 'MU') {
     body = `<div class="note" style="margin-top:10px">No Sentinel-owned position yet. <b>This weekend's open MU position is still owned by Apex</b> — its stop/take-profit/close controls are on the Apex dashboard (command.html), unchanged. Sentinel takes over the <b>next</b> entry (Monday ~3:55–4:05 PM ET, after Apex's current position closes Monday morning) — exit controls will appear here once Sentinel opens that position.</div>`;
   } else {
