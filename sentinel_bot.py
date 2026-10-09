@@ -196,11 +196,10 @@ def minute_of_day(et):
 
 # One-off manual entry skips (user request, NOT real NYSE closures -- nyse_holidays() stays an
 # accurate calendar, this is a separate personal override so the two never get confused).
-MANUAL_SKIP_DAYS = {
-    date(2026, 10, 9),   # user request 2026-10-07: skip the Friday entry -- Oct 12 (Thanksgiving)
-                         # is Monday, and holding a fresh Friday position into that long weekend
-                         # wasn't wanted even though Oct 12 isn't an actual NYSE closure.
-}
+# 2026-10-09: user reversed the Oct 9 skip from 2026-10-07 -- wants MU/MRVL to enter tonight
+# after all (both at a low price, expecting a move up by next week) despite Oct 12 being a
+# long-weekend Monday. Set stays empty rather than deleted so this mechanism is ready to reuse.
+MANUAL_SKIP_DAYS = set()
 
 
 def in_entry_window(et):
