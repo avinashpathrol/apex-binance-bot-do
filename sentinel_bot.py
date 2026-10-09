@@ -1291,6 +1291,16 @@ class RealOvernightEngine:
                         '✅ Gross: %+.4f | 💸 Fees: -%.4f\n\n<i>Executed by Sentinel.</i>'
                         % (emoji, net, key, reason, actual_close, entry_price, gross, total_fee))
             self.write_dashboard(now_utc)
+            if reason == 'Trail Stop':
+                # Purely additive -- see the "Trail-close shadow tracking" section near the
+                # bottom of this file. The real close above has already fully succeeded; this
+                # can never affect it, wrapped separately so even a bug here can't either.
+                try:
+                    start_trail_shadow(key, cfg, entry_price, qty, pos.get('entry_fee', 0.0),
+                                        actual_close, round(net, 2), pos.get('entry_day'),
+                                        pos.get('opened_at'), now_utc)
+                except Exception as e:
+                    logger.warning('[REAL:%s] start_trail_shadow failed (ignored): %s', key, e)
             return True
         except Exception as e:
             logger.error('[REAL:%s] close failed: %s', key, e)
@@ -1380,6 +1390,134 @@ def selftest():
     return 0 if ok else 1
 
 
+# ══ Trail-close shadow tracking (user request 2026-10-09) ═════════════════════
+# "What if we hadn't let the trail close it, and just held to the normal next-
+# morning exit instead?" Purely observational: reads the real feed's live price,
+# writes to its own separate state/dashboard file, NEVER touches positions/
+# trades/anything the real trading logic reads or writes. A bug here cannot
+# affect real money -- this only STARTS tracking after a real trail-close has
+# already completed successfully (see the one new line added at the end of
+# _close()), and nothing it computes ever feeds back into a real decision.
+TRAIL_SHADOW_STATE_FILE     = os.environ.get('SENTINEL_TRAIL_SHADOW_STATE_FILE', 'sentinel_trail_shadow_state.json').strip()
+TRAIL_SHADOW_DASHBOARD_FILE = os.path.join(WEB_ROOT, 'data_trail_shadow.json')
+
+
+def load_trail_shadow_state():
+    try:
+        with open(TRAIL_SHADOW_STATE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {'open': [], 'resolved': []}
+
+
+def save_trail_shadow_state(st):
+    tmp = TRAIL_SHADOW_STATE_FILE + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(st, f, indent=2)
+    os.replace(tmp, TRAIL_SHADOW_STATE_FILE)
+
+
+def start_trail_shadow(key, cfg, entry_price, qty, entry_fee, trail_close_price, trail_net,
+                        entry_day, opened_at, now_utc):
+    """Called once, right after a real Trail Stop close finishes. Records what's needed to later
+    compute what WOULD have happened if this position had simply held to the normal next-morning
+    exit instead of being closed by the trail."""
+    try:
+        st = load_trail_shadow_state()
+        st.setdefault('open', []).append({
+            'key': key, 'symbol': cfg['symbol'], 'entry_price': entry_price, 'qty': qty,
+            'entry_fee': entry_fee, 'entry_day': entry_day, 'opened_at': opened_at,
+            'trail_closed_at': now_iso(now_utc.timestamp()), 'trail_close_price': trail_close_price,
+            'trail_net': trail_net, 'high_since_trail_close': trail_close_price,
+            'low_since_trail_close': trail_close_price,
+        })
+        save_trail_shadow_state(st)
+        logger.info('[SHADOW:%s] trail-close shadow tracking started (trail closed @ $%.4f, net=%+.2f)',
+                    key, trail_close_price, trail_net)
+    except Exception as e:
+        logger.warning('[SHADOW:%s] failed to start trail shadow: %s', key, e)
+
+
+def run_trail_shadow_cycle(feed, now_utc):
+    """Independent cycle -- checks every open shadow entry's live price, and once the ORIGINAL
+    position's normal exit window arrives (same 9:28-9:40 ET window the real exit logic uses),
+    resolves it: what would net have been if this position had just been held instead of
+    trail-closed? Never calls any order-placement path -- feed.quote() only."""
+    try:
+        st = load_trail_shadow_state()
+        if not st.get('open'):
+            write_trail_shadow_dashboard()   # still write so the dashboard card shows "no data yet" instead of 404ing forever
+            return
+        et = et_from_utc(now_utc)
+        still_open = []
+        changed = False
+        for entry in st['open']:
+            try:
+                bid, _ask = feed.quote(entry['symbol'])
+                entry['high_since_trail_close'] = max(entry.get('high_since_trail_close', bid), bid)
+                entry['low_since_trail_close']  = min(entry.get('low_since_trail_close', bid), bid)
+                changed = True
+            except Exception as e:
+                logger.warning('[SHADOW:%s] quote failed (ignored): %s', entry['key'], e)
+                still_open.append(entry)
+                continue
+
+            entry_day = date(*[int(x) for x in entry['entry_day'].split('-')])
+            d = et.date()
+            if is_trading_day(d) and d > entry_day and minute_of_day(et) >= EXIT_START_MIN:
+                # Resolved -- this is the same morning-exit price point the real position would
+                # have used had it not been trail-closed.
+                hold_price = bid
+                hold_net = (hold_price - entry['entry_price']) * entry['qty'] - entry['entry_fee'] - entry['qty'] * hold_price * FEE_RATE
+                delta = round(hold_net - entry['trail_net'], 2)
+                entry['resolved_at'] = now_iso(now_utc.timestamp())
+                entry['hold_exit_price'] = hold_price
+                entry['hold_net'] = round(hold_net, 2)
+                entry['delta_vs_trail'] = delta   # positive = holding would have done better
+                st.setdefault('resolved', []).append(entry)
+                logger.info('[SHADOW:%s] resolved -- trail net=%+.2f, hold-to-exit net=%+.2f, delta=%+.2f',
+                            entry['key'], entry['trail_net'], hold_net, delta)
+                changed = True
+            else:
+                still_open.append(entry)
+        st['open'] = still_open
+        st['resolved'] = st.get('resolved', [])[-100:]   # cap history
+        if changed:
+            save_trail_shadow_state(st)
+    except Exception as e:
+        logger.warning('run_trail_shadow_cycle failed (ignored): %s', e)
+    write_trail_shadow_dashboard()
+
+
+def write_trail_shadow_dashboard():
+    try:
+        st = load_trail_shadow_state()
+        resolved = st.get('resolved', [])
+        n = len(resolved)
+        better_hold = sum(1 for r in resolved if r['delta_vs_trail'] > 0)
+        out = {
+            'generated_at': now_iso(),
+            'note': ('Tracks what would have happened if a real Trail Stop close had instead been '
+                     'held to the normal next-morning exit. Purely observational -- never affects '
+                     'real trading. Added 2026-10-09 per user request ("MRVL usually gets trailed '
+                     'in 2-4 hours after close, wonder what if I let it run to next day").'),
+            'open_count': len(st.get('open', [])),
+            'resolved_count': n,
+            'holding_would_have_won': better_hold,
+            'holding_would_have_won_pct': round(better_hold / n * 100, 1) if n else 0,
+            'avg_delta_vs_trail': round(sum(r['delta_vs_trail'] for r in resolved) / n, 2) if n else 0,
+            'total_delta_vs_trail': round(sum(r['delta_vs_trail'] for r in resolved), 2) if n else 0,
+            'open': st.get('open', []),
+            'resolved': list(reversed(resolved[-30:])),
+        }
+        tmp = TRAIL_SHADOW_DASHBOARD_FILE + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(out, f, indent=2)
+        os.replace(tmp, TRAIL_SHADOW_DASHBOARD_FILE)
+    except Exception as e:
+        logger.warning('write_trail_shadow_dashboard failed (ignored): %s', e)
+
+
 def main():
     if '--selftest' in sys.argv:
         sys.exit(selftest())
@@ -1406,6 +1544,10 @@ def main():
             real_engine.cycle(datetime.now(timezone.utc))
         except Exception as e:                        # never let the loop die -- paper trading must keep running even if this fails
             logger.error('real cycle crashed: %s', e, exc_info=True)
+        try:
+            run_trail_shadow_cycle(feed, datetime.now(timezone.utc))
+        except Exception as e:                        # never let the loop die -- purely observational, must never affect real trading
+            logger.error('trail shadow cycle crashed: %s', e, exc_info=True)
         extra, bot.backoff_s = bot.backoff_s, 0
         time.sleep(max(1.0, CYCLE_SECONDS - (time.time() - t0)) + extra)
 

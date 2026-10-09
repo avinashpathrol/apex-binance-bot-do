@@ -119,7 +119,7 @@ const SD = '/data_sentinel.json', REALD = '/data_sentinel_real.json';
 const CONFIG_API = '/bot_config.json';
 // net avg per night after fees+funding, 2 years of stock data (2026-09-20 backtest) -- reference only
 const BACKTEST = {SNDK: 0.42, WDC: 0.22, LITE: 0.35, MRVL: 0.23, CRDO: 0.36, MU: 0.24};
-let S = null, MU = null, MRVL_REAL = null, tab = 'MRVLUSDT', calY, calM;
+let S = null, MU = null, MRVL_REAL = null, TRAIL_SHADOW = null, tab = 'MRVLUSDT', calY, calM;
 
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const num = (x, d = 2) => x == null || isNaN(x) ? '—' : Number(x).toLocaleString('en-US', {minimumFractionDigits: d, maximumFractionDigits: d});
@@ -221,6 +221,7 @@ async function loadAll() {
     document.getElementById('live-dot').style.background = 'var(--green)';
   } catch (e) { document.getElementById('live-dot').style.background = 'var(--red)'; const sk = document.getElementById('content-skel'); if (sk) sk.style.display = 'none'; const ld = document.getElementById('loading'); ld.style.display = 'block'; ld.textContent = 'Sentinel data not available yet (' + e.message + ')'; return; }
   try { const r = await getJSON(REALD); MU = r.MU || null; MRVL_REAL = r.MRVL || null; } catch (e) { MU = null; MRVL_REAL = null; }
+  try { TRAIL_SHADOW = await getJSON('/data_trail_shadow.json'); } catch (e) { TRAIL_SHADOW = null; }
   render();
 }
 
@@ -257,6 +258,7 @@ function render() {
   if (tab === 'MU') {
     h += realCard(MU, 'MU', 'Micron Technology');
     h += calendarCard();
+    h += trailShadowCard('MU');
   } else if (tab === 'MRVLUSDT') {
     // MRVL migrated to real trading 2026-10-03 -- primary content is now its real
     // track record, same as MU (including the same monthly calendar, sliders and
@@ -265,6 +267,7 @@ function render() {
     // reference -- never merged into the real numbers or calendar above it.
     h += realCard(MRVL_REAL, 'MRVL', 'Marvell');
     h += calendarCard();
+    h += trailShadowCard('MRVL');
     const paperTrades_ = (S.symbols['MRVLUSDT'] || {trades: []}).trades;
     if (paperTrades_.length) {
       h += `<div class="card"><div class="card-title">Paper validation history <span class="mut" style="font-weight:500;font-size:11px">(pre-launch reference, not live)</span></div>`;
@@ -410,6 +413,43 @@ function calendarCard() {
   return `<div class="card"><div class="card-title">${title}</div>
     <div class="cal-nav"><button class="btn" onclick="calShift(-1)">‹</button><div id="cal-label" style="font-size:13px;font-weight:700"></div><button class="btn" onclick="calShift(1)">›</button></div>
     <div class="cal-grid" id="cal-dow"></div><div class="cal-grid" id="cal-grid" style="margin-top:4px"></div></div>`;
+}
+// "What if a Trail Stop close had instead held to the normal next-morning exit?" -- purely
+// observational, never affects real trading. See sentinel_bot.py's trail-shadow section.
+function trailShadowCard(key) {
+  const d = TRAIL_SHADOW;
+  if (!d) return '';
+  const openForKey = (d.open || []).filter(e => e.key === key);
+  const resolvedForKey = (d.resolved || []).filter(e => e.key === key);
+  let html = `<div class="card"><div class="card-title">Trail-close shadow <span class="mut" style="font-weight:500;font-size:11px">(what if we'd held instead?)</span></div>
+    <div class="note">Whenever a real Trail Stop closes ${key}, this keeps watching the real price until the next morning's normal exit window, so we can see what holding instead would have done. Never affects real trading.</div>`;
+  if (openForKey.length) {
+    const e = openForKey[0];
+    html += `<div class="note" style="margin-top:8px"><b>Watching now</b> — trail closed @ ${usd(e.trail_close_price)} (locked ${pnl(e.trail_net)}), high since then ${usd(e.high_since_trail_close)}, low ${usd(e.low_since_trail_close)}. Resolves at the next normal exit window.</div>`;
+  }
+  if (resolvedForKey.length) {
+    const n = resolvedForKey.length;
+    const wins = resolvedForKey.filter(e => e.delta_vs_trail > 0).length;
+    const avgDelta = resolvedForKey.reduce((a, e) => a + e.delta_vs_trail, 0) / n;
+    html += `<div class="stats-row" style="margin-top:10px">
+      <div class="stat"><div class="num">${n}</div><div class="lbl">Resolved</div></div>
+      <div class="stat"><div class="num">${Math.round(wins/n*100)}%</div><div class="lbl">Holding won</div></div>
+      <div class="stat"><div class="num ${cls(avgDelta)}">${pnl(avgDelta)}</div><div class="lbl">Avg delta</div></div>
+    </div>`;
+    const rows = resolvedForKey.slice(0, 15).map(e => `<tr>
+      <td>${esc((e.trail_closed_at || '').slice(0, 10))}</td>
+      <td>${usd(e.trail_close_price)} → ${usd(e.hold_exit_price)}</td>
+      <td class="${cls(e.trail_net)}">${pnl(e.trail_net)}</td>
+      <td class="${cls(e.hold_net)}">${pnl(e.hold_net)}</td>
+      <td class="${cls(e.delta_vs_trail)}">${pnl(e.delta_vs_trail)}</td>
+    </tr>`).join('');
+    html += `<div class="tscroll" style="margin-top:8px"><table><tr><th>Closed</th><th>Trail → Hold price</th><th>Trail net</th><th>Hold net</th><th>Delta</th></tr>${rows}</table></div>`;
+  }
+  if (!openForKey.length && !resolvedForKey.length) {
+    html += `<div class="empty-msg">No Trail Stop closes yet for ${key} to track.</div>`;
+  }
+  html += `</div>`;
+  return html;
 }
 function calShift(d) { calM += d; if (calM < 0) { calM = 11; calY--; } if (calM > 11) { calM = 0; calY++; } buildCalendar(); }
 function buildCalendar() {
