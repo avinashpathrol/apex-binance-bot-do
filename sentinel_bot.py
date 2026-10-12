@@ -909,13 +909,20 @@ class Sentinel:
 # trail $ targets are scaled by (its notional / $5000) to keep triggering at the same underlying
 # price move: MU $75x50=$3750 -> $30/$6, MRVL $200x50=$10,000 -> $80/$16.
 #
-# MRVL sl_pct tightened same day (user request): the standard 3.5% stop at $200/50x put the hard
-# stop loss at ~$358 -- "too much, should not be more than 80-100". User explicitly wants full
-# size/leverage kept (tried a leverage cap first; told directly not to -- just tighten the stop).
-# 0.8% confirmed live: puts the stop loss at ~$89.50, same $200 margin, same dynamic max (50x)
-# leverage, nothing else changed.
+# MRVL sl_pct tightened 2026-10-07 (user request): the standard 3.5% stop at $200/50x put the
+# hard stop loss at ~$358 -- "too much, should not be more than 80-100". User explicitly wants
+# full size/leverage kept (tried a leverage cap first; told directly not to -- just tighten the
+# stop). 0.8% confirmed live: puts the stop loss at ~$89.50.
+#
+# MU sl_pct tightened 2026-10-12 (user request, same reasoning): "I would rather take a loss of
+# 50 and 89 on MRVL rather than losing all week's gains in one loss" -- explicitly wants BOTH
+# capped small rather than MU's original 3.5% (~$135 at the current $75 margin). 1.2% confirmed
+# live: puts the stop loss at ~$48.50. The currently-open MU position (opened before this change,
+# still at the old 3.5%/$958.10 stop) got an equivalent custom stop applied the same day via the
+# existing dashboard levels-request mechanism -- see git log same date -- so it isn't left on the
+# old, wider stop while this config only governs NEW entries going forward.
 REAL_OVERNIGHT_CFG = {
-    'MU':   {'symbol': 'MUUSDT',   'amount': 75.0,  'sl_pct': 0.035,  'trail_activate_net': 30.0, 'trail_giveback_net': 6.0},
+    'MU':   {'symbol': 'MUUSDT',   'amount': 75.0,  'sl_pct': 0.012,  'trail_activate_net': 30.0, 'trail_giveback_net': 6.0},
     'MRVL': {'symbol': 'MRVLUSDT', 'amount': 200.0, 'sl_pct': 0.008,  'trail_activate_net': 80.0, 'trail_giveback_net': 16.0},
 }
 REAL_STATE_FILE     = os.environ.get('SENTINEL_REAL_STATE_FILE', 'sentinel_real_state.json').strip()
