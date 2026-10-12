@@ -180,6 +180,15 @@ async function toggleTrail(key, disable) {
     setTimeout(loadAll, 1500);
   } catch (e) { toast('⚠️ Failed: ' + e.message); }
 }
+async function toggleSL(key, disable) {
+  if (disable && !confirm(key + ': disable the stop-loss? The position can then only close via manual close, take-profit, or the normal next-morning exit. At 50x, if price keeps falling past where the stop would have fired, liquidation (not a controlled exit) becomes the real backstop -- worse than the stop. Continue?')) return;
+  try {
+    const field = 'sentinel_' + key.toLowerCase() + '_sl_disabled';
+    await writeConfig({[field]: disable});
+    toast(disable ? '⚠️ Stop-loss disabled' : '🛡️ Stop-loss re-enabled');
+    setTimeout(loadAll, 1500);
+  } catch (e) { toast('⚠️ Failed: ' + e.message); }
+}
 async function forceArmTrail(key) {
   const d = key === 'MU' ? MU : MRVL_REAL;
   if (!d || !d.position) return;
@@ -324,7 +333,14 @@ function realCard(data, key, name) {
     <button class="mxl-btn ghost" style="margin-top:8px;width:100%" onclick="forceArmTrail('${key}')">
       ⚡ Start trail now (at current peak)
     </button>
-    <div class="mut" style="font-size:10.5px;margin-top:4px;line-height:1.4">Arms the trail off whatever peak has been reached so far, instead of waiting for the normal $${num(data.trail_activate_net ?? 0,0)} threshold — only makes sense once you're already in some profit.</div>` : ''}`;
+    <div class="mut" style="font-size:10.5px;margin-top:4px;line-height:1.4">Arms the trail off whatever peak has been reached so far, instead of waiting for the normal $${num(data.trail_activate_net ?? 0,0)} threshold — only makes sense once you're already in some profit.</div>` : ''}
+    <button class="mxl-btn ${data.sl_disabled ? '' : 'ghost'}" style="margin-top:8px;width:100%;${data.sl_disabled ? 'background:#dc2626' : 'border-color:#dc2626;color:#f87171'}"
+      onclick="toggleSL('${key}', ${data.sl_disabled ? 'false' : 'true'})">
+      ${data.sl_disabled ? '⚠️ Stop-loss disabled — tap to re-enable' : '🛑 Stop-loss active ($' + num(p.sl_price,2) + ') — tap to disable'}
+    </button>
+    <div class="mut" style="font-size:10.5px;margin-top:4px;line-height:1.4">${data.sl_disabled
+      ? 'No automated close on a stop hit right now — manual close, take-profit, or the normal morning exit only. At 50x, liquidation (not a controlled exit) is the real backstop if price keeps falling.'
+      : 'Disabling removes the only automated downside protection — real risk, not recommended unless you plan to watch closely.'}</div>`;
   } else if (key === 'MU') {
     body = `<div class="note" style="margin-top:10px">No Sentinel-owned position yet. <b>This weekend's open MU position is still owned by Apex</b> — its stop/take-profit/close controls are on the Apex dashboard (command.html), unchanged. Sentinel takes over the <b>next</b> entry (Monday ~3:55–4:05 PM ET, after Apex's current position closes Monday morning) — exit controls will appear here once Sentinel opens that position.</div>`;
   } else {

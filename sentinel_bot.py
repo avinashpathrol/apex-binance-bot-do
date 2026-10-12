@@ -1131,7 +1131,15 @@ class RealOvernightEngine:
                         if just_armed:
                             self.notify('🔒 <b>%s trail armed</b>\nPeak hit +$%.0f unrealized -- stop now trails $%.0f below the peak '
                                         '(locked in at least +$%.2f net right now).' % (key, trail_activate_net, trail_giveback_net, target_net))
-            if pos.get('sl_price') and bid <= pos['sl_price']:
+            # Dashboard SL-disable switch (user request 2026-10-12): position can only close via
+            # manual close, take-profit, or the normal next-morning exit while this is on -- no
+            # automated close-on-stop at all. Real risk, stated plainly to the user before
+            # building this: at 50x leverage, liquidation (not the stop) becomes the real
+            # backstop if price keeps falling past where the stop would have fired -- liquidation
+            # is strictly worse (forced at a worse price, exchange penalty). This is opt-in and
+            # off by default.
+            sl_disabled = bool(bc.get('sentinel_%s_sl_disabled' % kk))
+            if pos.get('sl_price') and bid <= pos['sl_price'] and not sl_disabled:
                 reason = 'Trail Stop' if pos.get('trail_armed') else ('Custom Stop' if pos.get('sl_custom') else 'Stop Loss')
                 self._close(key, cfg, reason, now_utc, et, bid)
                 return
@@ -1330,6 +1338,7 @@ class RealOvernightEngine:
             out[key] = {
                 'base': key, 'symbol': cfg['symbol'], 'real_money': True,
                 'trail_disabled': bool(bc.get('sentinel_%s_trail_disabled' % key.lower())),
+                'sl_disabled': bool(bc.get('sentinel_%s_sl_disabled' % key.lower())),
                 'trail_activate_net': cfg['trail_activate_net'], 'trail_giveback_net': cfg['trail_giveback_net'],
                 'position': ({'direction': 'LONG', 'entry_price': pos['entry_price'], 'current_price': current_price,
                               'unrealized_pnl': unrealized_pnl, 'sl_price': pos['sl_price'], 'qty': pos['qty'],
